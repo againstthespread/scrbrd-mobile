@@ -1,0 +1,264 @@
+import 'dart:async';
+
+import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
+
+import 'ble_device_state.dart';
+import 'device_transport.dart';
+import 'game_data.dart';
+import 'game_packet_serializer.dart';
+import 'sports_hub_ble_protocol.dart';
+
+class BluetoothDeviceTransport implements DeviceTransport {
+  BluetoothDeviceTransport({
+    this.protocol = const SportsHubBleProtocol(),
+    this.serializer = const GamePacketSerializer(),
+    this.scanTimeout = const Duration(seconds: 8),
+  });
+
+  final SportsHubBleProtocol protocol;
+  final GamePacketSerializer serializer;
+  final Duration scanTimeout;
+  FlutterReactiveBle? _ble;
+
+  final _snapshotController = StreamController<BleDeviceSnapshot>.broadcast();
+  final _devicesById = <String, DiscoveredDevice>{};
+
+  StreamSubscription<DiscoveredDevice>? _scanSubscription;
+  StreamSubscription<ConnectionStateUpdate>? _connectionSubscription;
+  QualifiedCharacteristic? _writableCharacteristic;
+  BleDeviceSnapshot _snapshot = const BleDeviceSnapshot(
+    state: BleConnectionState.disconnected,
+  );
+  bool _isWriting = false;
+
+  Stream<BleDeviceSnapshot> get snapshots => _snapshotController.stream;
+
+  BleDeviceSnapshot get currentSnapshot => _snapshot;
+
+  Future<void> scanForDevice() async {
+    await disconnect();
+
+    _emit(
+      const BleDeviceSnapshot(
+        state: BleConnectionState.scanning,
+        candidates: [],
+      ),
+    );
+
+    _scanSubscription = _bleClient
+        .scanForDevices(withServices: const [])
+        .listen(
+          _handleDiscoveredDevice,
+          onError: (Object error) {
+            _emitError('Bluetooth scan failed: $error');
+          },
+        );
+
+    await Future<void>.delayed(scanTimeout);
+
+    if (_snapshot.state == BleConnectionState.scanning) {
+      await _scanSubscription?.cancel();
+      _scanSubscription = null;
+      _emit(
+        _snapshot.copyWith(
+          state: BleConnectionState.disconnected,
+          errorMessage: _snapshot.candidates.isEmpty
+              ? 'No Peter Sports Hub device found.'
+              : null,
+        ),
+      );
+    }
+  }
+
+  Future<void> connectToDevice(BleDeviceCandidate candidate) async {
+    final discoveredDevice = _devicesById[candidate.id];
+    if (discoveredDevice == null) {
+      _emitError('Selected Sports Hub device is no longer available.');
+      return;
+    }
+
+    await _scanSubscription?.cancel();
+    _scanSubscription = null;
+    _emit(
+      _snapshot.copyWith(
+        state: BleConnectionState.connecting,
+        deviceName: candidate.name,
+        clearError: true,
+      ),
+    );
+
+    final serviceUuid = _tryReadServiceUuid();
+    final characteristicUuid = _tryReadWritableCharacteristicUuid();
+    if (serviceUuid == null || characteristicUuid == null) {
+      return;
+    }
+
+    final completer = Completer<void>();
+    _connectionSubscription = _bleClient
+        .connectToDevice(
+          id: discoveredDevice.id,
+          servicesWithCharacteristicsToDiscover: {
+            serviceUuid: [characteristicUuid],
+          },
+          connectionTimeout: const Duration(seconds: 12),
+        )
+        .listen(
+          (update) {
+            if (update.connectionState == DeviceConnectionState.connected) {
+              _writableCharacteristic = QualifiedCharacteristic(
+                serviceId: serviceUuid,
+                characteristicId: characteristicUuid,
+                deviceId: discoveredDevice.id,
+              );
+              _emit(
+                _snapshot.copyWith(
+                  state: BleConnectionState.connected,
+                  deviceName: candidate.name,
+                  clearError: true,
+                ),
+              );
+              if (!completer.isCompleted) {
+                completer.complete();
+              }
+            } else if (update.connectionState ==
+                DeviceConnectionState.disconnected) {
+              _writableCharacteristic = null;
+              _emit(
+                _snapshot.copyWith(
+                  state: BleConnectionState.disconnected,
+                  deviceName: null,
+                ),
+              );
+            }
+          },
+          onError: (Object error) {
+            _emitError('Bluetooth connection failed: $error');
+            if (!completer.isCompleted) {
+              completer.complete();
+            }
+          },
+        );
+
+    await completer.future.timeout(
+      const Duration(seconds: 14),
+      onTimeout: () {
+        _emitError('Bluetooth connection timed out.');
+      },
+    );
+  }
+
+  Future<void> disconnect() async {
+    await _scanSubscription?.cancel();
+    await _connectionSubscription?.cancel();
+    _scanSubscription = null;
+    _connectionSubscription = null;
+    _writableCharacteristic = null;
+    _isWriting = false;
+    _devicesById.clear();
+    _emit(const BleDeviceSnapshot(state: BleConnectionState.disconnected));
+  }
+
+  @override
+  Future<void> sendGameData(GameData gameData) async {
+    final characteristic = _writableCharacteristic;
+    if (characteristic == null ||
+        _snapshot.state == BleConnectionState.disconnected ||
+        _snapshot.state == BleConnectionState.error) {
+      throw StateError('Sports Hub is not connected.');
+    }
+
+    if (_isWriting || _snapshot.state == BleConnectionState.sending) {
+      throw StateError('A Sports Hub packet is already being sent.');
+    }
+
+    _isWriting = true;
+    final previousSnapshot = _snapshot;
+    _emit(_snapshot.copyWith(state: BleConnectionState.sending));
+
+    try {
+      await _bleClient.writeCharacteristicWithResponse(
+        characteristic,
+        value: serializer.serialize(gameData),
+      );
+      _emit(previousSnapshot.copyWith(state: BleConnectionState.connected));
+    } on Object catch (error) {
+      _emitError('Bluetooth write failed: $error');
+      rethrow;
+    } finally {
+      _isWriting = false;
+    }
+  }
+
+  Future<void> dispose() async {
+    await disconnect();
+    await _snapshotController.close();
+  }
+
+  FlutterReactiveBle get _bleClient {
+    return _ble ??= FlutterReactiveBle();
+  }
+
+  void _handleDiscoveredDevice(DiscoveredDevice device) {
+    final name = device.name.trim();
+    final matchesName = name == SportsHubBleProtocol.advertisingName;
+    final serviceUuid = _safeReadServiceUuid();
+    final matchesService =
+        serviceUuid != null && device.serviceUuids.contains(serviceUuid);
+
+    if (!matchesName && !matchesService) {
+      return;
+    }
+
+    _devicesById[device.id] = device;
+    final candidates = _devicesById.values.map((device) {
+      final displayName = device.name.trim().isEmpty
+          ? SportsHubBleProtocol.advertisingName
+          : device.name.trim();
+      return BleDeviceCandidate(id: device.id, name: displayName);
+    }).toList();
+
+    _emit(_snapshot.copyWith(candidates: candidates, clearError: true));
+  }
+
+  Uuid? _tryReadServiceUuid() {
+    try {
+      return protocol.serviceUuid;
+    } on StateError catch (error) {
+      _emitError(error.message);
+      return null;
+    }
+  }
+
+  Uuid? _safeReadServiceUuid() {
+    try {
+      return protocol.serviceUuid;
+    } on StateError {
+      return null;
+    }
+  }
+
+  Uuid? _tryReadWritableCharacteristicUuid() {
+    try {
+      return protocol.writableCharacteristicUuid;
+    } on StateError catch (error) {
+      _emitError(error.message);
+      return null;
+    }
+  }
+
+  void _emitError(String message) {
+    _emit(
+      _snapshot.copyWith(
+        state: BleConnectionState.error,
+        errorMessage: message,
+      ),
+    );
+  }
+
+  void _emit(BleDeviceSnapshot snapshot) {
+    _snapshot = snapshot;
+    if (!_snapshotController.isClosed) {
+      _snapshotController.add(snapshot);
+    }
+  }
+}
