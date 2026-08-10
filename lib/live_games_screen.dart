@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'device_transport.dart';
 import 'game_data.dart';
 import 'game_editor.dart';
+import 'selected_game_auto_updater.dart';
 import 'sports_league.dart';
 import 'sports_repository.dart';
 
@@ -26,12 +27,20 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
   var _selectedLeague = SportsLeague.mlb;
   late DateTime _selectedDate;
   List<GameData> _games = const [];
+  SelectedGameAutoUpdater? _autoUpdater;
+  String? _autoUpdateMessage;
 
   @override
   void initState() {
     super.initState();
     final now = DateTime.now();
     _selectedDate = DateTime(now.year, now.month, now.day);
+  }
+
+  @override
+  void dispose() {
+    _autoUpdater?.dispose();
+    super.dispose();
   }
 
   Future<void> _refreshGames() async {
@@ -79,7 +88,10 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
       _selectedLeague = league;
       _games = const [];
       _errorMessage = null;
+      _autoUpdateMessage = null;
     });
+    _autoUpdater?.dispose();
+    _autoUpdater = null;
   }
 
   Future<void> _selectDate() async {
@@ -102,7 +114,10 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
       );
       _games = const [];
       _errorMessage = null;
+      _autoUpdateMessage = null;
     });
+    _autoUpdater?.dispose();
+    _autoUpdater = null;
   }
 
   void _openGamePreview(GameData gameData) {
@@ -121,6 +136,12 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
                       initialGameData: gameData,
                       previewInitially: true,
                       transport: widget.transport,
+                      onPacketSent: (sentGameData) {
+                        _startAutoUpdates(
+                          selectedGame: gameData,
+                          lastSentGame: sentGameData,
+                        );
+                      },
                     ),
                   ),
                 ),
@@ -130,6 +151,42 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
         },
       ),
     );
+  }
+
+  void _startAutoUpdates({
+    required GameData selectedGame,
+    required GameData lastSentGame,
+  }) {
+    _autoUpdater?.dispose();
+    final updater = SelectedGameAutoUpdater(
+      repository: widget.repository,
+      transport: widget.transport,
+      league: _selectedLeague,
+      selectedDate: _selectedDate,
+      selectedGame: selectedGame,
+      lastSentGame: lastSentGame,
+      onError: (error) {
+        if (!mounted) {
+          return;
+        }
+
+        setState(() {
+          _autoUpdateMessage = 'Auto update paused: $error';
+        });
+      },
+    );
+    updater.start();
+    _autoUpdater = updater;
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _autoUpdateMessage =
+          'Auto updates enabled every '
+          '${SelectedGameAutoUpdater.defaultRefreshInterval.inSeconds}s.';
+    });
   }
 
   @override
@@ -182,6 +239,16 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
               const SizedBox(height: 16),
               if (_isLoading) const LinearProgressIndicator(),
               if (_isLoading) const SizedBox(height: 16),
+              if (_autoUpdateMessage != null) ...[
+                Text(
+                  _autoUpdateMessage!,
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 12),
+              ],
               Expanded(
                 child: _LiveGamesContent(
                   games: _games,

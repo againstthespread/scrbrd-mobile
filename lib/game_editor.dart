@@ -13,12 +13,14 @@ class GameEditor extends StatefulWidget {
     this.previewInitially = false,
     this.transport = const ConsoleDeviceTransport(),
     this.serializer = const GamePacketSerializer(),
+    this.onPacketSent,
   });
 
   final GameData? initialGameData;
   final bool previewInitially;
   final DeviceTransport transport;
   final GamePacketSerializer serializer;
+  final ValueChanged<GameData>? onPacketSent;
 
   @override
   State<GameEditor> createState() => _GameEditorState();
@@ -113,6 +115,7 @@ class _GameEditorState extends State<GameEditor> {
       setState(() {
         _packetPreview = packetPreview;
       });
+      widget.onPacketSent?.call(gameData);
       _showFeedback('Game packet sent to console transport.');
     } on GamePacketValidationException catch (error) {
       _showFeedback(error.message, isError: true);
