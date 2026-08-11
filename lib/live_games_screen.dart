@@ -12,10 +12,13 @@ class LiveGamesScreen extends StatefulWidget {
     super.key,
     required this.repository,
     required this.transport,
+    this.autoUpdateRefreshInterval =
+        SelectedGameAutoUpdater.defaultRefreshInterval,
   });
 
   final SportsRepository repository;
   final DeviceTransport transport;
+  final Duration autoUpdateRefreshInterval;
 
   @override
   State<LiveGamesScreen> createState() => _LiveGamesScreenState();
@@ -29,6 +32,8 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
   List<GameData> _games = const [];
   SelectedGameAutoUpdater? _autoUpdater;
   String? _autoUpdateMessage;
+  final List<String> _autoUpdateDiagnostics = [];
+  var _isDisposing = false;
 
   @override
   void initState() {
@@ -39,6 +44,7 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
 
   @override
   void dispose() {
+    _isDisposing = true;
     _autoUpdater?.dispose();
     super.dispose();
   }
@@ -89,6 +95,7 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
       _games = const [];
       _errorMessage = null;
       _autoUpdateMessage = null;
+      _autoUpdateDiagnostics.clear();
     });
     _autoUpdater?.dispose();
     _autoUpdater = null;
@@ -115,6 +122,7 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
       _games = const [];
       _errorMessage = null;
       _autoUpdateMessage = null;
+      _autoUpdateDiagnostics.clear();
     });
     _autoUpdater?.dispose();
     _autoUpdater = null;
@@ -158,6 +166,7 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
     required GameData lastSentGame,
   }) {
     _autoUpdater?.dispose();
+    _recordAutoUpdateDiagnostic('updater created');
     final updater = SelectedGameAutoUpdater(
       repository: widget.repository,
       transport: widget.transport,
@@ -165,6 +174,7 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
       selectedDate: _selectedDate,
       selectedGame: selectedGame,
       lastSentGame: lastSentGame,
+      refreshInterval: widget.autoUpdateRefreshInterval,
       onError: (error) {
         if (!mounted) {
           return;
@@ -174,6 +184,7 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
           _autoUpdateMessage = 'Auto update paused: $error';
         });
       },
+      onDiagnostic: _recordAutoUpdateDiagnostic,
     );
     updater.start();
     _autoUpdater = updater;
@@ -185,7 +196,26 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
     setState(() {
       _autoUpdateMessage =
           'Auto updates enabled every '
-          '${SelectedGameAutoUpdater.defaultRefreshInterval.inSeconds}s.';
+          '${widget.autoUpdateRefreshInterval.inSeconds}s.';
+    });
+  }
+
+  void _recordAutoUpdateDiagnostic(String message) {
+    if (!mounted || _isDisposing) {
+      return;
+    }
+
+    final now = DateTime.now();
+    final timestamp =
+        '${now.hour.toString().padLeft(2, '0')}:'
+        '${now.minute.toString().padLeft(2, '0')}:'
+        '${now.second.toString().padLeft(2, '0')}';
+
+    setState(() {
+      _autoUpdateDiagnostics.insert(0, '$timestamp $message');
+      if (_autoUpdateDiagnostics.length > 12) {
+        _autoUpdateDiagnostics.removeLast();
+      }
     });
   }
 
@@ -246,6 +276,12 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
+                ),
+                const SizedBox(height: 12),
+              ],
+              if (_autoUpdateDiagnostics.isNotEmpty) ...[
+                _AutoUpdateDiagnosticsPanel(
+                  diagnostics: _autoUpdateDiagnostics,
                 ),
                 const SizedBox(height: 12),
               ],
@@ -316,6 +352,60 @@ class _LiveGamesContent extends StatelessWidget {
         final game = games[index];
         return _LiveGameListItem(game: game, onTap: () => onGameSelected(game));
       },
+    );
+  }
+}
+
+class _AutoUpdateDiagnosticsPanel extends StatelessWidget {
+  const _AutoUpdateDiagnosticsPanel({required this.diagnostics});
+
+  final List<String> diagnostics;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Temporary Auto-Update Diagnostics',
+            style: theme.textTheme.labelLarge?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 160,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: diagnostics
+                    .map(
+                      (message) => Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Text(
+                          message,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

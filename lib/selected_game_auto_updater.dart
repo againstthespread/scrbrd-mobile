@@ -17,6 +17,7 @@ class SelectedGameAutoUpdater {
     this.refreshInterval = defaultRefreshInterval,
     this.serializer = const GamePacketSerializer(),
     this.onError,
+    this.onDiagnostic,
   }) : _selectedGameKey = SelectedGameKey.fromGameData(selectedGame),
        _lastSentPacket = serializer.serializeToString(lastSentGame);
 
@@ -29,6 +30,7 @@ class SelectedGameAutoUpdater {
   final Duration refreshInterval;
   final GamePacketSerializer serializer;
   final void Function(Object error)? onError;
+  final void Function(String message)? onDiagnostic;
   final SelectedGameKey _selectedGameKey;
 
   Timer? _timer;
@@ -37,31 +39,45 @@ class SelectedGameAutoUpdater {
 
   void start() {
     _timer?.cancel();
+    _diagnose('updater started; interval=${refreshInterval.inSeconds}s');
     _timer = Timer.periodic(refreshInterval, (_) => refreshNow());
   }
 
   Future<void> refreshNow() async {
     if (_isRefreshing) {
+      _diagnose('refresh skipped; previous refresh still running');
       return;
     }
 
+    _diagnose(
+      'timer fired; checking ${_selectedGameKey.awayTeam} at '
+      '${_selectedGameKey.homeTeam} (${_selectedGameKey.league})',
+    );
     _isRefreshing = true;
     try {
+      _diagnose('repository fetch started');
       final games = await repository.fetchGamesForDate(league, selectedDate);
+      _diagnose('repository fetch succeeded; games=${games.length}');
       final updatedGame = _findSelectedGame(games);
+      _diagnose('selected game match found=${updatedGame != null}');
       if (updatedGame == null) {
         return;
       }
 
       final updatedPacket = serializer.serializeToString(updatedGame);
       final packetChanged = updatedPacket != _lastSentPacket;
+      _diagnose('serialized packet changed=$packetChanged');
       if (!packetChanged) {
+        _diagnose('BLE send attempted=false');
         return;
       }
 
+      _diagnose('BLE send attempted=true');
       await transport.sendGameData(updatedGame);
+      _diagnose('BLE send succeeded');
       _lastSentPacket = updatedPacket;
     } on Object catch (error) {
+      _diagnose('error=$error');
       onError?.call(error);
     } finally {
       _isRefreshing = false;
@@ -79,8 +95,13 @@ class SelectedGameAutoUpdater {
   }
 
   void dispose() {
+    _diagnose('updater stopped/disposed');
     _timer?.cancel();
     _timer = null;
+  }
+
+  void _diagnose(String message) {
+    onDiagnostic?.call(message);
   }
 }
 
