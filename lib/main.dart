@@ -1,10 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
 
 import 'connection_screen.dart';
+import 'firebase_options.dart';
+import 'push_notification_service.dart';
 import 'sports_data_io_data_source.dart';
 import 'sports_repository.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  await const PushNotificationService().initializeForDevelopment();
   runApp(const SportsHubApp());
 }
 

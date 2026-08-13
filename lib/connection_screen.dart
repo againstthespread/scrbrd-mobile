@@ -6,12 +6,18 @@ import 'ble_device_state.dart';
 import 'bluetooth_device_transport.dart';
 import 'game_editor.dart';
 import 'live_games_screen.dart';
+import 'push_notification_service.dart';
 import 'sports_repository.dart';
 
 class ConnectionScreen extends StatefulWidget {
-  const ConnectionScreen({super.key, required this.repository});
+  const ConnectionScreen({
+    super.key,
+    required this.repository,
+    this.pushNotificationService = const PushNotificationService(),
+  });
 
   final SportsRepository repository;
+  final PushNotificationService pushNotificationService;
 
   @override
   State<ConnectionScreen> createState() => _ConnectionScreenState();
@@ -24,6 +30,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   late final BluetoothDeviceTransport _transport;
   StreamSubscription<BleDeviceSnapshot>? _snapshotSubscription;
   late BleDeviceSnapshot _deviceSnapshot;
+  PushNotificationDiagnostics? _pushDiagnostics;
 
   bool get _isBusy =>
       _deviceSnapshot.state == BleConnectionState.scanning ||
@@ -47,6 +54,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         _deviceSnapshot = snapshot;
       });
     });
+    _loadPushDiagnostics();
   }
 
   @override
@@ -88,6 +96,17 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
 
   Future<void> _connectToCandidate(BleDeviceCandidate candidate) async {
     await _transport.connectToDevice(candidate);
+  }
+
+  Future<void> _loadPushDiagnostics() async {
+    final diagnostics = await widget.pushNotificationService.readDiagnostics();
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _pushDiagnostics = diagnostics;
+    });
   }
 
   @override
@@ -132,6 +151,11 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                     snapshot: _deviceSnapshot,
                     deviceName: _deviceSnapshot.deviceName ?? _deviceName,
                     deviceTransport: _deviceTransport,
+                  ),
+                  const SizedBox(height: 16),
+                  _PushNotificationDiagnosticsPanel(
+                    diagnostics: _pushDiagnostics,
+                    onRefresh: _loadPushDiagnostics,
                   ),
                   const SizedBox(height: 24),
                   FilledButton(
@@ -282,6 +306,82 @@ class _ConnectionStatusCard extends StatelessWidget {
             _DeviceDetailRow(label: 'Device', value: deviceName),
             const SizedBox(height: 8),
             _DeviceDetailRow(label: 'Transport', value: deviceTransport),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PushNotificationDiagnosticsPanel extends StatelessWidget {
+  const _PushNotificationDiagnosticsPanel({
+    required this.diagnostics,
+    required this.onRefresh,
+  });
+
+  final PushNotificationDiagnostics? diagnostics;
+  final VoidCallback onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final diagnostics = this.diagnostics;
+
+    return Card(
+      elevation: 0,
+      color: colorScheme.surfaceContainerHighest,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Temporary FCM Diagnostics',
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  onPressed: onRefresh,
+                  icon: const Icon(Icons.refresh),
+                  tooltip: 'Refresh FCM diagnostics',
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            _DeviceDetailRow(
+              label: 'Permission',
+              value: diagnostics?.permissionStatus ?? 'Checking...',
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'FCM token',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 4),
+            SelectableText(
+              diagnostics?.tokenStatus ?? 'Checking...',
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontFamily: 'monospace',
+              ),
+            ),
+            if (diagnostics?.errorMessage != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                diagnostics!.errorMessage!,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: colorScheme.error,
+                ),
+              ),
+            ],
           ],
         ),
       ),
