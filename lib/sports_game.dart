@@ -9,6 +9,7 @@ class SportsGame {
     required this.clock,
     this.statusDetail,
     this.scheduledStartTime,
+    this.eventId,
   });
 
   final String league;
@@ -20,4 +21,5 @@ class SportsGame {
   final String clock;
   final String? statusDetail;
   final DateTime? scheduledStartTime;
+  final String? eventId;
 }

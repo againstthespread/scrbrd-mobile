@@ -133,6 +133,9 @@ class _GameEditorState extends State<GameEditor> {
       homeScore: int.parse(_homeScoreController.text.trim()),
       status: _status,
       clock: _clockController.text.trim(),
+      statusDetail: widget.initialGameData?.statusDetail,
+      scheduledStartTime: widget.initialGameData?.scheduledStartTime,
+      eventId: widget.initialGameData?.eventId,
     );
   }
 

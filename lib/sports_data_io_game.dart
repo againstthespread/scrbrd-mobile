@@ -13,6 +13,7 @@ class SportsDataIOGame {
     required this.clock,
     this.statusDetail,
     this.scheduledStartTime,
+    this.eventId,
   });
 
   final String awayTeam;
@@ -23,6 +24,7 @@ class SportsDataIOGame {
   final String clock;
   final String? statusDetail;
   final DateTime? scheduledStartTime;
+  final String? eventId;
 
   factory SportsDataIOGame.fromJson(
     SportsLeague league,
@@ -34,6 +36,7 @@ class SportsDataIOGame {
     final status = _statusFromJson(json, statusDetail);
     final scores = _scoresFromJson(league, json);
     final scheduledStartTime = _scheduledStartTimeFromJson(json);
+    final eventId = _eventIdFromJson(json);
     final clock = _clockFromJson(json, league, status, scheduledStartTime);
 
     final game = SportsDataIOGame(
@@ -45,6 +48,7 @@ class SportsDataIOGame {
       clock: clock,
       statusDetail: statusDetail,
       scheduledStartTime: scheduledStartTime,
+      eventId: eventId,
     );
 
     _logScoreMapping(league, json, game);
@@ -62,6 +66,7 @@ class SportsDataIOGame {
       clock: clock,
       statusDetail: statusDetail,
       scheduledStartTime: scheduledStartTime,
+      eventId: eventId,
     );
   }
 
@@ -161,6 +166,32 @@ class SportsDataIOGame {
     return _tryParseLocalDateTime(dateTime) ??
         _tryParseLocalDateTime(date) ??
         _tryParseLocalDateTime(day);
+  }
+
+  static String? _eventIdFromJson(Map<String, dynamic> json) {
+    const eventIdFields = [
+      'GlobalGameID',
+      'GlobalGameId',
+      'GameID',
+      'GameId',
+      'ScoreID',
+      'ScoreId',
+      'GameKey',
+    ];
+
+    for (final field in eventIdFields) {
+      final value = json[field];
+      if (value == null) {
+        continue;
+      }
+
+      final eventId = value.toString().trim();
+      if (eventId.isNotEmpty) {
+        return eventId;
+      }
+    }
+
+    return null;
   }
 
   static DateTime? _tryParseLocalDateTime(String? value) {

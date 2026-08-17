@@ -10,6 +10,7 @@ class GameData {
     required this.clock,
     this.statusDetail,
     this.scheduledStartTime,
+    this.eventId,
   });
 
   final int protocolVersion;
@@ -22,6 +23,7 @@ class GameData {
   final String clock;
   final String? statusDetail;
   final DateTime? scheduledStartTime;
+  final String? eventId;
 
   Map<String, Object> toJson() {
     return {

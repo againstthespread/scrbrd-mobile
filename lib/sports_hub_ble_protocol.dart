@@ -7,6 +7,9 @@ class SportsHubBleProtocol {
   static const serviceUuidText = 'd8f6a9b0-7a5e-4e8c-9f2a-2b2f5b6c1001';
   static const writableCharacteristicUuidText =
       'd8f6a9b1-7a5e-4e8c-9f2a-2b2f5b6c1001';
+  // TEMPORARY BLE WAKE-NOTIFICATION EXPERIMENT: Remove after iOS testing.
+  static const wakeCharacteristicUuidText =
+      'd8f6a9b2-7a5e-4e8c-9f2a-2b2f5b6c1001';
 
   Uuid get serviceUuid => _parseUuid('service UUID', serviceUuidText);
 
@@ -14,6 +17,10 @@ class SportsHubBleProtocol {
     'writable characteristic UUID',
     writableCharacteristicUuidText,
   );
+
+  // TEMPORARY BLE WAKE-NOTIFICATION EXPERIMENT: Remove after iOS testing.
+  Uuid get wakeCharacteristicUuid =>
+      _parseUuid('wake characteristic UUID', wakeCharacteristicUuidText);
 
   Uuid _parseUuid(String label, String value) {
     final normalizedValue = value.trim().replaceAll(RegExp(r'[<>]'), '');

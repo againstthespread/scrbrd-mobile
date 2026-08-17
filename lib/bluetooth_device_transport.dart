@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
 import 'ble_device_state.dart';
@@ -21,19 +22,31 @@ class BluetoothDeviceTransport implements DeviceTransport {
   FlutterReactiveBle? _ble;
 
   final _snapshotController = StreamController<BleDeviceSnapshot>.broadcast();
+  // TEMPORARY BLE WAKE-NOTIFICATION EXPERIMENT: Remove after iOS testing.
+  final _wakeNotificationController = StreamController<List<int>>.broadcast();
   final _devicesById = <String, DiscoveredDevice>{};
 
   StreamSubscription<DiscoveredDevice>? _scanSubscription;
   StreamSubscription<ConnectionStateUpdate>? _connectionSubscription;
+  StreamSubscription<List<int>>? _wakeNotificationSubscription;
   QualifiedCharacteristic? _writableCharacteristic;
   BleDeviceSnapshot _snapshot = const BleDeviceSnapshot(
     state: BleConnectionState.disconnected,
   );
   bool _isWriting = false;
 
+  // TEMPORARY BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing.
+  GameData? _lastSuccessfullySentGameData;
+
   Stream<BleDeviceSnapshot> get snapshots => _snapshotController.stream;
 
+  // TEMPORARY BLE WAKE-NOTIFICATION EXPERIMENT: Remove after iOS testing.
+  Stream<List<int>> get wakeNotifications => _wakeNotificationController.stream;
+
   BleDeviceSnapshot get currentSnapshot => _snapshot;
+
+  // TEMPORARY BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing.
+  GameData? get lastSuccessfullySentGameData => _lastSuccessfullySentGameData;
 
   Future<void> scanForDevice() async {
     await disconnect();
@@ -89,7 +102,10 @@ class BluetoothDeviceTransport implements DeviceTransport {
 
     final serviceUuid = _tryReadServiceUuid();
     final characteristicUuid = _tryReadWritableCharacteristicUuid();
-    if (serviceUuid == null || characteristicUuid == null) {
+    final wakeCharacteristicUuid = _tryReadWakeCharacteristicUuid();
+    if (serviceUuid == null ||
+        characteristicUuid == null ||
+        wakeCharacteristicUuid == null) {
       return;
     }
 
@@ -98,7 +114,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
         .connectToDevice(
           id: discoveredDevice.id,
           servicesWithCharacteristicsToDiscover: {
-            serviceUuid: [characteristicUuid],
+            serviceUuid: [characteristicUuid, wakeCharacteristicUuid],
           },
           connectionTimeout: const Duration(seconds: 12),
         )
@@ -109,6 +125,13 @@ class BluetoothDeviceTransport implements DeviceTransport {
                 serviceId: serviceUuid,
                 characteristicId: characteristicUuid,
                 deviceId: discoveredDevice.id,
+              );
+              _startWakeNotificationSubscription(
+                QualifiedCharacteristic(
+                  serviceId: serviceUuid,
+                  characteristicId: wakeCharacteristicUuid,
+                  deviceId: discoveredDevice.id,
+                ),
               );
               _emit(
                 _snapshot.copyWith(
@@ -122,6 +145,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
               }
             } else if (update.connectionState ==
                 DeviceConnectionState.disconnected) {
+              unawaited(_cancelWakeNotificationSubscription());
               _writableCharacteristic = null;
               _emit(
                 _snapshot.copyWith(
@@ -150,6 +174,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
   Future<void> disconnect() async {
     await _scanSubscription?.cancel();
     await _connectionSubscription?.cancel();
+    await _cancelWakeNotificationSubscription();
     _scanSubscription = null;
     _connectionSubscription = null;
     _writableCharacteristic = null;
@@ -180,6 +205,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
         characteristic,
         value: serializer.serialize(gameData),
       );
+      _lastSuccessfullySentGameData = gameData;
       _emit(previousSnapshot.copyWith(state: BleConnectionState.connected));
     } on Object catch (error) {
       _emitError('Bluetooth write failed: $error');
@@ -191,6 +217,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
 
   Future<void> dispose() async {
     await disconnect();
+    await _wakeNotificationController.close();
     await _snapshotController.close();
   }
 
@@ -244,6 +271,58 @@ class BluetoothDeviceTransport implements DeviceTransport {
       _emitError(error.message);
       return null;
     }
+  }
+
+  // TEMPORARY BLE WAKE-NOTIFICATION EXPERIMENT: Remove after iOS testing.
+  Uuid? _tryReadWakeCharacteristicUuid() {
+    try {
+      return protocol.wakeCharacteristicUuid;
+    } on StateError catch (error) {
+      _emitError(error.message);
+      return null;
+    }
+  }
+
+  // TEMPORARY BLE WAKE-NOTIFICATION EXPERIMENT: Remove after iOS testing.
+  void _startWakeNotificationSubscription(
+    QualifiedCharacteristic characteristic,
+  ) {
+    unawaited(_wakeNotificationSubscription?.cancel());
+    _wakeNotificationSubscription = _bleClient
+        .subscribeToCharacteristic(characteristic)
+        .listen(
+          (value) {
+            debugPrint(
+              'TEMP BLE WAKE EXPERIMENT: wake notification received; '
+              'bytes=$value',
+            );
+            if (!_wakeNotificationController.isClosed) {
+              _wakeNotificationController.add(value);
+            }
+          },
+          onError: (Object error) {
+            debugPrint(
+              'TEMP BLE WAKE EXPERIMENT: wake notification subscription '
+              'failed: $error',
+            );
+          },
+          onDone: () {
+            debugPrint('TEMP BLE WAKE EXPERIMENT: wake subscription cancelled');
+          },
+        );
+    debugPrint('TEMP BLE WAKE EXPERIMENT: wake subscription started');
+  }
+
+  // TEMPORARY BLE WAKE-NOTIFICATION EXPERIMENT: Remove after iOS testing.
+  Future<void> _cancelWakeNotificationSubscription() async {
+    final subscription = _wakeNotificationSubscription;
+    _wakeNotificationSubscription = null;
+    if (subscription == null) {
+      return;
+    }
+
+    await subscription.cancel();
+    debugPrint('TEMP BLE WAKE EXPERIMENT: wake subscription cancelled');
   }
 
   void _emitError(String message) {

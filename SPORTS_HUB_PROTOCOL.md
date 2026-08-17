@@ -11,6 +11,9 @@ d8f6a9b0-7a5e-4e8c-9f2a-2b2f5b6c1001
 Writable characteristic UUID:
 d8f6a9b1-7a5e-4e8c-9f2a-2b2f5b6c1001
 
+Temporary wake-notification characteristic UUID:
+d8f6a9b2-7a5e-4e8c-9f2a-2b2f5b6c1001
+
 Encoding:
 compact UTF-8 JSON
 

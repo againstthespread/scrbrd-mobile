@@ -16,6 +16,10 @@ void main() {
       protocol.writableCharacteristicUuid.toString(),
       'd8f6a9b1-7a5e-4e8c-9f2a-2b2f5b6c1001',
     );
+    expect(
+      protocol.wakeCharacteristicUuid.toString(),
+      'd8f6a9b2-7a5e-4e8c-9f2a-2b2f5b6c1001',
+    );
   });
 
   test('valid protocol UUID strings parse without BLE hardware', () {
@@ -56,4 +60,8 @@ class _TestBleProtocol extends SportsHubBleProtocol {
   @override
   Uuid get writableCharacteristicUuid =>
       Uuid.parse('00000001-0000-1000-8000-00805f9b34fb');
+
+  @override
+  Uuid get wakeCharacteristicUuid =>
+      Uuid.parse('00000002-0000-1000-8000-00805f9b34fb');
 }

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'bluetooth_device_transport.dart';
 import 'device_transport.dart';
 import 'game_data.dart';
 import 'game_editor.dart';
@@ -24,7 +25,8 @@ class LiveGamesScreen extends StatefulWidget {
   State<LiveGamesScreen> createState() => _LiveGamesScreenState();
 }
 
-class _LiveGamesScreenState extends State<LiveGamesScreen> {
+class _LiveGamesScreenState extends State<LiveGamesScreen>
+    with WidgetsBindingObserver {
   var _isLoading = false;
   String? _errorMessage;
   var _selectedLeague = SportsLeague.mlb;
@@ -38,6 +40,7 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     final now = DateTime.now();
     _selectedDate = DateTime(now.year, now.month, now.day);
   }
@@ -45,8 +48,22 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
   @override
   void dispose() {
     _isDisposing = true;
+    WidgetsBinding.instance.removeObserver(this);
     _autoUpdater?.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      _autoUpdater?.pause();
+    } else if (state == AppLifecycleState.resumed) {
+      final transport = widget.transport;
+      final lastSentGame = transport is BluetoothDeviceTransport
+          ? transport.lastSuccessfullySentGameData
+          : null;
+      _autoUpdater?.resume(lastSentGame: lastSentGame);
+    }
   }
 
   Future<void> _refreshGames() async {

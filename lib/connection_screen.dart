@@ -2,9 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'background_score_updater.dart';
+import 'background_score_refresh_dispatcher.dart';
 import 'ble_device_state.dart';
 import 'bluetooth_device_transport.dart';
 import 'game_editor.dart';
+import 'live_activity_diagnostics.dart';
 import 'live_games_screen.dart';
 import 'push_notification_service.dart';
 import 'sports_repository.dart';
@@ -23,14 +26,26 @@ class ConnectionScreen extends StatefulWidget {
   State<ConnectionScreen> createState() => _ConnectionScreenState();
 }
 
-class _ConnectionScreenState extends State<ConnectionScreen> {
+class _ConnectionScreenState extends State<ConnectionScreen>
+    with WidgetsBindingObserver {
   static const _deviceName = 'Peter Sports Hub';
   static const _deviceTransport = 'Bluetooth Low Energy';
 
   late final BluetoothDeviceTransport _transport;
+  late final BackgroundScoreUpdater _backgroundScoreUpdater;
   StreamSubscription<BleDeviceSnapshot>? _snapshotSubscription;
+  StreamSubscription<List<int>>? _wakeNotificationSubscription;
+  StreamSubscription<BackgroundScoreRefreshRequest>? _scoreRefreshSubscription;
   late BleDeviceSnapshot _deviceSnapshot;
   PushNotificationDiagnostics? _pushDiagnostics;
+  final _liveActivityDiagnostics = LiveActivityDiagnostics();
+
+  // TEMPORARY LIVE ACTIVITY/BACKGROUND BLE PROTOTYPE: Remove or refactor later.
+  var _isAppBackgrounded = false;
+  var _lifecycleState = AppLifecycleState.resumed;
+  String _backgroundUpdaterStatus =
+      'Waiting for the app to background with BLE and Live Activity active.';
+  String _liveActivityDiagnosticStatus = 'Live Activity not started.';
 
   bool get _isBusy =>
       _deviceSnapshot.state == BleConnectionState.scanning ||
@@ -43,9 +58,31 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _transport = BluetoothDeviceTransport();
+    _backgroundScoreUpdater = BackgroundScoreUpdater(
+      repository: widget.repository,
+      transport: _transport,
+      isAppBackgrounded: () => _isAppBackgrounded,
+      isBleConnected: () =>
+          _transport.currentSnapshot.state == BleConnectionState.connected,
+      isLiveActivityActive: _liveActivityDiagnostics.isActive,
+      trackedGame: () => _transport.lastSuccessfullySentGameData,
+      onDiagnostic: _recordBackgroundUpdaterDiagnostic,
+    );
     _deviceSnapshot = _transport.currentSnapshot;
+    _wakeNotificationSubscription = _transport.wakeNotifications.listen(
+      _handleBleWakeNotification,
+    );
+    _scoreRefreshSubscription = BackgroundScoreRefreshDispatcher.instance.events
+        .listen((request) {
+          unawaited(_handleBackgroundScoreRefresh(request));
+        });
     _snapshotSubscription = _transport.snapshots.listen((snapshot) {
+      if (snapshot.state == BleConnectionState.disconnected ||
+          snapshot.state == BleConnectionState.error) {
+        _backgroundScoreUpdater.cancelCurrentRefresh('BLE disconnected');
+      }
       if (!mounted) {
         return;
       }
@@ -57,11 +94,95 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     _loadPushDiagnostics();
   }
 
+  // TEMPORARY EVENT-DRIVEN BACKGROUND SCORE PROTOTYPE: Remove or refactor later.
+  Future<void> _handleBackgroundScoreRefresh(
+    BackgroundScoreRefreshRequest request,
+  ) async {
+    await _backgroundScoreUpdater.refreshTrackedGameOnce();
+    request.complete();
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _backgroundScoreUpdater.cancelCurrentRefresh('connection screen disposed');
+    _scoreRefreshSubscription?.cancel();
+    _wakeNotificationSubscription?.cancel();
     _snapshotSubscription?.cancel();
     _transport.dispose();
     super.dispose();
+  }
+
+  // TEMPORARY LIVE ACTIVITY/BACKGROUND BLE PROTOTYPE: Remove or refactor later.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _lifecycleState = state;
+    debugPrint('TEMP BACKGROUND SCORE UPDATER: lifecycle=${state.name}');
+
+    if (state == AppLifecycleState.paused) {
+      _isAppBackgrounded = true;
+    } else if (state == AppLifecycleState.resumed) {
+      _isAppBackgrounded = false;
+      _backgroundScoreUpdater.cancelCurrentRefresh(
+        'app returned to foreground',
+      );
+    }
+  }
+
+  // TEMPORARY BLE WAKE-NOTIFICATION EXPERIMENT: Remove after iOS testing.
+  void _handleBleWakeNotification(List<int> payload) {
+    debugPrint(
+      'TEMP BLE WAKE EXPERIMENT: wake notification received; '
+      'lifecycle=${_lifecycleState.name}; payload=$payload',
+    );
+    if (!_isAppBackgrounded) {
+      debugPrint(
+        'TEMP BLE WAKE EXPERIMENT: foreground notification ignored; '
+        'foreground updater remains responsible',
+      );
+      return;
+    }
+
+    debugPrint('TEMP BLE WAKE EXPERIMENT: background refresh dispatched');
+    unawaited(_backgroundScoreUpdater.refreshTrackedGameOnce());
+  }
+
+  // TEMPORARY LIVE ACTIVITY/BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing.
+  Future<void> _startLiveActivityDiagnostic() async {
+    final status = await _liveActivityDiagnostics.start();
+    _setLiveActivityDiagnosticStatus(status);
+  }
+
+  // TEMPORARY LIVE ACTIVITY/BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing.
+  Future<void> _endLiveActivityDiagnostic() async {
+    _backgroundScoreUpdater.cancelCurrentRefresh(
+      'Live Activity ended manually',
+    );
+    final status = await _liveActivityDiagnostics.end();
+    _setLiveActivityDiagnosticStatus(status);
+  }
+
+  // TEMPORARY LIVE ACTIVITY/BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing.
+  void _setLiveActivityDiagnosticStatus(String status) {
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _liveActivityDiagnosticStatus = status;
+    });
+  }
+
+  // TEMPORARY LIVE ACTIVITY/BACKGROUND BLE PROTOTYPE: Remove or refactor later.
+  void _recordBackgroundUpdaterDiagnostic(String message) {
+    debugPrint('TEMP BACKGROUND SCORE UPDATER: $message');
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _backgroundUpdaterStatus = message;
+    });
   }
 
   Future<void> _connect() async {
@@ -153,6 +274,10 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                     deviceTransport: _deviceTransport,
                   ),
                   const SizedBox(height: 16),
+                  _TemporaryBackgroundBleDiagnosticsPanel(
+                    status: _backgroundUpdaterStatus,
+                  ),
+                  const SizedBox(height: 16),
                   _PushNotificationDiagnosticsPanel(
                     diagnostics: _pushDiagnostics,
                     onRefresh: _loadPushDiagnostics,
@@ -216,6 +341,12 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                   ],
                   if (_isConnected) ...[
                     const SizedBox(height: 24),
+                    _TemporaryLiveActivityDiagnosticsControls(
+                      status: _liveActivityDiagnosticStatus,
+                      onStart: _startLiveActivityDiagnostic,
+                      onEnd: _endLiveActivityDiagnostic,
+                    ),
+                    const SizedBox(height: 16),
                     OutlinedButton.icon(
                       onPressed: _openLiveGames,
                       icon: const Icon(Icons.sports_football),
@@ -240,6 +371,64 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       BleConnectionState.sending => 'Sending packet to $_deviceName...',
       _ => '',
     };
+  }
+}
+
+// TEMPORARY LIVE ACTIVITY/BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing.
+class _TemporaryLiveActivityDiagnosticsControls extends StatelessWidget {
+  const _TemporaryLiveActivityDiagnosticsControls({
+    required this.status,
+    required this.onStart,
+    required this.onEnd,
+  });
+
+  final String status;
+  final VoidCallback onStart;
+  final VoidCallback onEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'Temporary Live Activity diagnostic: $status',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton(
+          onPressed: onStart,
+          child: const Text('TEMP: Start Live Activity'),
+        ),
+        OutlinedButton(
+          onPressed: onEnd,
+          child: const Text('TEMP: End Live Activity'),
+        ),
+      ],
+    );
+  }
+}
+
+// TEMPORARY LIVE ACTIVITY/BACKGROUND BLE PROTOTYPE: Remove or refactor later.
+class _TemporaryBackgroundBleDiagnosticsPanel extends StatelessWidget {
+  const _TemporaryBackgroundBleDiagnosticsPanel({required this.status});
+
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Text(
+      'Temporary background score updater: $status',
+      style: theme.textTheme.bodySmall?.copyWith(
+        color: theme.colorScheme.onSurfaceVariant,
+      ),
+    );
   }
 }
 
@@ -358,6 +547,20 @@ class _PushNotificationDiagnosticsPanel extends StatelessWidget {
             _DeviceDetailRow(
               label: 'Permission',
               value: diagnostics?.permissionStatus ?? 'Checking...',
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'APNs token',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 4),
+            SelectableText(
+              diagnostics?.apnsTokenStatus ?? 'Checking...',
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontFamily: 'monospace',
+              ),
             ),
             const SizedBox(height: 8),
             Text(

@@ -12,7 +12,8 @@ void main() {
   testWidgets(
     'successful manual send starts updater and sends changed refreshed game',
     (tester) async {
-      const initialGame = GameData(
+      final initialGame = GameData(
+        eventId: 'mlb-game-42',
         league: 'MLB',
         awayTeam: 'NYY',
         homeTeam: 'BOS',
@@ -20,8 +21,10 @@ void main() {
         homeScore: 2,
         status: 'LIVE',
         clock: 'Top 4',
+        scheduledStartTime: DateTime(2026, 8, 10, 19),
       );
-      const updatedGame = GameData(
+      final updatedGame = GameData(
+        eventId: 'mlb-game-42',
         league: 'MLB',
         awayTeam: 'NYY',
         homeTeam: 'BOS',
@@ -29,6 +32,7 @@ void main() {
         homeScore: 2,
         status: 'LIVE',
         clock: 'Bot 4',
+        scheduledStartTime: DateTime(2026, 8, 10, 19),
       );
       final dataSource = _FakeSportsDataSource([
         [_sportsGameFromGameData(initialGame)],
@@ -59,6 +63,7 @@ void main() {
 
       expect(transport.sentGames, hasLength(2));
       expect(transport.sentGames.first.awayScore, 1);
+      expect(transport.sentGames.first.eventId, 'mlb-game-42');
       expect(transport.sentGames.last.awayScore, 3);
 
       await tester.pageBack();
@@ -84,6 +89,7 @@ SportsGame _sportsGameFromGameData(GameData gameData) {
     clock: gameData.clock,
     statusDetail: gameData.statusDetail,
     scheduledStartTime: gameData.scheduledStartTime,
+    eventId: gameData.eventId,
   );
 }
 

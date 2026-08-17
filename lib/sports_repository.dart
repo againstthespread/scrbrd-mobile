@@ -27,6 +27,7 @@ class SportsRepository {
       clock: game.clock,
       statusDetail: game.statusDetail,
       scheduledStartTime: game.scheduledStartTime,
+      eventId: game.eventId,
     );
   }
 }

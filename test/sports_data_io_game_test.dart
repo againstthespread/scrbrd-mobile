@@ -100,5 +100,18 @@ void main() {
       expect(game.awayScore, 1);
       expect(game.homeScore, 8);
     });
+
+    test('maps a stable SportsDataIO event identifier', () {
+      final game = SportsDataIOGame.fromJson(SportsLeague.nfl, {
+        'GlobalGameID': 18452,
+        'AwayTeam': 'BUF',
+        'HomeTeam': 'NE',
+        'AwayScore': 0,
+        'HomeScore': 0,
+        'Status': 'Scheduled',
+      });
+
+      expect(game.eventId, '18452');
+    });
   });
 }

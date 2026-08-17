@@ -35,12 +35,29 @@ class SelectedGameAutoUpdater {
 
   Timer? _timer;
   bool _isRefreshing = false;
+  bool _isPaused = false;
   String _lastSentPacket;
 
   void start() {
+    _isPaused = false;
     _timer?.cancel();
     _diagnose('updater started; interval=${refreshInterval.inSeconds}s');
     _timer = Timer.periodic(refreshInterval, (_) => refreshNow());
+  }
+
+  void pause() {
+    _isPaused = true;
+    _diagnose('updater paused');
+    _timer?.cancel();
+    _timer = null;
+  }
+
+  void resume({GameData? lastSentGame}) {
+    if (lastSentGame != null) {
+      _lastSentPacket = serializer.serializeToString(lastSentGame);
+    }
+    _diagnose('updater resumed');
+    start();
   }
 
   Future<void> refreshNow() async {
@@ -49,14 +66,15 @@ class SelectedGameAutoUpdater {
       return;
     }
 
-    _diagnose(
-      'timer fired; checking ${_selectedGameKey.awayTeam} at '
-      '${_selectedGameKey.homeTeam} (${_selectedGameKey.league})',
-    );
+    _diagnose('poll started; tracked game identifier=${_selectedGameKey.id}');
     _isRefreshing = true;
     try {
       _diagnose('repository fetch started');
       final games = await repository.fetchGamesForDate(league, selectedDate);
+      if (_isPaused) {
+        _diagnose('poll abandoned: updater paused or stopped');
+        return;
+      }
       _diagnose('repository fetch succeeded; games=${games.length}');
       final updatedGame = _findSelectedGame(games);
       _diagnose('selected game match found=${updatedGame != null}');
@@ -68,16 +86,23 @@ class SelectedGameAutoUpdater {
       final packetChanged = updatedPacket != _lastSentPacket;
       _diagnose('serialized packet changed=$packetChanged');
       if (!packetChanged) {
-        _diagnose('BLE send attempted=false');
+        _diagnose('no relevant change; BLE send attempted=false');
         return;
       }
 
-      _diagnose('BLE send attempted=true');
-      await transport.sendGameData(updatedGame);
-      _diagnose('BLE send succeeded');
-      _lastSentPacket = updatedPacket;
+      _diagnose(
+        'change detected; BLE send attempted=true; BLE write attempted',
+      );
+      try {
+        await transport.sendGameData(updatedGame);
+        _diagnose('BLE send succeeded; BLE write succeeded');
+        _lastSentPacket = updatedPacket;
+      } on Object catch (error) {
+        _diagnose('BLE write failed: $error');
+        onError?.call(error);
+      }
     } on Object catch (error) {
-      _diagnose('error=$error');
+      _diagnose('poll failed; will retry at normal interval: $error');
       onError?.call(error);
     } finally {
       _isRefreshing = false;
@@ -95,6 +120,7 @@ class SelectedGameAutoUpdater {
   }
 
   void dispose() {
+    _isPaused = true;
     _diagnose('updater stopped/disposed');
     _timer?.cancel();
     _timer = null;
@@ -107,6 +133,7 @@ class SelectedGameAutoUpdater {
 
 class SelectedGameKey {
   const SelectedGameKey({
+    required this.eventId,
     required this.league,
     required this.awayTeam,
     required this.homeTeam,
@@ -115,6 +142,7 @@ class SelectedGameKey {
 
   factory SelectedGameKey.fromGameData(GameData gameData) {
     return SelectedGameKey(
+      eventId: gameData.eventId?.trim(),
       league: gameData.league.trim().toUpperCase(),
       awayTeam: gameData.awayTeam.trim().toUpperCase(),
       homeTeam: gameData.homeTeam.trim().toUpperCase(),
@@ -123,21 +151,53 @@ class SelectedGameKey {
   }
 
   final String league;
+  final String? eventId;
   final String awayTeam;
   final String homeTeam;
   final DateTime? scheduledStartTime;
 
+  String get id {
+    final stableEventId = eventId;
+    if (stableEventId != null && stableEventId.isNotEmpty) {
+      return '$league:$stableEventId';
+    }
+
+    return '$league:$awayTeam:$homeTeam:'
+        '${scheduledStartTime?.toIso8601String() ?? 'unknown-start'}';
+  }
+
   @override
   bool operator ==(Object other) {
-    return other is SelectedGameKey &&
-        other.league == league &&
-        other.awayTeam == awayTeam &&
+    if (other is! SelectedGameKey || other.league != league) {
+      return false;
+    }
+
+    final stableEventId = eventId;
+    final otherStableEventId = other.eventId;
+    if (stableEventId != null &&
+        stableEventId.isNotEmpty &&
+        otherStableEventId != null &&
+        otherStableEventId.isNotEmpty) {
+      return stableEventId == otherStableEventId;
+    }
+
+    if ((stableEventId != null && stableEventId.isNotEmpty) ||
+        (otherStableEventId != null && otherStableEventId.isNotEmpty)) {
+      return false;
+    }
+
+    return other.awayTeam == awayTeam &&
         other.homeTeam == homeTeam &&
         _sameScheduledStart(other.scheduledStartTime, scheduledStartTime);
   }
 
   @override
   int get hashCode {
+    final stableEventId = eventId;
+    if (stableEventId != null && stableEventId.isNotEmpty) {
+      return Object.hash(league, stableEventId);
+    }
+
     return Object.hash(
       league,
       awayTeam,
