@@ -120,4 +120,7 @@ class _RecordingTransport implements DeviceTransport {
   Future<void> sendGameData(GameData gameData) async {
     sentGames.add(gameData);
   }
+
+  @override
+  Future<void> sendGameSlate(List<GameData> games) async {}
 }

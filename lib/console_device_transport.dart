@@ -17,4 +17,16 @@ class ConsoleDeviceTransport implements DeviceTransport {
     // ignore: avoid_print
     print(utf8.decode(packetBytes));
   }
+
+  @override
+  Future<void> sendGameSlate(List<GameData> games) async {
+    final transfer = serializer.buildChunkedSlateTransfer(
+      games,
+      slateId: DateTime.now().microsecondsSinceEpoch.toRadixString(36),
+    );
+    for (final packetBytes in transfer.packets) {
+      // ignore: avoid_print
+      print(utf8.decode(packetBytes));
+    }
+  }
 }

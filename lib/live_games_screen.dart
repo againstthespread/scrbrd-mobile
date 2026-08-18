@@ -28,6 +28,7 @@ class LiveGamesScreen extends StatefulWidget {
 class _LiveGamesScreenState extends State<LiveGamesScreen>
     with WidgetsBindingObserver {
   var _isLoading = false;
+  var _isSendingSlate = false;
   String? _errorMessage;
   var _selectedLeague = SportsLeague.mlb;
   late DateTime _selectedDate;
@@ -99,6 +100,24 @@ class _LiveGamesScreenState extends State<LiveGamesScreen>
           _isLoading = false;
         });
       }
+    }
+  }
+
+  Future<void> _sendLoadedSlate() async {
+    setState(() => _isSendingSlate = true);
+    try {
+      await widget.transport.sendGameSlate(_games);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Sent ${_games.length} games to SCRBRD.')),
+      );
+    } on Object catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Slate send failed: $error')));
+    } finally {
+      if (mounted) setState(() => _isSendingSlate = false);
     }
   }
 
@@ -261,6 +280,18 @@ class _LiveGamesScreenState extends State<LiveGamesScreen>
                 onPressed: _isLoading ? null : _refreshGames,
                 icon: const Icon(Icons.refresh),
                 label: const Text('Refresh'),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: _games.isEmpty || _isSendingSlate
+                    ? null
+                    : _sendLoadedSlate,
+                icon: const Icon(Icons.send),
+                label: Text(
+                  _isSendingSlate
+                      ? 'Sending slate...'
+                      : 'TEMP: Send Loaded Games to SCRBRD',
+                ),
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<SportsLeague>(

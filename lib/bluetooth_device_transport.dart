@@ -185,6 +185,36 @@ class BluetoothDeviceTransport implements DeviceTransport {
 
   @override
   Future<void> sendGameData(GameData gameData) async {
+    await _sendPacket(serializer.serialize(gameData), displayedGame: gameData);
+  }
+
+  @override
+  Future<void> sendGameSlate(List<GameData> games) async {
+    final slateId = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+    final transfer = serializer.buildChunkedSlateTransfer(
+      games,
+      slateId: slateId,
+    );
+    debugPrint(
+      'Slate transfer start: id=${transfer.slateId}, '
+      'games=${games.length}, chunks=${transfer.chunkPackets.length}',
+    );
+    try {
+      await _sendPacket(transfer.startPacket);
+      for (var index = 0; index < transfer.chunkPackets.length; index++) {
+        final chunk = transfer.chunkPackets[index];
+        debugPrint('Slate transfer chunk: index=$index, bytes=${chunk.length}');
+        await _sendPacket(chunk);
+      }
+      await _sendPacket(transfer.endPacket, displayedGame: games.first);
+      debugPrint('Slate transfer complete: id=${transfer.slateId}');
+    } on Object catch (error) {
+      debugPrint('Slate transfer failed: id=${transfer.slateId}, error=$error');
+      throw StateError('Slate transfer failed: $error');
+    }
+  }
+
+  Future<void> _sendPacket(List<int> packet, {GameData? displayedGame}) async {
     final characteristic = _writableCharacteristic;
     if (characteristic == null ||
         _snapshot.state == BleConnectionState.disconnected ||
@@ -203,9 +233,11 @@ class BluetoothDeviceTransport implements DeviceTransport {
     try {
       await _bleClient.writeCharacteristicWithResponse(
         characteristic,
-        value: serializer.serialize(gameData),
+        value: packet,
       );
-      _lastSuccessfullySentGameData = gameData;
+      if (displayedGame != null) {
+        _lastSuccessfullySentGameData = displayedGame;
+      }
       _emit(previousSnapshot.copyWith(state: BleConnectionState.connected));
     } on Object catch (error) {
       _emitError('Bluetooth write failed: $error');
