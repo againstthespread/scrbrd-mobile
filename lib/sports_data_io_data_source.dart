@@ -4,6 +4,9 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import 'golf_data_source.dart';
+import 'golf_leaderboard.dart';
+import 'sports_data_io_golf.dart';
 import 'sports_data_io_game.dart';
 import 'sports_data_source.dart';
 import 'sports_game.dart';
@@ -27,7 +30,7 @@ class SportsDataException implements Exception {
   String toString() => message;
 }
 
-class SportsDataIODataSource implements SportsDataSource {
+class SportsDataIODataSource implements SportsDataSource, GolfDataSource {
   SportsDataIODataSource({http.Client? client})
     : _client = client ?? http.Client();
 
@@ -120,6 +123,121 @@ class SportsDataIODataSource implements SportsDataSource {
     return filteredGames;
   }
 
+  @override
+  Future<GolfLeaderboard?> fetchGolfLeaderboardForDate(
+    DateTime selectedDate,
+  ) async {
+    debugPrint('SportsDataIO golf selected date: ${_datePath(selectedDate)}');
+    final schedule = await _getJsonList(
+      '/golf/v2/json/Tournaments/${selectedDate.year}',
+    );
+    final tournaments = <SportsDataIOGolfTournament>[];
+    for (final value in schedule) {
+      if (value is! Map<String, dynamic>) continue;
+      try {
+        final tournament = SportsDataIOGolfTournament.fromJson(value);
+        tournaments.add(tournament);
+      } on FormatException {
+        continue;
+      }
+    }
+    final dateOnly = DateTime(
+      selectedDate.year,
+      selectedDate.month,
+      selectedDate.day,
+    );
+    final dateCandidates = tournaments.where((tournament) {
+      final start = DateTime(
+        tournament.startDate.year,
+        tournament.startDate.month,
+        tournament.startDate.day,
+      );
+      final end = DateTime(
+        tournament.endDate.year,
+        tournament.endDate.month,
+        tournament.endDate.day,
+      );
+      return !dateOnly.isBefore(start) && !dateOnly.isAfter(end);
+    }).toList();
+    for (final tournament in dateCandidates) {
+      debugPrint(
+        'SportsDataIO golf candidate: ${tournament.name}; '
+        'TournamentID=${tournament.tournamentId}; Covered=${tournament.covered}; '
+        'IsInProgress=${tournament.isInProgress}; IsOver=${tournament.isOver}',
+      );
+    }
+    final selected = selectGolfTournamentForDate(tournaments, selectedDate);
+    debugPrint('SportsDataIO golf candidates found: ${dateCandidates.length}');
+    if (selected == null) {
+      debugPrint('SportsDataIO golf selected tournament: none');
+      return null;
+    }
+    debugPrint(
+      'SportsDataIO golf selected tournament: ${selected.name}; '
+      'TournamentID=${selected.tournamentId}',
+    );
+    return fetchGolfLeaderboardByTournamentId(selected.tournamentId);
+  }
+
+  @override
+  Future<GolfLeaderboard> fetchGolfLeaderboardByTournamentId(
+    String tournamentId,
+  ) async {
+    final decoded = await _getJsonObject(
+      '/golf/v2/json/Leaderboard/$tournamentId',
+    );
+    return parseSportsDataIOGolfLeaderboard(decoded);
+  }
+
+  Future<List<dynamic>> _getJsonList(String path) async {
+    final decoded = await _getJson(path);
+    if (decoded is! List) {
+      throw const SportsDataException(
+        'SportsDataIO returned an unexpected response.',
+      );
+    }
+    return decoded;
+  }
+
+  Future<Map<String, dynamic>> _getJsonObject(String path) async {
+    final decoded = await _getJson(path);
+    if (decoded is! Map<String, dynamic>) {
+      throw const SportsDataException(
+        'SportsDataIO returned an unexpected response.',
+      );
+    }
+    return decoded;
+  }
+
+  Future<Object?> _getJson(String path) async {
+    _logConfiguration();
+    if (_apiKey.trim().isEmpty) {
+      throw const MissingSportsDataIOApiKeyException();
+    }
+    final uri = Uri.https(_apiHost, path);
+    debugPrint('SportsDataIO request URL: $uri');
+    try {
+      final response = await _client
+          .get(uri, headers: {_apiKeyHeader: _apiKey})
+          .timeout(_timeout);
+      debugPrint('SportsDataIO HTTP status: ${response.statusCode}');
+      if (response.statusCode != 200) {
+        throw SportsDataException(
+          'SportsDataIO returned HTTP ${response.statusCode}.',
+        );
+      }
+      return jsonDecode(response.body);
+    } on TimeoutException {
+      throw const SportsDataException('SportsDataIO request timed out.');
+    } on FormatException {
+      throw const SportsDataException('SportsDataIO returned malformed JSON.');
+    } on SportsDataException {
+      rethrow;
+    } on Object catch (error) {
+      throw SportsDataException('Unable to reach SportsDataIO: $error');
+    }
+  }
+
   int _compareByScheduledStartTime(SportsGame a, SportsGame b) {
     final aStart = a.scheduledStartTime;
     final bStart = b.scheduledStartTime;
@@ -168,6 +286,7 @@ class SportsDataIODataSource implements SportsDataSource {
         '/v3/${league.pathSegment}/scores/json/ScoresByDate/$datePath',
       SportsLeague.nba || SportsLeague.mlb =>
         '/v3/${league.pathSegment}/scores/json/GamesByDate/$datePath',
+      SportsLeague.pga => throw UnsupportedError('PGA uses the Golf API.'),
     };
   }
 }

@@ -7,17 +7,21 @@ import 'ble_device_state.dart';
 import 'device_transport.dart';
 import 'game_data.dart';
 import 'game_packet_serializer.dart';
+import 'golf_leaderboard.dart';
+import 'golf_packet_serializer.dart';
 import 'sports_hub_ble_protocol.dart';
 
 class BluetoothDeviceTransport implements DeviceTransport {
   BluetoothDeviceTransport({
     this.protocol = const SportsHubBleProtocol(),
     this.serializer = const GamePacketSerializer(),
+    this.golfSerializer = const GolfPacketSerializer(),
     this.scanTimeout = const Duration(seconds: 8),
   });
 
   final SportsHubBleProtocol protocol;
   final GamePacketSerializer serializer;
+  final GolfPacketSerializer golfSerializer;
   final Duration scanTimeout;
   FlutterReactiveBle? _ble;
 
@@ -37,6 +41,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
 
   // TEMPORARY BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing.
   GameData? _lastSuccessfullySentGameData;
+  GolfLeaderboard? _lastSuccessfullySentGolfLeaderboard;
 
   Stream<BleDeviceSnapshot> get snapshots => _snapshotController.stream;
 
@@ -47,6 +52,8 @@ class BluetoothDeviceTransport implements DeviceTransport {
 
   // TEMPORARY BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing.
   GameData? get lastSuccessfullySentGameData => _lastSuccessfullySentGameData;
+  GolfLeaderboard? get lastSuccessfullySentGolfLeaderboard =>
+      _lastSuccessfullySentGolfLeaderboard;
 
   Future<void> scanForDevice() async {
     await disconnect();
@@ -186,6 +193,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
   @override
   Future<void> sendGameData(GameData gameData) async {
     await _sendPacket(serializer.serialize(gameData), displayedGame: gameData);
+    _lastSuccessfullySentGolfLeaderboard = null;
   }
 
   @override
@@ -207,10 +215,43 @@ class BluetoothDeviceTransport implements DeviceTransport {
         await _sendPacket(chunk);
       }
       await _sendPacket(transfer.endPacket, displayedGame: games.first);
+      _lastSuccessfullySentGolfLeaderboard = null;
       debugPrint('Slate transfer complete: id=${transfer.slateId}');
     } on Object catch (error) {
       debugPrint('Slate transfer failed: id=${transfer.slateId}, error=$error');
       throw StateError('Slate transfer failed: $error');
+    }
+  }
+
+  @override
+  Future<void> sendGolfLeaderboard(GolfLeaderboard leaderboard) async {
+    final transferId = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+    final transfer = golfSerializer.buildTransfer(
+      leaderboard,
+      transferId: transferId,
+    );
+    debugPrint(
+      'Golf transfer start: tournament=${leaderboard.tournamentId}, '
+      'golfers=${leaderboard.golfers.length}, chunks=${transfer.chunkPackets.length}',
+    );
+    try {
+      await _sendPacket(transfer.startPacket);
+      for (var index = 0; index < transfer.chunkPackets.length; index++) {
+        final packet = transfer.chunkPackets[index];
+        debugPrint('Golf chunk: index=$index, bytes=${packet.length}');
+        await _sendPacket(packet);
+      }
+      await _sendPacket(transfer.endPacket);
+      _lastSuccessfullySentGolfLeaderboard = leaderboard;
+      _lastSuccessfullySentGameData = null;
+      debugPrint(
+        'Golf transfer complete: tournament=${leaderboard.tournamentId}',
+      );
+    } on Object catch (error) {
+      debugPrint(
+        'Golf transfer failed: tournament=${leaderboard.tournamentId}; $error',
+      );
+      throw StateError('Golf transfer failed: $error');
     }
   }
 

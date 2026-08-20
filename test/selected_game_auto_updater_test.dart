@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sports_hub_mobile/device_transport.dart';
 import 'package:sports_hub_mobile/game_data.dart';
+import 'package:sports_hub_mobile/golf_leaderboard.dart';
 import 'package:sports_hub_mobile/selected_game_auto_updater.dart';
 import 'package:sports_hub_mobile/sports_data_source.dart';
 import 'package:sports_hub_mobile/sports_game.dart';
@@ -164,4 +165,7 @@ class _RecordingTransport implements DeviceTransport {
 
   @override
   Future<void> sendGameSlate(List<GameData> games) async {}
+
+  @override
+  Future<void> sendGolfLeaderboard(GolfLeaderboard leaderboard) async {}
 }

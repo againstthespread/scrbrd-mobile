@@ -68,6 +68,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           _transport.currentSnapshot.state == BleConnectionState.connected,
       isLiveActivityActive: _liveActivityDiagnostics.isActive,
       trackedGame: () => _transport.lastSuccessfullySentGameData,
+      trackedGolf: () => _transport.lastSuccessfullySentGolfLeaderboard,
       onDiagnostic: _recordBackgroundUpdaterDiagnostic,
     );
     _deviceSnapshot = _transport.currentSnapshot;

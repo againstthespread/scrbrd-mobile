@@ -87,6 +87,7 @@ class SportsDataIOGame {
       SportsLeague.nfl => ('AwayScore', 'HomeScore'),
       SportsLeague.nba => ('AwayTeamScore', 'HomeTeamScore'),
       SportsLeague.mlb => ('AwayTeamRuns', 'HomeTeamRuns'),
+      SportsLeague.pga => throw UnsupportedError('PGA is not a team sport.'),
     };
 
     return _MappedScores(
@@ -315,6 +316,7 @@ class SportsDataIOGame {
       SportsLeague.nfl => ('AwayScore', 'HomeScore'),
       SportsLeague.nba => ('AwayTeamScore', 'HomeTeamScore'),
       SportsLeague.mlb => ('AwayTeamRuns', 'HomeTeamRuns'),
+      SportsLeague.pga => throw UnsupportedError('PGA is not a team sport.'),
     };
 
     debugPrint('SportsDataIO score mapping league: ${league.label}');

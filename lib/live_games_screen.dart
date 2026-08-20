@@ -4,6 +4,8 @@ import 'bluetooth_device_transport.dart';
 import 'device_transport.dart';
 import 'game_data.dart';
 import 'game_editor.dart';
+import 'golf_leaderboard.dart';
+import 'loaded_league_slate_sender.dart';
 import 'selected_game_auto_updater.dart';
 import 'sports_league.dart';
 import 'sports_repository.dart';
@@ -29,10 +31,13 @@ class _LiveGamesScreenState extends State<LiveGamesScreen>
     with WidgetsBindingObserver {
   var _isLoading = false;
   var _isSendingSlate = false;
+  var _isSendingAllLeagues = false;
   String? _errorMessage;
   var _selectedLeague = SportsLeague.mlb;
   late DateTime _selectedDate;
   List<GameData> _games = const [];
+  final Map<SportsLeague, List<GameData>> _loadedGamesByLeague = {};
+  GolfLeaderboard? _loadedGolfLeaderboard;
   SelectedGameAutoUpdater? _autoUpdater;
   String? _autoUpdateMessage;
   final List<String> _autoUpdateDiagnostics = [];
@@ -74,16 +79,42 @@ class _LiveGamesScreenState extends State<LiveGamesScreen>
     });
 
     try {
+      if (_selectedLeague == SportsLeague.pga) {
+        final leaderboard = await widget.repository.fetchGolfLeaderboardForDate(
+          _selectedDate,
+        );
+        if (!mounted) return;
+        setState(() {
+          _loadedGolfLeaderboard = leaderboard;
+          _games = const [];
+          if (leaderboard == null) {
+            _errorMessage = null;
+            _selectedLeague = SportsLeague.mlb;
+            _games = _loadedGamesByLeague[SportsLeague.mlb] ?? const [];
+          }
+        });
+        return;
+      }
       final games = await widget.repository.fetchGamesForDate(
         _selectedLeague,
         _selectedDate,
       );
+      GolfLeaderboard? discoveredGolf;
+      try {
+        discoveredGolf = await widget.repository.fetchGolfLeaderboardForDate(
+          _selectedDate,
+        );
+      } on Object catch (error) {
+        debugPrint('PGA discovery unavailable: $error');
+      }
       if (!mounted) {
         return;
       }
 
       setState(() {
         _games = games;
+        _loadedGamesByLeague[_selectedLeague] = games;
+        _loadedGolfLeaderboard = discoveredGolf;
       });
     } on Object catch (error) {
       if (!mounted) {
@@ -92,6 +123,10 @@ class _LiveGamesScreenState extends State<LiveGamesScreen>
 
       setState(() {
         _games = const [];
+        _loadedGamesByLeague.remove(_selectedLeague);
+        if (_selectedLeague == SportsLeague.pga) {
+          _loadedGolfLeaderboard = null;
+        }
         _errorMessage = error.toString();
       });
     } finally {
@@ -106,10 +141,20 @@ class _LiveGamesScreenState extends State<LiveGamesScreen>
   Future<void> _sendLoadedSlate() async {
     setState(() => _isSendingSlate = true);
     try {
-      await widget.transport.sendGameSlate(_games);
+      if (_selectedLeague == SportsLeague.pga) {
+        await widget.transport.sendGolfLeaderboard(_loadedGolfLeaderboard!);
+      } else {
+        await widget.transport.sendGameSlate(_games);
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Sent ${_games.length} games to SCRBRD.')),
+        SnackBar(
+          content: Text(
+            _selectedLeague == SportsLeague.pga
+                ? 'Sent ${_loadedGolfLeaderboard!.golfers.length} golfers to SCRBRD.'
+                : 'Sent ${_games.length} games to SCRBRD.',
+          ),
+        ),
       );
     } on Object catch (error) {
       if (!mounted) return;
@@ -121,6 +166,26 @@ class _LiveGamesScreenState extends State<LiveGamesScreen>
     }
   }
 
+  Future<void> _sendAllLoadedLeagues() async {
+    setState(() => _isSendingAllLeagues = true);
+    try {
+      final count = await LoadedLeagueSlateSender(
+        transport: widget.transport,
+      ).send(_loadedGamesByLeague, loadedGolf: _loadedGolfLeaderboard);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Sent $count loaded leagues to SCRBRD.')),
+      );
+    } on Object catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Multi-league send failed: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _isSendingAllLeagues = false);
+    }
+  }
+
   void _selectLeague(SportsLeague? league) {
     if (league == null || league == _selectedLeague) {
       return;
@@ -128,7 +193,7 @@ class _LiveGamesScreenState extends State<LiveGamesScreen>
 
     setState(() {
       _selectedLeague = league;
-      _games = const [];
+      _games = _loadedGamesByLeague[league] ?? const [];
       _errorMessage = null;
       _autoUpdateMessage = null;
       _autoUpdateDiagnostics.clear();
@@ -156,6 +221,11 @@ class _LiveGamesScreenState extends State<LiveGamesScreen>
         pickedDate.day,
       );
       _games = const [];
+      _loadedGamesByLeague.clear();
+      _loadedGolfLeaderboard = null;
+      if (_selectedLeague == SportsLeague.pga) {
+        _selectedLeague = SportsLeague.mlb;
+      }
       _errorMessage = null;
       _autoUpdateMessage = null;
       _autoUpdateDiagnostics.clear();
@@ -282,16 +352,49 @@ class _LiveGamesScreenState extends State<LiveGamesScreen>
                 label: const Text('Refresh'),
               ),
               const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: _games.isEmpty || _isSendingSlate
-                    ? null
-                    : _sendLoadedSlate,
-                icon: const Icon(Icons.send),
-                label: Text(
-                  _isSendingSlate
-                      ? 'Sending slate...'
-                      : 'TEMP: Send Loaded Games to SCRBRD',
-                ),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed:
+                          (_selectedLeague == SportsLeague.pga
+                                  ? _loadedGolfLeaderboard == null
+                                  : _games.isEmpty) ||
+                              _isSendingSlate ||
+                              _isSendingAllLeagues
+                          ? null
+                          : _sendLoadedSlate,
+                      icon: const Icon(Icons.send),
+                      label: Text(
+                        _isSendingSlate
+                            ? 'Sending slate...'
+                            : 'TEMP: Send Loaded Games to SCRBRD',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed:
+                          (_loadedGolfLeaderboard == null &&
+                                  _loadedGamesByLeague.values.every(
+                                    (games) => games.isEmpty,
+                                  )) ||
+                              _isSendingSlate ||
+                              _isSendingAllLeagues
+                          ? null
+                          : _sendAllLoadedLeagues,
+                      icon: const Icon(Icons.send_and_archive),
+                      label: Text(
+                        _isSendingAllLeagues
+                            ? 'Sending loaded leagues...'
+                            : 'TEMP: Send All Loaded Leagues to SCRBRD',
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ),
+                ],
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<SportsLeague>(
@@ -300,12 +403,19 @@ class _LiveGamesScreenState extends State<LiveGamesScreen>
                   border: OutlineInputBorder(),
                   labelText: 'League',
                 ),
-                items: SportsLeague.values.map((league) {
-                  return DropdownMenuItem(
-                    value: league,
-                    child: Text(league.label),
-                  );
-                }).toList(),
+                items: SportsLeague.values
+                    .where(
+                      (league) =>
+                          league != SportsLeague.pga ||
+                          _loadedGolfLeaderboard != null,
+                    )
+                    .map((league) {
+                      return DropdownMenuItem(
+                        value: league,
+                        child: Text(league.label),
+                      );
+                    })
+                    .toList(),
                 onChanged: _isLoading ? null : _selectLeague,
               ),
               const SizedBox(height: 12),
@@ -334,13 +444,18 @@ class _LiveGamesScreenState extends State<LiveGamesScreen>
                 const SizedBox(height: 12),
               ],
               Expanded(
-                child: _LiveGamesContent(
-                  games: _games,
-                  selectedLeague: _selectedLeague,
-                  errorMessage: _errorMessage,
-                  onGameSelected: _openGamePreview,
-                  emptyTextStyle: theme.textTheme.bodyLarge,
-                ),
+                child: _selectedLeague == SportsLeague.pga
+                    ? _GolfLeaderboardContent(
+                        leaderboard: _loadedGolfLeaderboard,
+                        errorMessage: _errorMessage,
+                      )
+                    : _LiveGamesContent(
+                        games: _games,
+                        selectedLeague: _selectedLeague,
+                        errorMessage: _errorMessage,
+                        onGameSelected: _openGamePreview,
+                        emptyTextStyle: theme.textTheme.bodyLarge,
+                      ),
               ),
             ],
           ),
@@ -351,6 +466,55 @@ class _LiveGamesScreenState extends State<LiveGamesScreen>
 
   String _formatDate(DateTime date) {
     return '${date.month}/${date.day}/${date.year}';
+  }
+}
+
+class _GolfLeaderboardContent extends StatelessWidget {
+  const _GolfLeaderboardContent({
+    required this.leaderboard,
+    required this.errorMessage,
+  });
+
+  final GolfLeaderboard? leaderboard;
+  final String? errorMessage;
+
+  @override
+  Widget build(BuildContext context) {
+    if (errorMessage != null) return Center(child: Text(errorMessage!));
+    final value = leaderboard;
+    if (value == null) {
+      return const Center(
+        child: Text(
+          'No covered PGA tournament is available for this date.',
+          textAlign: TextAlign.center,
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          value.tournamentName,
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        const SizedBox(height: 8),
+        Expanded(
+          child: ListView.builder(
+            itemCount: value.golfers.length,
+            itemBuilder: (context, index) {
+              final golfer = value.golfers[index];
+              return ListTile(
+                dense: true,
+                leading: Text(golfer.rank),
+                title: Text(golfer.name),
+                subtitle: golfer.detail == null ? null : Text(golfer.detail!),
+                trailing: Text(golfer.score),
+              );
+            },
+          ),
+        ),
+      ],
+    );
   }
 }
 

@@ -2,6 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sports_hub_mobile/background_score_updater.dart';
 import 'package:sports_hub_mobile/device_transport.dart';
 import 'package:sports_hub_mobile/game_data.dart';
+import 'package:sports_hub_mobile/golf_data_source.dart';
+import 'package:sports_hub_mobile/golf_leaderboard.dart';
 import 'package:sports_hub_mobile/sports_data_source.dart';
 import 'package:sports_hub_mobile/sports_game.dart';
 import 'package:sports_hub_mobile/sports_league.dart';
@@ -63,8 +65,50 @@ void main() {
 
       expect(harness.dataSource.fetchCount, 0);
     });
+
+    test(
+      'PGA refresh reuses tournament ID and writes only when changed',
+      () async {
+        final previous = _golf('-8');
+        final fresh = _golf('-9');
+        final golfSource = _FakeGolfDataSource(fresh);
+        final transport = _RecordingTransport();
+        final updater = BackgroundScoreUpdater(
+          repository: SportsRepository(
+            _FakeSportsDataSource(_initialGame),
+            golfDataSource: golfSource,
+          ),
+          transport: transport,
+          isAppBackgrounded: () => true,
+          isBleConnected: () => true,
+          isLiveActivityActive: () async => true,
+          trackedGame: () => null,
+          trackedGolf: () => previous,
+        );
+
+        await updater.refreshTrackedGameOnce();
+
+        expect(golfSource.requestedTournamentId, 'tournament-1');
+        expect(transport.sentGolf, [fresh]);
+      },
+    );
   });
 }
+
+GolfLeaderboard _golf(String score) => GolfLeaderboard(
+  tournamentId: 'tournament-1',
+  tournamentName: 'Championship',
+  golfers: [
+    GolfLeaderboardRow(
+      playerId: '400',
+      name: 'Golfer',
+      rank: '1',
+      score: score,
+    ),
+  ],
+  isInProgress: true,
+  isOver: false,
+);
 
 final _initialGame = GameData(
   eventId: 'game-42',
@@ -154,6 +198,7 @@ class _FakeSportsDataSource implements SportsDataSource {
 
 class _RecordingTransport implements DeviceTransport {
   final sentGames = <GameData>[];
+  final sentGolf = <GolfLeaderboard>[];
 
   @override
   Future<void> sendGameData(GameData gameData) async {
@@ -162,4 +207,31 @@ class _RecordingTransport implements DeviceTransport {
 
   @override
   Future<void> sendGameSlate(List<GameData> games) async {}
+
+  @override
+  Future<void> sendGolfLeaderboard(GolfLeaderboard leaderboard) async {
+    sentGolf.add(leaderboard);
+  }
+}
+
+class _FakeGolfDataSource implements GolfDataSource {
+  _FakeGolfDataSource(this.response);
+
+  final GolfLeaderboard response;
+  String? requestedTournamentId;
+
+  @override
+  Future<GolfLeaderboard> fetchGolfLeaderboardByTournamentId(
+    String tournamentId,
+  ) async {
+    requestedTournamentId = tournamentId;
+    return response;
+  }
+
+  @override
+  Future<GolfLeaderboard?> fetchGolfLeaderboardForDate(
+    DateTime selectedDate,
+  ) async {
+    return response;
+  }
 }

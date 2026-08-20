@@ -1,5 +1,7 @@
 import 'device_transport.dart';
 import 'game_data.dart';
+import 'golf_leaderboard.dart';
+import 'golf_packet_serializer.dart';
 import 'selected_game_auto_updater.dart';
 import 'sports_league.dart';
 import 'sports_repository.dart';
@@ -13,6 +15,7 @@ class BackgroundScoreUpdater {
     required this.isBleConnected,
     required this.isLiveActivityActive,
     required this.trackedGame,
+    this.trackedGolf,
     this.onDiagnostic,
   });
 
@@ -22,6 +25,7 @@ class BackgroundScoreUpdater {
   final bool Function() isBleConnected;
   final Future<bool> Function() isLiveActivityActive;
   final GameData? Function() trackedGame;
+  final GolfLeaderboard? Function()? trackedGolf;
   final void Function(String message)? onDiagnostic;
 
   SelectedGameAutoUpdater? _selectedGameUpdater;
@@ -35,6 +39,7 @@ class BackgroundScoreUpdater {
 
     _isRefreshing = true;
     final game = trackedGame();
+    final golf = trackedGolf?.call();
     final league = game == null ? null : _leagueFromGame(game);
     final selectedDate = game?.scheduledStartTime;
     try {
@@ -45,6 +50,10 @@ class BackgroundScoreUpdater {
       final bleConnected = isBleConnected();
       _diagnose('BLE connected=$bleConnected');
       if (!bleConnected) {
+        return;
+      }
+      if (golf != null) {
+        await _refreshTrackedGolf(golf);
         return;
       }
       if (game == null || league == null || selectedDate == null) {
@@ -89,6 +98,41 @@ class BackgroundScoreUpdater {
     } finally {
       _isRefreshing = false;
     }
+  }
+
+  Future<void> _refreshTrackedGolf(GolfLeaderboard previous) async {
+    final liveActivityActive = await isLiveActivityActive();
+    _diagnose('Live Activity active=$liveActivityActive');
+    if (!liveActivityActive || !isAppBackgrounded() || !isBleConnected()) {
+      return;
+    }
+    _diagnose('PGA refresh started: TournamentID=${previous.tournamentId}');
+    try {
+      final fresh = await repository.fetchGolfLeaderboardByTournamentId(
+        previous.tournamentId,
+      );
+      const serializer = GolfPacketSerializer();
+      if (_listEquals(
+        serializer.canonicalContent(previous),
+        serializer.canonicalContent(fresh),
+      )) {
+        _diagnose('PGA no relevant change');
+        return;
+      }
+      _diagnose('PGA change detected; BLE write attempted');
+      await transport.sendGolfLeaderboard(fresh);
+      _diagnose('PGA BLE write succeeded');
+    } on Object catch (error) {
+      _diagnose('PGA BLE write/refresh failed: $error');
+    }
+  }
+
+  bool _listEquals(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    for (var index = 0; index < a.length; index++) {
+      if (a[index] != b[index]) return false;
+    }
+    return true;
   }
 
   void cancelCurrentRefresh(String reason) {
