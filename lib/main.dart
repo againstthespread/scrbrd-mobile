@@ -6,8 +6,7 @@ import 'background_score_refresh_dispatcher.dart';
 import 'connection_screen.dart';
 import 'firebase_options.dart';
 import 'push_notification_service.dart';
-import 'sports_data_io_data_source.dart';
-import 'sports_repository.dart';
+import 'sports_data_provider.dart';
 
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -44,7 +43,7 @@ class SportsHubApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final sportsRepository = SportsRepository(SportsDataIODataSource());
+    final sportsRepository = createSportsRepository();
 
     return MaterialApp(
       title: 'Sports Hub',
