@@ -30,8 +30,13 @@ class BackgroundScoreUpdater {
 
   SelectedGameAutoUpdater? _selectedGameUpdater;
   bool _isRefreshing = false;
+  bool _isGolfRefreshing = false;
 
   Future<void> refreshTrackedGameOnce() async {
+    if (trackedGolf?.call() != null) {
+      await refreshTrackedGolfOnce();
+      return;
+    }
     if (_isRefreshing) {
       _diagnose('refresh ignored: another score_refresh is already running');
       return;
@@ -39,7 +44,6 @@ class BackgroundScoreUpdater {
 
     _isRefreshing = true;
     final game = trackedGame();
-    final golf = trackedGolf?.call();
     final league = game == null ? null : _leagueFromGame(game);
     final selectedDate = game?.scheduledStartTime;
     try {
@@ -50,10 +54,6 @@ class BackgroundScoreUpdater {
       final bleConnected = isBleConnected();
       _diagnose('BLE connected=$bleConnected');
       if (!bleConnected) {
-        return;
-      }
-      if (golf != null) {
-        await _refreshTrackedGolf(golf);
         return;
       }
       if (game == null || league == null || selectedDate == null) {
@@ -100,14 +100,32 @@ class BackgroundScoreUpdater {
     }
   }
 
-  Future<void> _refreshTrackedGolf(GolfLeaderboard previous) async {
-    final liveActivityActive = await isLiveActivityActive();
-    _diagnose('Live Activity active=$liveActivityActive');
-    if (!liveActivityActive || !isAppBackgrounded() || !isBleConnected()) {
+  Future<void> refreshTrackedGolfOnce() async {
+    if (_isGolfRefreshing) {
+      _diagnose('refresh skipped because another PGA refresh is running');
       return;
     }
-    _diagnose('PGA refresh started: TournamentID=${previous.tournamentId}');
+    final previous = trackedGolf?.call();
+    if (previous == null) {
+      _diagnose('PGA refresh skipped: no tracked tournament/event');
+      return;
+    }
+    if (!isBleConnected()) {
+      _diagnose('PGA refresh skipped: BLE disconnected');
+      return;
+    }
+
+    _isGolfRefreshing = true;
     try {
+      if (isAppBackgrounded()) {
+        final liveActivityActive = await isLiveActivityActive();
+        _diagnose('Live Activity active=$liveActivityActive');
+        if (!liveActivityActive || !isAppBackgrounded() || !isBleConnected()) {
+          return;
+        }
+      }
+      _diagnose('PGA refresh started');
+      _diagnose('PGA tournament/event ID=${previous.tournamentId}');
       final fresh = await repository.fetchGolfLeaderboardByTournamentId(
         previous.tournamentId,
       );
@@ -120,10 +138,23 @@ class BackgroundScoreUpdater {
         return;
       }
       _diagnose('PGA change detected; BLE write attempted');
+      if (!isBleConnected()) {
+        _diagnose('PGA BLE write failed: BLE disconnected before write');
+        return;
+      }
+      if (isAppBackgrounded()) {
+        final liveActivityActive = await isLiveActivityActive();
+        if (!liveActivityActive) {
+          _diagnose('PGA BLE write skipped: Live Activity is no longer active');
+          return;
+        }
+      }
       await transport.sendGolfLeaderboard(fresh);
       _diagnose('PGA BLE write succeeded');
     } on Object catch (error) {
-      _diagnose('PGA BLE write/refresh failed: $error');
+      _diagnose('PGA BLE write failed: $error');
+    } finally {
+      _isGolfRefreshing = false;
     }
   }
 

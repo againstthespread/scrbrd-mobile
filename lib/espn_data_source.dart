@@ -20,12 +20,17 @@ class EspnDataException implements Exception {
 }
 
 class EspnDataSource implements SportsDataSource, GolfDataSource {
-  EspnDataSource({http.Client? client}) : _client = client ?? http.Client();
+  EspnDataSource({http.Client? client, int Function()? epochMilliseconds})
+    : _client = client ?? http.Client(),
+      _epochMilliseconds =
+          epochMilliseconds ?? (() => DateTime.now().millisecondsSinceEpoch);
 
   static const _host = 'site.api.espn.com';
   static const _timeout = Duration(seconds: 10);
   final http.Client _client;
+  final int Function() _epochMilliseconds;
   final Map<String, DateTime> _golfTournamentDates = {};
+  int _lastCacheBuster = -1;
 
   @override
   Future<List<SportsGame>> fetchGamesForDate(
@@ -37,16 +42,27 @@ class EspnDataSource implements SportsDataSource, GolfDataSource {
     }
     final uri = Uri.https(_host, _teamPath(league), {
       'dates': _compactDate(selectedDate),
+      '_scrbrd_ts': _nextCacheBuster().toString(),
     });
     debugPrint('ESPN endpoint requested: $uri');
     debugPrint('ESPN selected date: ${_compactDate(selectedDate)}');
-    final json = await _getJson(uri);
+    final json = await _getJson(uri, logCacheDiagnostics: true);
+    if (league == SportsLeague.mlb) {
+      _logRawMlbEvents(json);
+    }
     final games = parseEspnTeamScoreboard(league, json);
     debugPrint('ESPN returned event count: ${games.length}');
     for (final game in games) {
       debugPrint(
-        'ESPN event ID=${game.eventId}; status=${game.status}; '
-        'clock=${game.clock}',
+        'ESPN mapped game: event ID=${game.eventId}; '
+        'away=${game.awayTeam} score=${game.awayScore}; '
+        'home=${game.homeTeam} score=${game.homeScore}; '
+        'status=${game.status}; clock=${game.clock}; '
+        'statusDetail=${game.statusDetail}; '
+        'onFirst=${game.baseballState?.runnerOnFirst}; '
+        'onSecond=${game.baseballState?.runnerOnSecond}; '
+        'onThird=${game.baseballState?.runnerOnThird}; '
+        'outs=${game.baseballState?.outs}',
       );
     }
     return games;
@@ -100,9 +116,22 @@ class EspnDataSource implements SportsDataSource, GolfDataSource {
     return leaderboard;
   }
 
-  Future<Map<String, dynamic>> _getJson(Uri uri) async {
+  Future<Map<String, dynamic>> _getJson(
+    Uri uri, {
+    bool logCacheDiagnostics = false,
+  }) async {
     try {
-      final response = await _client.get(uri).timeout(_timeout);
+      final response = await _client
+          .get(
+            uri,
+            headers: logCacheDiagnostics
+                ? const {'Cache-Control': 'no-cache', 'Pragma': 'no-cache'}
+                : null,
+          )
+          .timeout(_timeout);
+      if (logCacheDiagnostics) {
+        _logHttpCacheDiagnostics(uri, response);
+      }
       if (response.statusCode != 200) {
         throw EspnDataException('ESPN returned HTTP ${response.statusCode}.');
       }
@@ -119,6 +148,80 @@ class EspnDataSource implements SportsDataSource, GolfDataSource {
       rethrow;
     } on Object catch (error) {
       throw EspnDataException('Unable to reach ESPN: $error');
+    }
+  }
+
+  int _nextCacheBuster() {
+    final current = _epochMilliseconds();
+    final next = current > _lastCacheBuster ? current : _lastCacheBuster + 1;
+    _lastCacheBuster = next;
+    return next;
+  }
+
+  void _logHttpCacheDiagnostics(Uri uri, http.Response response) {
+    final headers = response.headers;
+    debugPrint('ESPN team response URL: $uri');
+    debugPrint('ESPN team response Date: ${headers['date'] ?? '<absent>'}');
+    debugPrint('ESPN team response Age: ${headers['age'] ?? '<absent>'}');
+    debugPrint(
+      'ESPN team response Cache-Control: '
+      '${headers['cache-control'] ?? '<absent>'}',
+    );
+    debugPrint('ESPN team response ETag: ${headers['etag'] ?? '<absent>'}');
+    for (final name in const [
+      'x-cache',
+      'x-cache-hits',
+      'cf-cache-status',
+      'x-served-by',
+      'via',
+      'server',
+    ]) {
+      final value = headers[name];
+      if (value != null) {
+        debugPrint('ESPN team response $name: $value');
+      }
+    }
+    debugPrint(
+      'ESPN team response body length: ${response.bodyBytes.length} bytes',
+    );
+  }
+
+  void _logRawMlbEvents(Map<String, dynamic> json) {
+    final events = json['events'];
+    if (events is! List) return;
+    for (final event in events.whereType<Map<String, dynamic>>()) {
+      final competitions = event['competitions'];
+      if (competitions is! List || competitions.isEmpty) continue;
+      final competition = competitions.first;
+      if (competition is! Map<String, dynamic>) continue;
+      final competitors = competition['competitors'];
+      Map<String, dynamic>? away;
+      Map<String, dynamic>? home;
+      if (competitors is List) {
+        for (final competitor
+            in competitors.whereType<Map<String, dynamic>>()) {
+          if (competitor['homeAway'] == 'away') away = competitor;
+          if (competitor['homeAway'] == 'home') home = competitor;
+        }
+      }
+      final status =
+          _jsonMap(competition['status']) ?? _jsonMap(event['status']);
+      final type = _jsonMap(status?['type']);
+      final situation = _jsonMap(competition['situation']);
+      debugPrint(
+        'ESPN raw MLB event: event ID=${event['id']}; '
+        'awayScore=${away?['score']}; homeScore=${home?['score']}; '
+        'status.type.name=${type?['name']}; '
+        'status.type.state=${type?['state']}; '
+        'status.period=${status?['period']}; '
+        'status.displayClock=${status?['displayClock']}; '
+        'status.type.shortDetail=${type?['shortDetail']}; '
+        'status.type.detail=${type?['detail']}; '
+        'situation.onFirst=${situation?['onFirst']}; '
+        'situation.onSecond=${situation?['onSecond']}; '
+        'situation.onThird=${situation?['onThird']}; '
+        'situation.outs=${situation?['outs']}',
+      );
     }
   }
 
@@ -147,3 +250,6 @@ class EspnDataSource implements SportsDataSource, GolfDataSource {
       '${date.year}${date.month.toString().padLeft(2, '0')}'
       '${date.day.toString().padLeft(2, '0')}';
 }
+
+Map<String, dynamic>? _jsonMap(Object? value) =>
+    value is Map<String, dynamic> ? value : null;

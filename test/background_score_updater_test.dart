@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sports_hub_mobile/background_score_updater.dart';
 import 'package:sports_hub_mobile/device_transport.dart';
@@ -92,10 +94,127 @@ void main() {
         expect(transport.sentGolf, [fresh]);
       },
     );
+
+    test('foreground PGA refresh does not require Live Activity', () async {
+      final previous = _golf('-8');
+      final fresh = _golf('-9');
+      final golfSource = _FakeGolfDataSource(fresh);
+      final transport = _RecordingTransport();
+      final updater = _golfUpdater(
+        previous: () => previous,
+        golfSource: golfSource,
+        transport: transport,
+        isBackgrounded: false,
+        isLiveActivityActive: false,
+      );
+
+      await updater.refreshTrackedGolfOnce();
+
+      expect(golfSource.fetchCount, 1);
+      expect(transport.sentGolf, [fresh]);
+    });
+
+    test('background PGA refresh still requires Live Activity', () async {
+      final previous = _golf('-8');
+      final fresh = _golf('-9');
+      final golfSource = _FakeGolfDataSource(fresh);
+      final transport = _RecordingTransport();
+      final updater = _golfUpdater(
+        previous: () => previous,
+        golfSource: golfSource,
+        transport: transport,
+        isBackgrounded: true,
+        isLiveActivityActive: true,
+      );
+
+      await updater.refreshTrackedGolfOnce();
+
+      expect(golfSource.fetchCount, 1);
+      expect(transport.sentGolf, [fresh]);
+    });
+
+    test('unchanged PGA leaderboard causes no BLE write', () async {
+      final previous = _golf('-8');
+      final source = _FakeGolfDataSource(previous);
+      final transport = _RecordingTransport();
+      final updater = _golfUpdater(
+        previous: () => previous,
+        golfSource: source,
+        transport: transport,
+        isBackgrounded: false,
+      );
+
+      await updater.refreshTrackedGolfOnce();
+
+      expect(transport.sentGolf, isEmpty);
+    });
+
+    test('changed PGA THRU detail causes one BLE write', () async {
+      final previous = _golf('-8', detail: 'THRU 7');
+      final fresh = _golf('-8', detail: 'THRU 8');
+      final source = _FakeGolfDataSource(fresh);
+      final transport = _RecordingTransport();
+      final updater = _golfUpdater(
+        previous: () => previous,
+        golfSource: source,
+        transport: transport,
+        isBackgrounded: false,
+      );
+
+      await updater.refreshTrackedGolfOnce();
+
+      expect(transport.sentGolf, [fresh]);
+    });
+
+    test('overlapping PGA wakes do not launch duplicate refreshes', () async {
+      final previous = _golf('-8');
+      final pending = Completer<GolfLeaderboard>();
+      final source = _FakeGolfDataSource(previous)..pending = pending;
+      final transport = _RecordingTransport();
+      final diagnostics = <String>[];
+      final updater = _golfUpdater(
+        previous: () => previous,
+        golfSource: source,
+        transport: transport,
+        isBackgrounded: false,
+        onDiagnostic: diagnostics.add,
+      );
+
+      final first = updater.refreshTrackedGolfOnce();
+      await Future<void>.delayed(Duration.zero);
+      await updater.refreshTrackedGolfOnce();
+      pending.complete(previous);
+      await first;
+
+      expect(source.fetchCount, 1);
+      expect(
+        diagnostics,
+        contains('refresh skipped because another PGA refresh is running'),
+      );
+    });
+
+    test('successful PGA send becomes the next comparison baseline', () async {
+      var tracked = _golf('-8');
+      final fresh = _golf('-9');
+      final source = _FakeGolfDataSource(fresh);
+      final transport = _RecordingTransport()
+        ..onGolfSent = (value) => tracked = value;
+      final updater = _golfUpdater(
+        previous: () => tracked,
+        golfSource: source,
+        transport: transport,
+        isBackgrounded: false,
+      );
+
+      await updater.refreshTrackedGolfOnce();
+      await updater.refreshTrackedGolfOnce();
+
+      expect(transport.sentGolf, [fresh]);
+    });
   });
 }
 
-GolfLeaderboard _golf(String score) => GolfLeaderboard(
+GolfLeaderboard _golf(String score, {String? detail}) => GolfLeaderboard(
   tournamentId: 'tournament-1',
   tournamentName: 'Championship',
   golfers: [
@@ -104,11 +223,35 @@ GolfLeaderboard _golf(String score) => GolfLeaderboard(
       name: 'Golfer',
       rank: '1',
       score: score,
+      detail: detail,
     ),
   ],
   isInProgress: true,
   isOver: false,
 );
+
+BackgroundScoreUpdater _golfUpdater({
+  required GolfLeaderboard? Function() previous,
+  required _FakeGolfDataSource golfSource,
+  required _RecordingTransport transport,
+  required bool isBackgrounded,
+  bool isLiveActivityActive = true,
+  void Function(String)? onDiagnostic,
+}) {
+  return BackgroundScoreUpdater(
+    repository: SportsRepository(
+      _FakeSportsDataSource(_initialGame),
+      golfDataSource: golfSource,
+    ),
+    transport: transport,
+    isAppBackgrounded: () => isBackgrounded,
+    isBleConnected: () => true,
+    isLiveActivityActive: () async => isLiveActivityActive,
+    trackedGame: () => null,
+    trackedGolf: previous,
+    onDiagnostic: onDiagnostic,
+  );
+}
 
 final _initialGame = GameData(
   eventId: 'game-42',
@@ -199,6 +342,7 @@ class _FakeSportsDataSource implements SportsDataSource {
 class _RecordingTransport implements DeviceTransport {
   final sentGames = <GameData>[];
   final sentGolf = <GolfLeaderboard>[];
+  void Function(GolfLeaderboard)? onGolfSent;
 
   @override
   Future<void> sendGameData(GameData gameData) async {
@@ -211,6 +355,7 @@ class _RecordingTransport implements DeviceTransport {
   @override
   Future<void> sendGolfLeaderboard(GolfLeaderboard leaderboard) async {
     sentGolf.add(leaderboard);
+    onGolfSent?.call(leaderboard);
   }
 }
 
@@ -219,12 +364,17 @@ class _FakeGolfDataSource implements GolfDataSource {
 
   final GolfLeaderboard response;
   String? requestedTournamentId;
+  var fetchCount = 0;
+  Completer<GolfLeaderboard>? pending;
 
   @override
   Future<GolfLeaderboard> fetchGolfLeaderboardByTournamentId(
     String tournamentId,
   ) async {
+    fetchCount += 1;
     requestedTournamentId = tournamentId;
+    final pendingRequest = pending;
+    if (pendingRequest != null) return pendingRequest.future;
     return response;
   }
 

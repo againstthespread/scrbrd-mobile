@@ -1,3 +1,5 @@
+import 'sports_game.dart';
+
 class GameData {
   const GameData({
     this.protocolVersion = 1,
@@ -11,6 +13,7 @@ class GameData {
     this.statusDetail,
     this.scheduledStartTime,
     this.eventId,
+    this.baseballState,
   });
 
   final int protocolVersion;
@@ -24,9 +27,10 @@ class GameData {
   final String? statusDetail;
   final DateTime? scheduledStartTime;
   final String? eventId;
+  final BaseballGameState? baseballState;
 
   Map<String, Object> toJson() {
-    return {
+    final json = <String, Object>{
       'version': protocolVersion,
       'league': league,
       'away': awayTeam,
@@ -36,5 +40,15 @@ class GameData {
       'status': status,
       'clock': clock,
     };
+    final state = baseballState;
+    if (state != null) {
+      json.addAll({
+        'onFirst': state.runnerOnFirst,
+        'onSecond': state.runnerOnSecond,
+        'onThird': state.runnerOnThird,
+        'outs': state.outs,
+      });
+    }
+    return json;
   }
 }

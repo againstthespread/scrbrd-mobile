@@ -70,6 +70,27 @@ SportsGame _parseEvent(SportsLeague league, Map<String, dynamic> event) {
     statusDetail: detail,
     scheduledStartTime: start,
     eventId: eventId,
+    baseballState: league == SportsLeague.mlb && status == 'LIVE'
+        ? _baseballState(competition)
+        : null,
+  );
+}
+
+BaseballGameState? _baseballState(Map<String, dynamic> competition) {
+  final situation = _map(competition['situation']);
+  if (situation == null ||
+      situation['onFirst'] is! bool ||
+      situation['onSecond'] is! bool ||
+      situation['onThird'] is! bool) {
+    return null;
+  }
+  final outs = _integer(situation['outs']);
+  if (outs == null || outs < 0 || outs > 2) return null;
+  return BaseballGameState(
+    runnerOnFirst: situation['onFirst'] as bool,
+    runnerOnSecond: situation['onSecond'] as bool,
+    runnerOnThird: situation['onThird'] as bool,
+    outs: outs,
   );
 }
 
@@ -105,11 +126,40 @@ String _clock(
   if (status == 'UPCOMING') {
     return detail ?? (start == null ? 'UPCOMING' : _formatTime(start));
   }
-  if (league == SportsLeague.mlb && detail != null) return detail;
+  if (league == SportsLeague.mlb) {
+    return _mlbClock(statusJson, detail);
+  }
   final period = _integer(statusJson?['period']);
   final displayClock = _nonEmpty(statusJson?['displayClock']);
   if (period != null && displayClock != null) return 'Q$period $displayClock';
   return detail ?? displayClock ?? status;
+}
+
+String _mlbClock(Map<String, dynamic>? statusJson, String? detail) {
+  final inning =
+      _integer(statusJson?['period']) ??
+      int.tryParse(RegExp(r'\d+').firstMatch(detail ?? '')?.group(0) ?? '');
+  if (inning == null || inning < 1) return detail ?? 'LIVE';
+
+  final normalizedDetail = detail?.trim().toLowerCase() ?? '';
+  final half = switch (normalizedDetail) {
+    final value when RegExp(r'\btop\b').hasMatch(value) => 'Top',
+    final value when RegExp(r'\bbot(?:tom)?\b').hasMatch(value) => 'Bot',
+    _ => null,
+  };
+  final ordinal = _ordinal(inning);
+  return half == null ? ordinal : '$half $ordinal';
+}
+
+String _ordinal(int value) {
+  final lastTwoDigits = value % 100;
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 13) return '${value}th';
+  return switch (value % 10) {
+    1 => '${value}st',
+    2 => '${value}nd',
+    3 => '${value}rd',
+    _ => '${value}th',
+  };
 }
 
 String? _statusDetail(Map<String, dynamic>? type) =>

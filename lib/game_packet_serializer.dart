@@ -55,7 +55,7 @@ class GamePacketSerializer {
 
   String serializeToString(GameData gameData) {
     _validate(gameData);
-    return jsonEncode({
+    final packet = <String, Object>{
       'version': protocolVersion,
       'type': packetType,
       'league': gameData.league.trim(),
@@ -65,7 +65,9 @@ class GamePacketSerializer {
       'homeScore': gameData.homeScore,
       'status': gameData.status.trim(),
       'clock': gameData.clock.trim(),
-    });
+    };
+    _addBaseballState(packet, gameData);
+    return jsonEncode(packet);
   }
 
   List<int> serializeSlate(List<GameData> games) {
@@ -249,7 +251,19 @@ class GamePacketSerializer {
     if (eventId != null && eventId.isNotEmpty) {
       packetGame['id'] = eventId;
     }
+    _addBaseballState(packetGame, game);
     return packetGame;
+  }
+
+  void _addBaseballState(Map<String, Object> json, GameData game) {
+    final state = game.baseballState;
+    if (state == null) return;
+    json.addAll({
+      'onFirst': state.runnerOnFirst,
+      'onSecond': state.runnerOnSecond,
+      'onThird': state.runnerOnThird,
+      'outs': state.outs,
+    });
   }
 
   void _validate(GameData gameData) {
@@ -265,6 +279,13 @@ class GamePacketSerializer {
     if (!_validStatuses.contains(status)) {
       throw GamePacketValidationException(
         'status must be UPCOMING, LIVE, or FINAL.',
+      );
+    }
+    final baseballState = gameData.baseballState;
+    if (baseballState != null &&
+        (baseballState.outs < 0 || baseballState.outs > 2)) {
+      throw const GamePacketValidationException(
+        'baseball outs must be between 0 and 2.',
       );
     }
   }

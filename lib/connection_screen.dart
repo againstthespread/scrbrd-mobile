@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'background_score_updater.dart';
 import 'background_score_refresh_dispatcher.dart';
+import 'ble_wake_refresh_policy.dart';
 import 'ble_device_state.dart';
 import 'bluetooth_device_transport.dart';
 import 'game_editor.dart';
@@ -136,16 +137,26 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       'TEMP BLE WAKE EXPERIMENT: wake notification received; '
       'lifecycle=${_lifecycleState.name}; payload=$payload',
     );
-    if (!_isAppBackgrounded) {
-      debugPrint(
-        'TEMP BLE WAKE EXPERIMENT: foreground notification ignored; '
-        'foreground updater remains responsible',
-      );
-      return;
+    final action = decideBleWakeRefresh(
+      hasTrackedGolf: _transport.lastSuccessfullySentGolfLeaderboard != null,
+      isAppBackgrounded: _isAppBackgrounded,
+    );
+    switch (action) {
+      case BleWakeRefreshAction.refreshPga:
+        debugPrint(
+          'TEMP BLE WAKE EXPERIMENT: PGA wake refresh received; '
+          'lifecycle=${_lifecycleState.name}',
+        );
+        unawaited(_backgroundScoreUpdater.refreshTrackedGolfOnce());
+      case BleWakeRefreshAction.refreshBackgroundTeamSport:
+        debugPrint('TEMP BLE WAKE EXPERIMENT: background refresh dispatched');
+        unawaited(_backgroundScoreUpdater.refreshTrackedGameOnce());
+      case BleWakeRefreshAction.ignoreForegroundTeamSport:
+        debugPrint(
+          'TEMP BLE WAKE EXPERIMENT: foreground notification ignored; '
+          'foreground updater remains responsible',
+        );
     }
-
-    debugPrint('TEMP BLE WAKE EXPERIMENT: background refresh dispatched');
-    unawaited(_backgroundScoreUpdater.refreshTrackedGameOnce());
   }
 
   // TEMPORARY LIVE ACTIVITY/BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing.

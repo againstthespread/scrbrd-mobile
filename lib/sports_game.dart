@@ -10,6 +10,7 @@ class SportsGame {
     this.statusDetail,
     this.scheduledStartTime,
     this.eventId,
+    this.baseballState,
   });
 
   final String league;
@@ -22,4 +23,19 @@ class SportsGame {
   final String? statusDetail;
   final DateTime? scheduledStartTime;
   final String? eventId;
+  final BaseballGameState? baseballState;
+}
+
+class BaseballGameState {
+  const BaseballGameState({
+    required this.runnerOnFirst,
+    required this.runnerOnSecond,
+    required this.runnerOnThird,
+    required this.outs,
+  });
+
+  final bool runnerOnFirst;
+  final bool runnerOnSecond;
+  final bool runnerOnThird;
+  final int outs;
 }

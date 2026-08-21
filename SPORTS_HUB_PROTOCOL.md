@@ -37,6 +37,19 @@ Required fields:
 | `status` | string | Required, one of `UPCOMING`, `LIVE`, or `FINAL`; maximum 8 UTF-8 bytes. |
 | `clock` | string | Required, non-empty, maximum 24 UTF-8 bytes. |
 
+Optional MLB live-state fields:
+
+| Field | Type | Rule |
+| --- | --- | --- |
+| `onFirst` | boolean | Whether first base is occupied. |
+| `onSecond` | boolean | Whether second base is occupied. |
+| `onThird` | boolean | Whether third base is occupied. |
+| `outs` | integer | Current outs, 0 through 2. |
+
+The four fields are emitted together for live MLB games when structured ESPN
+situation data is available. They are optional for backward compatibility and
+are omitted for non-MLB, upcoming, final, or unavailable situation state.
+
 Canonical statuses:
 
 - `UPCOMING`
@@ -58,7 +71,7 @@ Slate rules:
 - `league` follows the single-game league rule and applies to every game.
 - Legacy one-packet `slate` messages remain supported with 1 through 4 games.
 - The complete compact UTF-8 packet must not exceed 512 bytes.
-- Every game uses the single-game `away`, `home`, `awayScore`, `homeScore`, `status`, and `clock` rules.
+- Every game uses the single-game `away`, `home`, `awayScore`, `homeScore`, `status`, and `clock` rules, including the optional MLB live-state fields.
 - `id` is optional, stable event metadata with a maximum of 48 UTF-8 bytes. The ESP32 stores it but does not render it.
 - A slate is fully validated before it replaces the active received games.
 

@@ -36,10 +36,33 @@ void main() {
         isEmpty,
       );
       expect(request.url.queryParameters['dates'], '20260810');
+      expect(request.url.queryParameters['_scrbrd_ts'], isNotEmpty);
       expect(request.url.path, contains('/football/nfl/scoreboard'));
       expect(request.headers, isNot(contains('Ocp-Apim-Subscription-Key')));
+      expect(request.headers['Cache-Control'], 'no-cache');
+      expect(request.headers['Pragma'], 'no-cache');
     },
   );
+
+  test('consecutive ESPN team requests use distinct cache busters', () async {
+    final requests = <http.Request>[];
+    final source = EspnDataSource(
+      epochMilliseconds: () => 1700000000000,
+      client: MockClient((request) async {
+        requests.add(request);
+        return http.Response(jsonEncode({'events': []}), 200);
+      }),
+    );
+
+    await source.fetchGamesForDate(SportsLeague.mlb, DateTime(2026, 8, 20));
+    await source.fetchGamesForDate(SportsLeague.mlb, DateTime(2026, 8, 20));
+
+    expect(requests, hasLength(2));
+    expect(requests[0].url.queryParameters['dates'], '20260820');
+    expect(requests[1].url.queryParameters['dates'], '20260820');
+    expect(requests[0].url.queryParameters['_scrbrd_ts'], '1700000000000');
+    expect(requests[1].url.queryParameters['_scrbrd_ts'], '1700000000001');
+  });
 
   test('PGA refresh reuses tournament event ID', () async {
     final requests = <http.Request>[];
