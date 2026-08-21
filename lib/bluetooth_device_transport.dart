@@ -10,6 +10,7 @@ import 'game_packet_serializer.dart';
 import 'golf_leaderboard.dart';
 import 'golf_packet_serializer.dart';
 import 'sports_hub_ble_protocol.dart';
+import 'tracked_content_baseline.dart';
 
 class BluetoothDeviceTransport implements DeviceTransport {
   BluetoothDeviceTransport({
@@ -17,7 +18,9 @@ class BluetoothDeviceTransport implements DeviceTransport {
     this.serializer = const GamePacketSerializer(),
     this.golfSerializer = const GolfPacketSerializer(),
     this.scanTimeout = const Duration(seconds: 8),
-  });
+    TrackedContentBaseline? trackedContentBaseline,
+  }) : _trackedContentBaseline =
+           trackedContentBaseline ?? TrackedContentBaseline();
 
   final SportsHubBleProtocol protocol;
   final GamePacketSerializer serializer;
@@ -39,9 +42,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
   );
   bool _isWriting = false;
 
-  // TEMPORARY BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing.
-  GameData? _lastSuccessfullySentGameData;
-  GolfLeaderboard? _lastSuccessfullySentGolfLeaderboard;
+  final TrackedContentBaseline _trackedContentBaseline;
 
   Stream<BleDeviceSnapshot> get snapshots => _snapshotController.stream;
 
@@ -51,9 +52,9 @@ class BluetoothDeviceTransport implements DeviceTransport {
   BleDeviceSnapshot get currentSnapshot => _snapshot;
 
   // TEMPORARY BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing.
-  GameData? get lastSuccessfullySentGameData => _lastSuccessfullySentGameData;
+  GameData? get lastSuccessfullySentGameData => _trackedContentBaseline.game;
   GolfLeaderboard? get lastSuccessfullySentGolfLeaderboard =>
-      _lastSuccessfullySentGolfLeaderboard;
+      _trackedContentBaseline.golf;
 
   Future<void> scanForDevice() async {
     await disconnect();
@@ -192,8 +193,8 @@ class BluetoothDeviceTransport implements DeviceTransport {
 
   @override
   Future<void> sendGameData(GameData gameData) async {
-    await _sendPacket(serializer.serialize(gameData), displayedGame: gameData);
-    _lastSuccessfullySentGolfLeaderboard = null;
+    await _sendPacket(serializer.serialize(gameData));
+    _trackedContentBaseline.recordTeamGame(gameData);
   }
 
   @override
@@ -214,8 +215,8 @@ class BluetoothDeviceTransport implements DeviceTransport {
         debugPrint('Slate transfer chunk: index=$index, bytes=${chunk.length}');
         await _sendPacket(chunk);
       }
-      await _sendPacket(transfer.endPacket, displayedGame: games.first);
-      _lastSuccessfullySentGolfLeaderboard = null;
+      await _sendPacket(transfer.endPacket);
+      _trackedContentBaseline.recordTeamSlate(games);
       debugPrint('Slate transfer complete: id=${transfer.slateId}');
     } on Object catch (error) {
       debugPrint('Slate transfer failed: id=${transfer.slateId}, error=$error');
@@ -242,8 +243,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
         await _sendPacket(packet);
       }
       await _sendPacket(transfer.endPacket);
-      _lastSuccessfullySentGolfLeaderboard = leaderboard;
-      _lastSuccessfullySentGameData = null;
+      _trackedContentBaseline.recordGolf(leaderboard);
       debugPrint(
         'Golf transfer complete: tournament=${leaderboard.tournamentId}',
       );
@@ -255,7 +255,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
     }
   }
 
-  Future<void> _sendPacket(List<int> packet, {GameData? displayedGame}) async {
+  Future<void> _sendPacket(List<int> packet) async {
     final characteristic = _writableCharacteristic;
     if (characteristic == null ||
         _snapshot.state == BleConnectionState.disconnected ||
@@ -276,9 +276,6 @@ class BluetoothDeviceTransport implements DeviceTransport {
         characteristic,
         value: packet,
       );
-      if (displayedGame != null) {
-        _lastSuccessfullySentGameData = displayedGame;
-      }
       _emit(previousSnapshot.copyWith(state: BleConnectionState.connected));
     } on Object catch (error) {
       _emitError('Bluetooth write failed: $error');

@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'device_transport.dart';
 import 'game_data.dart';
 import 'game_packet_serializer.dart';
@@ -14,50 +12,30 @@ class SelectedGameAutoUpdater {
     required this.selectedDate,
     required GameData selectedGame,
     required GameData lastSentGame,
-    this.refreshInterval = defaultRefreshInterval,
     this.serializer = const GamePacketSerializer(),
+    this.canSend,
     this.onError,
     this.onDiagnostic,
   }) : _selectedGameKey = SelectedGameKey.fromGameData(selectedGame),
        _lastSentPacket = serializer.serializeToString(lastSentGame);
 
-  static const defaultRefreshInterval = Duration(seconds: 30);
-
   final SportsRepository repository;
   final DeviceTransport transport;
   final SportsLeague league;
   final DateTime selectedDate;
-  final Duration refreshInterval;
   final GamePacketSerializer serializer;
+  final Future<bool> Function()? canSend;
   final void Function(Object error)? onError;
   final void Function(String message)? onDiagnostic;
   final SelectedGameKey _selectedGameKey;
 
-  Timer? _timer;
   bool _isRefreshing = false;
   bool _isPaused = false;
   String _lastSentPacket;
 
-  void start() {
-    _isPaused = false;
-    _timer?.cancel();
-    _diagnose('updater started; interval=${refreshInterval.inSeconds}s');
-    _timer = Timer.periodic(refreshInterval, (_) => refreshNow());
-  }
-
   void pause() {
     _isPaused = true;
-    _diagnose('updater paused');
-    _timer?.cancel();
-    _timer = null;
-  }
-
-  void resume({GameData? lastSentGame}) {
-    if (lastSentGame != null) {
-      _lastSentPacket = serializer.serializeToString(lastSentGame);
-    }
-    _diagnose('updater resumed');
-    start();
+    _diagnose('one-shot team refresh cancelled');
   }
 
   Future<void> refreshNow() async {
@@ -66,18 +44,18 @@ class SelectedGameAutoUpdater {
       return;
     }
 
-    _diagnose('poll started; tracked game identifier=${_selectedGameKey.id}');
+    _diagnose('team refresh started; tracked event ID=${_selectedGameKey.id}');
     _isRefreshing = true;
     try {
       _diagnose('repository fetch started');
       final games = await repository.fetchGamesForDate(league, selectedDate);
       if (_isPaused) {
-        _diagnose('poll abandoned: updater paused or stopped');
+        _diagnose('team refresh abandoned: refresher cancelled');
         return;
       }
-      _diagnose('repository fetch succeeded; games=${games.length}');
+      _diagnose('fetch succeeded; games=${games.length}');
       final updatedGame = _findSelectedGame(games);
-      _diagnose('selected game match found=${updatedGame != null}');
+      _diagnose('tracked content found=${updatedGame != null}');
       if (updatedGame == null) {
         return;
       }
@@ -93,6 +71,11 @@ class SelectedGameAutoUpdater {
       _diagnose(
         'change detected; BLE send attempted=true; BLE write attempted',
       );
+      final sendAllowed = await canSend?.call() ?? true;
+      if (!sendAllowed) {
+        _diagnose('BLE write skipped: wake refresh conditions changed');
+        return;
+      }
       try {
         await transport.sendGameData(updatedGame);
         _diagnose('BLE send succeeded; BLE write succeeded');
@@ -102,7 +85,7 @@ class SelectedGameAutoUpdater {
         onError?.call(error);
       }
     } on Object catch (error) {
-      _diagnose('poll failed; will retry at normal interval: $error');
+      _diagnose('team refresh failed; waiting for next BLE wake: $error');
       onError?.call(error);
     } finally {
       _isRefreshing = false;
@@ -121,9 +104,7 @@ class SelectedGameAutoUpdater {
 
   void dispose() {
     _isPaused = true;
-    _diagnose('updater stopped/disposed');
-    _timer?.cancel();
-    _timer = null;
+    _diagnose('one-shot team refresher disposed');
   }
 
   void _diagnose(String message) {

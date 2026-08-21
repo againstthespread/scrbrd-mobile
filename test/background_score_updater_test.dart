@@ -43,12 +43,77 @@ void main() {
       expect(harness.transport.sentGames.single.clock, 'Final');
     });
 
-    test('updater does not refresh when app is foregrounded', () async {
-      final harness = _Harness(response: _initialGame);
+    test('foreground MLB wake refreshes tracked content', () async {
+      final harness = _Harness(response: _copyGame(awayScore: 3));
       harness.isBackgrounded = false;
       await harness.refreshOnce();
 
-      expect(harness.dataSource.fetchCount, 0);
+      expect(harness.dataSource.fetchCount, 1);
+      expect(harness.transport.sentGames, hasLength(1));
+    });
+
+    for (final league in ['NFL', 'NBA']) {
+      test('foreground $league wake refreshes tracked content', () async {
+        final tracked = _teamGame(league: league, awayScore: 1);
+        final harness = _Harness(
+          trackedGame: tracked,
+          response: _teamGame(league: league, awayScore: 2),
+        )..isBackgrounded = false;
+
+        await harness.refreshOnce();
+
+        expect(harness.dataSource.fetchCount, 1);
+        expect(harness.transport.sentGames.single.awayScore, 2);
+      });
+    }
+
+    test('background MLB wake refreshes tracked content', () async {
+      final harness = _Harness(response: _copyGame(awayScore: 4));
+
+      await harness.refreshOnce();
+
+      expect(harness.dataSource.fetchCount, 1);
+      expect(harness.transport.sentGames.single.awayScore, 4);
+    });
+
+    test('MLB inning, bases, and outs changes cause one BLE write', () async {
+      const baseballState = BaseballGameState(
+        runnerOnFirst: true,
+        runnerOnSecond: true,
+        runnerOnThird: false,
+        outs: 2,
+      );
+      final harness = _Harness(
+        response: _copyGame(clock: 'Bot 5th', baseballState: baseballState),
+      )..isBackgrounded = false;
+
+      await harness.refreshOnce();
+
+      expect(harness.transport.sentGames, hasLength(1));
+      expect(harness.transport.sentGames.single.clock, 'Bot 5th');
+      expect(harness.transport.sentGames.single.baseballState?.outs, 2);
+    });
+
+    test('overlapping team wakes do not launch duplicate refreshes', () async {
+      final pending = Completer<GameData>();
+      final diagnostics = <String>[];
+      final harness = _Harness(
+        response: _initialGame,
+        pendingTeamResponse: pending,
+        onDiagnostic: diagnostics.add,
+      )..isBackgrounded = false;
+
+      final first = harness.updater.refreshTrackedContentOnce();
+      await Future<void>.delayed(Duration.zero);
+      await harness.updater.refreshTrackedContentOnce();
+      pending.complete(_initialGame);
+      await first;
+
+      expect(harness.dataSource.fetchCount, 1);
+      expect(
+        diagnostics,
+        contains('refresh skipped because another refresh is in progress'),
+      );
     });
 
     test('updater does not refresh when BLE is disconnected', () async {
@@ -88,7 +153,7 @@ void main() {
           trackedGolf: () => previous,
         );
 
-        await updater.refreshTrackedGameOnce();
+        await updater.refreshTrackedContentOnce();
 
         expect(golfSource.requestedTournamentId, 'tournament-1');
         expect(transport.sentGolf, [fresh]);
@@ -108,7 +173,7 @@ void main() {
         isLiveActivityActive: false,
       );
 
-      await updater.refreshTrackedGolfOnce();
+      await updater.refreshTrackedContentOnce();
 
       expect(golfSource.fetchCount, 1);
       expect(transport.sentGolf, [fresh]);
@@ -127,7 +192,7 @@ void main() {
         isLiveActivityActive: true,
       );
 
-      await updater.refreshTrackedGolfOnce();
+      await updater.refreshTrackedContentOnce();
 
       expect(golfSource.fetchCount, 1);
       expect(transport.sentGolf, [fresh]);
@@ -144,7 +209,7 @@ void main() {
         isBackgrounded: false,
       );
 
-      await updater.refreshTrackedGolfOnce();
+      await updater.refreshTrackedContentOnce();
 
       expect(transport.sentGolf, isEmpty);
     });
@@ -161,7 +226,7 @@ void main() {
         isBackgrounded: false,
       );
 
-      await updater.refreshTrackedGolfOnce();
+      await updater.refreshTrackedContentOnce();
 
       expect(transport.sentGolf, [fresh]);
     });
@@ -180,16 +245,16 @@ void main() {
         onDiagnostic: diagnostics.add,
       );
 
-      final first = updater.refreshTrackedGolfOnce();
+      final first = updater.refreshTrackedContentOnce();
       await Future<void>.delayed(Duration.zero);
-      await updater.refreshTrackedGolfOnce();
+      await updater.refreshTrackedContentOnce();
       pending.complete(previous);
       await first;
 
       expect(source.fetchCount, 1);
       expect(
         diagnostics,
-        contains('refresh skipped because another PGA refresh is running'),
+        contains('refresh skipped because another refresh is in progress'),
       );
     });
 
@@ -206,8 +271,8 @@ void main() {
         isBackgrounded: false,
       );
 
-      await updater.refreshTrackedGolfOnce();
-      await updater.refreshTrackedGolfOnce();
+      await updater.refreshTrackedContentOnce();
+      await updater.refreshTrackedContentOnce();
 
       expect(transport.sentGolf, [fresh]);
     });
@@ -271,6 +336,7 @@ GameData _copyGame({
   int awayScore = 1,
   String status = 'LIVE',
   String clock = 'Top 4',
+  BaseballGameState? baseballState,
 }) {
   return GameData(
     eventId: _initialGame.eventId,
@@ -281,24 +347,46 @@ GameData _copyGame({
     homeScore: _initialGame.homeScore,
     status: status,
     clock: clock,
+    baseballState: baseballState,
     scheduledStartTime: _initialGame.scheduledStartTime,
   );
 }
 
+GameData _teamGame({required String league, required int awayScore}) =>
+    GameData(
+      eventId: '$league-game-1',
+      league: league,
+      awayTeam: 'AWAY',
+      homeTeam: 'HOME',
+      awayScore: awayScore,
+      homeScore: 0,
+      status: 'LIVE',
+      clock: '5:00',
+      scheduledStartTime: _gameTime,
+    );
+
 class _Harness {
-  _Harness({required GameData response})
-    : dataSource = _FakeSportsDataSource(response) {
+  _Harness({
+    required GameData response,
+    GameData? trackedGame,
+    Completer<GameData>? pendingTeamResponse,
+    void Function(String)? onDiagnostic,
+  }) : trackedGame = trackedGame ?? _initialGame,
+       dataSource = _FakeSportsDataSource(response) {
+    dataSource.pending = pendingTeamResponse;
     updater = BackgroundScoreUpdater(
       repository: SportsRepository(dataSource),
       transport: transport,
       isAppBackgrounded: () => isBackgrounded,
       isBleConnected: () => isConnected,
       isLiveActivityActive: () async => isLiveActivityActive,
-      trackedGame: () => _initialGame,
+      trackedGame: () => this.trackedGame,
+      onDiagnostic: onDiagnostic,
     );
   }
 
   final _RecordingTransport transport = _RecordingTransport();
+  final GameData trackedGame;
   final _FakeSportsDataSource dataSource;
   late final BackgroundScoreUpdater updater;
   bool isBackgrounded = true;
@@ -306,7 +394,7 @@ class _Harness {
   bool isLiveActivityActive = true;
 
   Future<void> refreshOnce() async {
-    await updater.refreshTrackedGameOnce();
+    await updater.refreshTrackedContentOnce();
   }
 }
 
@@ -315,6 +403,7 @@ class _FakeSportsDataSource implements SportsDataSource {
 
   final GameData response;
   var fetchCount = 0;
+  Completer<GameData>? pending;
 
   @override
   Future<List<SportsGame>> fetchGamesForDate(
@@ -322,18 +411,20 @@ class _FakeSportsDataSource implements SportsDataSource {
     DateTime selectedDate,
   ) async {
     fetchCount += 1;
+    final effectiveResponse = await (pending?.future ?? Future.value(response));
     return [
       SportsGame(
-        eventId: response.eventId,
-        league: response.league,
-        awayTeam: response.awayTeam,
-        homeTeam: response.homeTeam,
-        awayScore: response.awayScore,
-        homeScore: response.homeScore,
-        status: response.status,
-        clock: response.clock,
-        statusDetail: response.statusDetail,
-        scheduledStartTime: response.scheduledStartTime,
+        eventId: effectiveResponse.eventId,
+        league: effectiveResponse.league,
+        awayTeam: effectiveResponse.awayTeam,
+        homeTeam: effectiveResponse.homeTeam,
+        awayScore: effectiveResponse.awayScore,
+        homeScore: effectiveResponse.homeScore,
+        status: effectiveResponse.status,
+        clock: effectiveResponse.clock,
+        statusDetail: effectiveResponse.statusDetail,
+        scheduledStartTime: effectiveResponse.scheduledStartTime,
+        baseballState: effectiveResponse.baseballState,
       ),
     ];
   }

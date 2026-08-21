@@ -11,7 +11,7 @@ import 'package:sports_hub_mobile/sports_repository.dart';
 
 void main() {
   testWidgets(
-    'successful manual send starts updater and sends changed refreshed game',
+    'successful manual send does not start a recurring foreground timer',
     (tester) async {
       final initialGame = GameData(
         eventId: 'mlb-game-42',
@@ -24,20 +24,8 @@ void main() {
         clock: 'Top 4',
         scheduledStartTime: DateTime(2026, 8, 10, 19),
       );
-      final updatedGame = GameData(
-        eventId: 'mlb-game-42',
-        league: 'MLB',
-        awayTeam: 'NYY',
-        homeTeam: 'BOS',
-        awayScore: 3,
-        homeScore: 2,
-        status: 'LIVE',
-        clock: 'Bot 4',
-        scheduledStartTime: DateTime(2026, 8, 10, 19),
-      );
       final dataSource = _FakeSportsDataSource([
         [_sportsGameFromGameData(initialGame)],
-        [_sportsGameFromGameData(updatedGame)],
       ]);
       final transport = _RecordingTransport();
 
@@ -46,7 +34,6 @@ void main() {
           home: LiveGamesScreen(
             repository: SportsRepository(dataSource),
             transport: transport,
-            autoUpdateRefreshInterval: const Duration(seconds: 1),
           ),
         ),
       );
@@ -62,19 +49,10 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 1100));
 
-      expect(transport.sentGames, hasLength(2));
+      expect(transport.sentGames, hasLength(1));
       expect(transport.sentGames.first.awayScore, 1);
       expect(transport.sentGames.first.eventId, 'mlb-game-42');
-      expect(transport.sentGames.last.awayScore, 3);
-
-      await tester.pageBack();
-      await tester.pumpAndSettle();
-
-      expect(find.text('Temporary Auto-Update Diagnostics'), findsOneWidget);
-      expect(
-        find.textContaining('BLE send succeeded', findRichText: true),
-        findsOneWidget,
-      );
+      expect(dataSource.fetchCount, 1);
     },
   );
 }
@@ -99,6 +77,7 @@ class _FakeSportsDataSource implements SportsDataSource {
 
   final List<List<SportsGame>> _responses;
   var _fetchCount = 0;
+  int get fetchCount => _fetchCount;
 
   @override
   Future<List<SportsGame>> fetchGamesForDate(

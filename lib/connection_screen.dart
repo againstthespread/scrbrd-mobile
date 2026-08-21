@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 
 import 'background_score_updater.dart';
 import 'background_score_refresh_dispatcher.dart';
-import 'ble_wake_refresh_policy.dart';
 import 'ble_device_state.dart';
 import 'bluetooth_device_transport.dart';
 import 'game_editor.dart';
@@ -100,7 +99,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   Future<void> _handleBackgroundScoreRefresh(
     BackgroundScoreRefreshRequest request,
   ) async {
-    await _backgroundScoreUpdater.refreshTrackedGameOnce();
+    await _backgroundScoreUpdater.refreshTrackedContentOnce();
     request.complete();
   }
 
@@ -137,26 +136,11 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       'TEMP BLE WAKE EXPERIMENT: wake notification received; '
       'lifecycle=${_lifecycleState.name}; payload=$payload',
     );
-    final action = decideBleWakeRefresh(
-      hasTrackedGolf: _transport.lastSuccessfullySentGolfLeaderboard != null,
-      isAppBackgrounded: _isAppBackgrounded,
+    debugPrint(
+      'TEMP BLE WAKE EXPERIMENT: BLE wake refresh received; '
+      'lifecycle=${_isAppBackgrounded ? 'background' : 'foreground'}',
     );
-    switch (action) {
-      case BleWakeRefreshAction.refreshPga:
-        debugPrint(
-          'TEMP BLE WAKE EXPERIMENT: PGA wake refresh received; '
-          'lifecycle=${_lifecycleState.name}',
-        );
-        unawaited(_backgroundScoreUpdater.refreshTrackedGolfOnce());
-      case BleWakeRefreshAction.refreshBackgroundTeamSport:
-        debugPrint('TEMP BLE WAKE EXPERIMENT: background refresh dispatched');
-        unawaited(_backgroundScoreUpdater.refreshTrackedGameOnce());
-      case BleWakeRefreshAction.ignoreForegroundTeamSport:
-        debugPrint(
-          'TEMP BLE WAKE EXPERIMENT: foreground notification ignored; '
-          'foreground updater remains responsible',
-        );
-    }
+    unawaited(_backgroundScoreUpdater.refreshTrackedContentOnce());
   }
 
   // TEMPORARY LIVE ACTIVITY/BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing.
