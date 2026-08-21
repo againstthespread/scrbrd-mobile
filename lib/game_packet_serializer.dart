@@ -70,6 +70,16 @@ class GamePacketSerializer {
     return jsonEncode(packet);
   }
 
+  List<int> canonicalSlateContent(List<GameData> games) {
+    _validateSlateGames(games);
+    return utf8.encode(
+      jsonEncode({
+        'league': games.first.league.trim(),
+        'games': games.map(_gameToSlateJson).toList(),
+      }),
+    );
+  }
+
   List<int> serializeSlate(List<GameData> games) {
     return utf8.encode(serializeSlateToString(games));
   }

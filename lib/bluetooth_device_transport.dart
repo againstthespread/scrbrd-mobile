@@ -10,7 +10,6 @@ import 'game_packet_serializer.dart';
 import 'golf_leaderboard.dart';
 import 'golf_packet_serializer.dart';
 import 'sports_hub_ble_protocol.dart';
-import 'tracked_content_baseline.dart';
 
 class BluetoothDeviceTransport implements DeviceTransport {
   BluetoothDeviceTransport({
@@ -18,9 +17,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
     this.serializer = const GamePacketSerializer(),
     this.golfSerializer = const GolfPacketSerializer(),
     this.scanTimeout = const Duration(seconds: 8),
-    TrackedContentBaseline? trackedContentBaseline,
-  }) : _trackedContentBaseline =
-           trackedContentBaseline ?? TrackedContentBaseline();
+  });
 
   final SportsHubBleProtocol protocol;
   final GamePacketSerializer serializer;
@@ -42,19 +39,12 @@ class BluetoothDeviceTransport implements DeviceTransport {
   );
   bool _isWriting = false;
 
-  final TrackedContentBaseline _trackedContentBaseline;
-
   Stream<BleDeviceSnapshot> get snapshots => _snapshotController.stream;
 
   // TEMPORARY BLE WAKE-NOTIFICATION EXPERIMENT: Remove after iOS testing.
   Stream<List<int>> get wakeNotifications => _wakeNotificationController.stream;
 
   BleDeviceSnapshot get currentSnapshot => _snapshot;
-
-  // TEMPORARY BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing.
-  GameData? get lastSuccessfullySentGameData => _trackedContentBaseline.game;
-  GolfLeaderboard? get lastSuccessfullySentGolfLeaderboard =>
-      _trackedContentBaseline.golf;
 
   Future<void> scanForDevice() async {
     await disconnect();
@@ -194,7 +184,6 @@ class BluetoothDeviceTransport implements DeviceTransport {
   @override
   Future<void> sendGameData(GameData gameData) async {
     await _sendPacket(serializer.serialize(gameData));
-    _trackedContentBaseline.recordTeamGame(gameData);
   }
 
   @override
@@ -216,7 +205,6 @@ class BluetoothDeviceTransport implements DeviceTransport {
         await _sendPacket(chunk);
       }
       await _sendPacket(transfer.endPacket);
-      _trackedContentBaseline.recordTeamSlate(games);
       debugPrint('Slate transfer complete: id=${transfer.slateId}');
     } on Object catch (error) {
       debugPrint('Slate transfer failed: id=${transfer.slateId}, error=$error');
@@ -243,7 +231,6 @@ class BluetoothDeviceTransport implements DeviceTransport {
         await _sendPacket(packet);
       }
       await _sendPacket(transfer.endPacket);
-      _trackedContentBaseline.recordGolf(leaderboard);
       debugPrint(
         'Golf transfer complete: tournament=${leaderboard.tournamentId}',
       );

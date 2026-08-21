@@ -2,6 +2,7 @@ import 'device_transport.dart';
 import 'game_data.dart';
 import 'golf_leaderboard.dart';
 import 'sports_league.dart';
+import 'session_aware_device_sender.dart';
 
 class LeagueSlateSendException implements Exception {
   const LeagueSlateSendException(this.league, this.cause);
@@ -23,6 +24,7 @@ class LoadedLeagueSlateSender {
   Future<int> send(
     Map<SportsLeague, List<GameData>> loadedGames, {
     GolfLeaderboard? loadedGolf,
+    required Map<SportsLeague, DateTime> selectedDates,
   }) async {
     var sentLeagueCount = 0;
     for (final league in SportsLeague.values) {
@@ -30,10 +32,24 @@ class LoadedLeagueSlateSender {
       try {
         if (league == SportsLeague.pga) {
           if (loadedGolf == null || loadedGolf.golfers.isEmpty) continue;
-          await transport.sendGolfLeaderboard(loadedGolf);
+          final sender = transport;
+          if (sender is SessionAwareDeviceSender) {
+            await sender.sendGolf(
+              loadedGolf,
+              selectedDate: selectedDates[SportsLeague.pga],
+            );
+          } else {
+            await sender.sendGolfLeaderboard(loadedGolf);
+          }
         } else {
           if (games == null || games.isEmpty) continue;
-          await transport.sendGameSlate(games);
+          final sender = transport;
+          final selectedDate = selectedDates[league];
+          if (sender is SessionAwareDeviceSender && selectedDate != null) {
+            await sender.sendTeamSlate(games, selectedDate: selectedDate);
+          } else {
+            await sender.sendGameSlate(games);
+          }
         }
         sentLeagueCount++;
       } on Object catch (error) {

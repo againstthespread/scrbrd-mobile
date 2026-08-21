@@ -7,6 +7,7 @@ import 'golf_leaderboard.dart';
 import 'loaded_league_slate_sender.dart';
 import 'sports_league.dart';
 import 'sports_repository.dart';
+import 'session_aware_device_sender.dart';
 
 class LiveGamesScreen extends StatefulWidget {
   const LiveGamesScreen({
@@ -31,6 +32,7 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
   late DateTime _selectedDate;
   List<GameData> _games = const [];
   final Map<SportsLeague, List<GameData>> _loadedGamesByLeague = {};
+  final Map<SportsLeague, DateTime> _loadedDatesByLeague = {};
   GolfLeaderboard? _loadedGolfLeaderboard;
 
   @override
@@ -54,6 +56,7 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
         if (!mounted) return;
         setState(() {
           _loadedGolfLeaderboard = leaderboard;
+          _loadedDatesByLeague[SportsLeague.pga] = _selectedDate;
           _games = const [];
           if (leaderboard == null) {
             _errorMessage = null;
@@ -82,6 +85,7 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
       setState(() {
         _games = games;
         _loadedGamesByLeague[_selectedLeague] = games;
+        _loadedDatesByLeague[_selectedLeague] = _selectedDate;
         _loadedGolfLeaderboard = discoveredGolf;
       });
     } on Object catch (error) {
@@ -110,9 +114,22 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
     setState(() => _isSendingSlate = true);
     try {
       if (_selectedLeague == SportsLeague.pga) {
-        await widget.transport.sendGolfLeaderboard(_loadedGolfLeaderboard!);
+        final sender = widget.transport;
+        if (sender is SessionAwareDeviceSender) {
+          await sender.sendGolf(
+            _loadedGolfLeaderboard!,
+            selectedDate: _selectedDate,
+          );
+        } else {
+          await sender.sendGolfLeaderboard(_loadedGolfLeaderboard!);
+        }
       } else {
-        await widget.transport.sendGameSlate(_games);
+        final sender = widget.transport;
+        if (sender is SessionAwareDeviceSender) {
+          await sender.sendTeamSlate(_games, selectedDate: _selectedDate);
+        } else {
+          await sender.sendGameSlate(_games);
+        }
       }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -137,9 +154,12 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
   Future<void> _sendAllLoadedLeagues() async {
     setState(() => _isSendingAllLeagues = true);
     try {
-      final count = await LoadedLeagueSlateSender(
-        transport: widget.transport,
-      ).send(_loadedGamesByLeague, loadedGolf: _loadedGolfLeaderboard);
+      final count = await LoadedLeagueSlateSender(transport: widget.transport)
+          .send(
+            _loadedGamesByLeague,
+            loadedGolf: _loadedGolfLeaderboard,
+            selectedDates: _loadedDatesByLeague,
+          );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Sent $count loaded leagues to SCRBRD.')),
@@ -186,6 +206,7 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
       );
       _games = const [];
       _loadedGamesByLeague.clear();
+      _loadedDatesByLeague.clear();
       _loadedGolfLeaderboard = null;
       if (_selectedLeague == SportsLeague.pga) {
         _selectedLeague = SportsLeague.mlb;

@@ -4,17 +4,23 @@ import 'package:sports_hub_mobile/game_data.dart';
 import 'package:sports_hub_mobile/golf_leaderboard.dart';
 import 'package:sports_hub_mobile/loaded_league_slate_sender.dart';
 import 'package:sports_hub_mobile/sports_league.dart';
+import 'package:sports_hub_mobile/session_aware_device_sender.dart';
+import 'package:sports_hub_mobile/tracked_device_session.dart';
 
 void main() {
   test(
     'sends three non-empty leagues in stable order and skips empty',
     () async {
       final transport = _RecordingTransport();
-      final count = await LoadedLeagueSlateSender(transport: transport).send({
-        SportsLeague.mlb: [_game('MLB')],
-        SportsLeague.nfl: [_game('NFL')],
-        SportsLeague.nba: const [],
-      }, loadedGolf: _golf());
+      final count = await LoadedLeagueSlateSender(transport: transport).send(
+        {
+          SportsLeague.mlb: [_game('MLB')],
+          SportsLeague.nfl: [_game('NFL')],
+          SportsLeague.nba: const [],
+        },
+        loadedGolf: _golf(),
+        selectedDates: _dates,
+      );
 
       expect(count, 3);
       expect(transport.sentLeagues, ['NFL', 'MLB', 'PGA']);
@@ -30,7 +36,7 @@ void main() {
         SportsLeague.nfl: [_game('NFL')],
         SportsLeague.nba: [_game('NBA')],
         SportsLeague.mlb: [_game('MLB')],
-      }),
+      }, selectedDates: _dates),
       throwsA(
         isA<LeagueSlateSendException>().having(
           (error) => error.league,
@@ -41,7 +47,50 @@ void main() {
     );
     expect(transport.sentLeagues, ['NFL', 'NBA']);
   });
+
+  test('send all records every successful league including PGA', () async {
+    final raw = _RecordingTransport();
+    final session = TrackedDeviceSession();
+    final sender = LoadedLeagueSlateSender(
+      transport: SessionAwareDeviceSender(transport: raw, session: session),
+    );
+    await sender.send(
+      {
+        SportsLeague.nfl: [_game('NFL')],
+        SportsLeague.nba: [_game('NBA')],
+        SportsLeague.mlb: [_game('MLB')],
+      },
+      loadedGolf: _golf(),
+      selectedDates: _dates,
+    );
+    expect(session.snapshot().keys, SportsLeague.values);
+  });
+
+  test('partial failure records only successfully completed leagues', () async {
+    final raw = _RecordingTransport(failingLeague: 'NBA');
+    final session = TrackedDeviceSession();
+    final sender = LoadedLeagueSlateSender(
+      transport: SessionAwareDeviceSender(transport: raw, session: session),
+    );
+    await expectLater(
+      sender.send(
+        {
+          SportsLeague.nfl: [_game('NFL')],
+          SportsLeague.nba: [_game('NBA')],
+          SportsLeague.mlb: [_game('MLB')],
+        },
+        loadedGolf: _golf(),
+        selectedDates: _dates,
+      ),
+      throwsA(isA<LeagueSlateSendException>()),
+    );
+    expect(session.snapshot().keys, [SportsLeague.nfl]);
+  });
 }
+
+final _dates = {
+  for (final league in SportsLeague.values) league: DateTime(2026, 8, 21),
+};
 
 GameData _game(String league) {
   return GameData(
@@ -52,6 +101,8 @@ GameData _game(String league) {
     homeScore: 2,
     status: 'LIVE',
     clock: 'Q1',
+    eventId: '$league-1',
+    scheduledStartTime: DateTime(2026, 8, 21),
   );
 }
 

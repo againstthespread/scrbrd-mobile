@@ -2,15 +2,17 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import 'background_score_updater.dart';
 import 'background_score_refresh_dispatcher.dart';
 import 'ble_device_state.dart';
 import 'bluetooth_device_transport.dart';
 import 'game_editor.dart';
 import 'live_activity_diagnostics.dart';
 import 'live_games_screen.dart';
+import 'live_refresh_coordinator.dart';
 import 'push_notification_service.dart';
 import 'sports_repository.dart';
+import 'session_aware_device_sender.dart';
+import 'tracked_device_session.dart';
 
 class ConnectionScreen extends StatefulWidget {
   const ConnectionScreen({
@@ -32,7 +34,9 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   static const _deviceTransport = 'Bluetooth Low Energy';
 
   late final BluetoothDeviceTransport _transport;
-  late final BackgroundScoreUpdater _backgroundScoreUpdater;
+  late final SessionAwareDeviceSender _deviceSender;
+  late final TrackedDeviceSession _trackedSession;
+  late final LiveRefreshCoordinator _liveRefreshCoordinator;
   StreamSubscription<BleDeviceSnapshot>? _snapshotSubscription;
   StreamSubscription<List<int>>? _wakeNotificationSubscription;
   StreamSubscription<BackgroundScoreRefreshRequest>? _scoreRefreshSubscription;
@@ -46,6 +50,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   String _backgroundUpdaterStatus =
       'Waiting for the app to background with BLE and Live Activity active.';
   String _liveActivityDiagnosticStatus = 'Live Activity not started.';
+  bool _isDisposing = false;
 
   bool get _isBusy =>
       _deviceSnapshot.state == BleConnectionState.scanning ||
@@ -60,15 +65,19 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _transport = BluetoothDeviceTransport();
-    _backgroundScoreUpdater = BackgroundScoreUpdater(
-      repository: widget.repository,
+    _trackedSession = TrackedDeviceSession();
+    _deviceSender = SessionAwareDeviceSender(
       transport: _transport,
+      session: _trackedSession,
+    );
+    _liveRefreshCoordinator = LiveRefreshCoordinator(
+      repository: widget.repository,
+      transport: _deviceSender,
+      session: _trackedSession,
       isAppBackgrounded: () => _isAppBackgrounded,
       isBleConnected: () =>
           _transport.currentSnapshot.state == BleConnectionState.connected,
       isLiveActivityActive: _liveActivityDiagnostics.isActive,
-      trackedGame: () => _transport.lastSuccessfullySentGameData,
-      trackedGolf: () => _transport.lastSuccessfullySentGolfLeaderboard,
       onDiagnostic: _recordBackgroundUpdaterDiagnostic,
     );
     _deviceSnapshot = _transport.currentSnapshot;
@@ -82,7 +91,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     _snapshotSubscription = _transport.snapshots.listen((snapshot) {
       if (snapshot.state == BleConnectionState.disconnected ||
           snapshot.state == BleConnectionState.error) {
-        _backgroundScoreUpdater.cancelCurrentRefresh('BLE disconnected');
+        _liveRefreshCoordinator.cancelCurrentRefresh('BLE disconnected');
       }
       if (!mounted) {
         return;
@@ -99,14 +108,15 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   Future<void> _handleBackgroundScoreRefresh(
     BackgroundScoreRefreshRequest request,
   ) async {
-    await _backgroundScoreUpdater.refreshTrackedContentOnce();
+    await _liveRefreshCoordinator.refreshTrackedSessionOnce();
     request.complete();
   }
 
   @override
   void dispose() {
+    _isDisposing = true;
     WidgetsBinding.instance.removeObserver(this);
-    _backgroundScoreUpdater.cancelCurrentRefresh('connection screen disposed');
+    _liveRefreshCoordinator.cancelCurrentRefresh('connection screen disposed');
     _scoreRefreshSubscription?.cancel();
     _wakeNotificationSubscription?.cancel();
     _snapshotSubscription?.cancel();
@@ -124,7 +134,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       _isAppBackgrounded = true;
     } else if (state == AppLifecycleState.resumed) {
       _isAppBackgrounded = false;
-      _backgroundScoreUpdater.cancelCurrentRefresh(
+      _liveRefreshCoordinator.cancelCurrentRefresh(
         'app returned to foreground',
       );
     }
@@ -140,7 +150,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       'TEMP BLE WAKE EXPERIMENT: BLE wake refresh received; '
       'lifecycle=${_isAppBackgrounded ? 'background' : 'foreground'}',
     );
-    unawaited(_backgroundScoreUpdater.refreshTrackedContentOnce());
+    unawaited(_liveRefreshCoordinator.refreshTrackedSessionOnce());
   }
 
   // TEMPORARY LIVE ACTIVITY/BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing.
@@ -151,7 +161,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
 
   // TEMPORARY LIVE ACTIVITY/BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing.
   Future<void> _endLiveActivityDiagnostic() async {
-    _backgroundScoreUpdater.cancelCurrentRefresh(
+    _liveRefreshCoordinator.cancelCurrentRefresh(
       'Live Activity ended manually',
     );
     final status = await _liveActivityDiagnostics.end();
@@ -172,7 +182,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   // TEMPORARY LIVE ACTIVITY/BACKGROUND BLE PROTOTYPE: Remove or refactor later.
   void _recordBackgroundUpdaterDiagnostic(String message) {
     debugPrint('TEMP BACKGROUND SCORE UPDATER: $message');
-    if (!mounted) {
+    if (!mounted || _isDisposing) {
       return;
     }
 
@@ -205,7 +215,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       MaterialPageRoute<void>(
         builder: (context) => LiveGamesScreen(
           repository: widget.repository,
-          transport: _transport,
+          transport: _deviceSender,
         ),
       ),
     );
@@ -349,7 +359,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                       label: const Text('Games'),
                     ),
                     const SizedBox(height: 16),
-                    GameEditor(transport: _transport),
+                    GameEditor(transport: _deviceSender),
                   ],
                 ],
               ),

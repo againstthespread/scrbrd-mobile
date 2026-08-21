@@ -98,6 +98,8 @@ Received-league storage and navigation:
 
 - The `league` from `slate_start` is authoritative. `slateId` identifies only the in-progress transfer.
 - A completed transfer replaces the stored games for that league only, or appends a new league when capacity permits.
+- Live refresh replaces only a changed league; team leagues and PGA coexist in the mobile tracked device session.
+- Replacing the currently displayed team league preserves the selected stable event ID when possible, otherwise it clamps the previous game index.
 - The ESP32 stores up to 8 received leagues, each with up to 20 games. Other stored leagues remain unchanged by replacement or failed transfers.
 - Received leagues retain insertion order. The app sends loaded leagues in `NFL`, `NBA`, `MLB` order.
 - `NEXT_GAME` and BOOT single-click cycle within the active received league.
@@ -116,7 +118,8 @@ Golf rules:
 
 - PGA uses dedicated leaderboard content and is never represented as away/home games.
 - A transfer contains 1 through 50 golfers and every packet remains at or below 512 UTF-8 bytes.
-- Tournament IDs are discovered internally from SportsDataIO schedule coverage; users never provide them.
+- Tournament IDs are discovered internally by the selected data provider; users never provide them.
 - `transferId`, `tournamentId`, tournament name, and each player ID are owned metadata. Golfer rows contain readable name, official rank, normalized score (`-8`, `+2`, `E`, `CUT`, `WD`, or `DQ`), and optional detail.
 - Golf staging is validated and activated atomically. Invalid or incomplete transfers leave an existing PGA leaderboard and all team leagues unchanged.
 - PGA occupies one received-league slot. Single-click/`NEXT_GAME` advances five golfers per page and wraps; league changes reset PGA to page 1.
+- A live-data replacement of PGA preserves the current page when possible and clamps it if the page count shrinks.
