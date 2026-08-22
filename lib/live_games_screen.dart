@@ -8,17 +8,20 @@ import 'loaded_league_slate_sender.dart';
 import 'sports_league.dart';
 import 'sports_repository.dart';
 import 'session_aware_device_sender.dart';
+import 'tracked_device_session.dart';
 
 class LiveGamesScreen extends StatefulWidget {
   const LiveGamesScreen({
     super.key,
     required this.repository,
     required this.transport,
+    required this.trackedSession,
     this.developerMode = false,
   });
 
   final SportsRepository repository;
   final DeviceTransport transport;
+  final TrackedDeviceSession trackedSession;
   final bool developerMode;
 
   @override
@@ -42,6 +45,14 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
     super.initState();
     final now = DateTime.now();
     _selectedDate = DateTime(now.year, now.month, now.day);
+    final trackedGolf = widget.trackedSession[SportsLeague.pga];
+    if (trackedGolf is TrackedGolfLeaderboard) {
+      _loadedGolfLeaderboard = trackedGolf.leaderboard;
+      final selectedDate = trackedGolf.selectedDate;
+      if (selectedDate != null) {
+        _loadedDatesByLeague[SportsLeague.pga] = selectedDate;
+      }
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) => _refreshGames());
   }
 
@@ -73,14 +84,6 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
         _selectedLeague,
         _selectedDate,
       );
-      GolfLeaderboard? discoveredGolf;
-      try {
-        discoveredGolf = await widget.repository.fetchGolfLeaderboardForDate(
-          _selectedDate,
-        );
-      } on Object catch (error) {
-        debugPrint('PGA discovery unavailable: $error');
-      }
       if (!mounted) {
         return;
       }
@@ -89,7 +92,6 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
         _games = games;
         _loadedGamesByLeague[_selectedLeague] = games;
         _loadedDatesByLeague[_selectedLeague] = _selectedDate;
-        _loadedGolfLeaderboard = discoveredGolf;
       });
     } on Object catch (error) {
       if (!mounted) {

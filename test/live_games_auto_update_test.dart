@@ -30,12 +30,15 @@ void main() {
         [_sportsGameFromGameData(initialGame)],
       ]);
       final transport = _RecordingTransport();
+      final session = TrackedDeviceSession();
+      addTearDown(session.dispose);
 
       await tester.pumpWidget(
         MaterialApp(
           home: LiveGamesScreen(
             repository: SportsRepository(dataSource),
             transport: transport,
+            trackedSession: session,
             developerMode: true,
           ),
         ),
@@ -76,6 +79,7 @@ void main() {
         home: LiveGamesScreen(
           repository: SportsRepository(dataSource),
           transport: sender,
+          trackedSession: session,
         ),
       ),
     );

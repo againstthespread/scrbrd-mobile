@@ -204,6 +204,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         builder: (_) => LiveGamesScreen(
           repository: widget.repository,
           transport: _deviceSender,
+          trackedSession: _trackedSession,
         ),
       ),
     );
@@ -215,6 +216,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         builder: (_) => SettingsScreen(
           repository: widget.repository,
           transport: _deviceSender,
+          trackedSession: _trackedSession,
           providerLabel: selectSportsDataProvider().label,
           pushDiagnostics: _pushDiagnostics,
           onRefreshPushDiagnostics: _loadPushDiagnostics,

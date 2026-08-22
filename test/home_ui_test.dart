@@ -138,11 +138,14 @@ void main() {
   testWidgets('Developer Tools retains manual and diagnostic controls', (
     tester,
   ) async {
+    final session = TrackedDeviceSession();
+    addTearDown(session.dispose);
     await tester.pumpWidget(
       MaterialApp(
         home: DeveloperToolsScreen(
           repository: SportsRepository(_EmptyDataSource()),
           transport: _NoopTransport(),
+          trackedSession: session,
           providerLabel: 'ESPN',
           pushDiagnostics: const PushNotificationDiagnostics(
             permissionStatus: 'authorized',

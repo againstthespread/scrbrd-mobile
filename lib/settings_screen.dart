@@ -5,12 +5,14 @@ import 'game_editor.dart';
 import 'live_games_screen.dart';
 import 'push_notification_service.dart';
 import 'sports_repository.dart';
+import 'tracked_device_session.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({
     super.key,
     required this.repository,
     required this.transport,
+    required this.trackedSession,
     required this.providerLabel,
     required this.pushDiagnostics,
     required this.onRefreshPushDiagnostics,
@@ -22,6 +24,7 @@ class SettingsScreen extends StatelessWidget {
 
   final SportsRepository repository;
   final DeviceTransport transport;
+  final TrackedDeviceSession trackedSession;
   final String providerLabel;
   final PushNotificationDiagnostics? pushDiagnostics;
   final Future<PushNotificationDiagnostics> Function() onRefreshPushDiagnostics;
@@ -48,6 +51,7 @@ class SettingsScreen extends StatelessWidget {
                   builder: (_) => DeveloperToolsScreen(
                     repository: repository,
                     transport: transport,
+                    trackedSession: trackedSession,
                     providerLabel: providerLabel,
                     pushDiagnostics: pushDiagnostics,
                     onRefreshPushDiagnostics: onRefreshPushDiagnostics,
@@ -79,6 +83,7 @@ class DeveloperToolsScreen extends StatefulWidget {
     super.key,
     required this.repository,
     required this.transport,
+    required this.trackedSession,
     required this.providerLabel,
     required this.pushDiagnostics,
     required this.onRefreshPushDiagnostics,
@@ -90,6 +95,7 @@ class DeveloperToolsScreen extends StatefulWidget {
 
   final SportsRepository repository;
   final DeviceTransport transport;
+  final TrackedDeviceSession trackedSession;
   final String providerLabel;
   final PushNotificationDiagnostics? pushDiagnostics;
   final Future<PushNotificationDiagnostics> Function() onRefreshPushDiagnostics;
@@ -140,6 +146,7 @@ class _DeveloperToolsScreenState extends State<DeveloperToolsScreen> {
                     builder: (_) => LiveGamesScreen(
                       repository: widget.repository,
                       transport: widget.transport,
+                      trackedSession: widget.trackedSession,
                       developerMode: true,
                     ),
                   ),
