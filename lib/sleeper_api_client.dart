@@ -46,6 +46,24 @@ class SleeperApiClient {
         '/league/$leagueId/matchups/$week',
       )).map(SleeperMatchup.fromJson).toList(growable: false);
 
+  Future<Map<String, SleeperFantasyPlayer>> fetchNflPlayers() async {
+    final json = await _getMap('/players/nfl');
+    final players = <String, SleeperFantasyPlayer>{};
+    for (final entry in json.entries) {
+      if (entry.value is! Map<String, dynamic>) continue;
+      try {
+        final player = SleeperFantasyPlayer.fromJson(
+          entry.value as Map<String, dynamic>,
+          sleeperPlayerId: entry.key,
+        );
+        players[player.sleeperPlayerId] = player;
+      } on FormatException {
+        // One malformed record must not make the full player index unusable.
+      }
+    }
+    return players;
+  }
+
   void close() {
     if (_ownsClient) _client.close();
   }

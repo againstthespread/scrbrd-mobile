@@ -131,6 +131,65 @@ class SleeperNflState {
   final String season;
 }
 
+class SleeperFantasyPlayer {
+  const SleeperFantasyPlayer({
+    required this.sleeperPlayerId,
+    required this.fullName,
+    required this.firstName,
+    required this.lastName,
+    required this.position,
+    required this.nflTeam,
+    required this.espnPlayerId,
+  });
+
+  factory SleeperFantasyPlayer.fromJson(
+    Map<String, dynamic> json, {
+    String? sleeperPlayerId,
+  }) {
+    final playerId =
+        _nullableString(json['player_id']) ?? sleeperPlayerId?.trim();
+    if (playerId == null || playerId.isEmpty) {
+      throw const FormatException('Missing Sleeper field: player_id');
+    }
+    final firstName = _nullableString(json['first_name']) ?? '';
+    final lastName = _nullableString(json['last_name']) ?? '';
+    final suppliedFullName = _nullableString(json['full_name']);
+    final derivedFullName = [
+      firstName,
+      lastName,
+    ].where((part) => part.isNotEmpty).join(' ');
+    return SleeperFantasyPlayer(
+      sleeperPlayerId: playerId,
+      fullName:
+          suppliedFullName ??
+          (derivedFullName.isEmpty ? playerId : derivedFullName),
+      firstName: firstName,
+      lastName: lastName,
+      position: _nullableString(json['position']),
+      nflTeam: _nullableString(json['team']),
+      espnPlayerId: _nullableString(json['espn_id']),
+    );
+  }
+
+  final String sleeperPlayerId;
+  final String fullName;
+  final String firstName;
+  final String lastName;
+  final String? position;
+  final String? nflTeam;
+  final String? espnPlayerId;
+
+  Map<String, Object?> toJson() => {
+    'player_id': sleeperPlayerId,
+    'full_name': fullName,
+    'first_name': firstName,
+    'last_name': lastName,
+    'position': position,
+    'team': nflTeam,
+    'espn_id': espnPlayerId,
+  };
+}
+
 class SleeperStarterPoints {
   const SleeperStarterPoints({required this.playerId, required this.points});
 

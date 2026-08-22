@@ -5,12 +5,19 @@ import 'sleeper_api_client.dart';
 import 'sleeper_fantasy_repository.dart';
 import 'sleeper_league_id_store.dart';
 import 'sleeper_models.dart';
+import 'sleeper_player_repository.dart';
 
 class FantasyScreen extends StatefulWidget {
-  const FantasyScreen({super.key, this.repository, this.leagueIdStore});
+  const FantasyScreen({
+    super.key,
+    this.repository,
+    this.leagueIdStore,
+    this.playerRepository,
+  });
 
   final SleeperFantasyRepository? repository;
   final SleeperLeagueIdStore? leagueIdStore;
+  final SleeperPlayerRepository? playerRepository;
 
   @override
   State<FantasyScreen> createState() => _FantasyScreenState();
@@ -20,7 +27,9 @@ class _FantasyScreenState extends State<FantasyScreen> {
   final _leagueIdController = TextEditingController();
   final _deltaTracker = FantasyPointDeltaTracker();
   SleeperApiClient? _ownedApiClient;
+  SleeperApiClient? _ownedPlayerApiClient;
   late final SleeperFantasyRepository _repository;
+  late final SleeperPlayerRepository _playerRepository;
   late final SleeperLeagueIdStore _leagueIdStore;
   SleeperLeagueSnapshot? _snapshot;
   SleeperFantasyMatchup? _selectedMatchup;
@@ -29,6 +38,7 @@ class _FantasyScreenState extends State<FantasyScreen> {
   String? _error;
   List<FantasyPointDelta> _recentPointChanges = const [];
   List<FantasyPointReconciliation> _reconciliations = const [];
+  Map<String, SleeperFantasyPlayer> _playerMetadata = const {};
 
   @override
   void initState() {
@@ -39,6 +49,13 @@ class _FantasyScreenState extends State<FantasyScreen> {
       _ownedApiClient = SleeperApiClient();
       _repository = SleeperFantasyRepository(_ownedApiClient!);
     }
+    if (widget.playerRepository case final playerRepository?) {
+      _playerRepository = playerRepository;
+    } else {
+      final apiClient =
+          _ownedApiClient ?? (_ownedPlayerApiClient = SleeperApiClient());
+      _playerRepository = SleeperPlayerRepository(apiClient: apiClient);
+    }
     _leagueIdStore =
         widget.leagueIdStore ?? SharedPreferencesSleeperLeagueIdStore();
     _restoreLeagueId();
@@ -48,6 +65,7 @@ class _FantasyScreenState extends State<FantasyScreen> {
   void dispose() {
     _leagueIdController.dispose();
     _ownedApiClient?.close();
+    _ownedPlayerApiClient?.close();
     super.dispose();
   }
 
@@ -68,6 +86,7 @@ class _FantasyScreenState extends State<FantasyScreen> {
       _selectedMatchup = null;
       _recentPointChanges = const [];
       _reconciliations = const [];
+      _playerMetadata = const {};
     });
     _deltaTracker.reset();
     try {
@@ -99,12 +118,14 @@ class _FantasyScreenState extends State<FantasyScreen> {
       final snapshot = await _repository.loadLeague(leagueId);
       final matchup = snapshot.matchupForRoster(rosterId);
       final deltaResult = _deltaTracker.observe(matchup);
+      final metadata = await _resolvePlayerMetadata(matchup);
       if (!mounted) return;
       setState(() {
         _snapshot = snapshot;
         _selectedMatchup = matchup;
         _recentPointChanges = deltaResult.events;
         _reconciliations = deltaResult.reconciliations;
+        _playerMetadata = {..._playerMetadata, ...metadata};
         _isLoading = false;
       });
     } on Object catch (error) {
@@ -116,7 +137,7 @@ class _FantasyScreenState extends State<FantasyScreen> {
     }
   }
 
-  void _selectRoster(int? rosterId) {
+  Future<void> _selectRoster(int? rosterId) async {
     if (rosterId == null || _snapshot == null) return;
     try {
       final matchup = _snapshot!.matchupForRoster(rosterId);
@@ -128,6 +149,9 @@ class _FantasyScreenState extends State<FantasyScreen> {
         _reconciliations = deltaResult.reconciliations;
         _error = null;
       });
+      final metadata = await _resolvePlayerMetadata(matchup);
+      if (!mounted) return;
+      setState(() => _playerMetadata = {..._playerMetadata, ...metadata});
     } on Object catch (error) {
       setState(() {
         _selectedRosterId = rosterId;
@@ -136,6 +160,13 @@ class _FantasyScreenState extends State<FantasyScreen> {
       });
     }
   }
+
+  Future<Map<String, SleeperFantasyPlayer>> _resolvePlayerMetadata(
+    SleeperFantasyMatchup matchup,
+  ) => _playerRepository.resolvePlayersSafely([
+    ...matchup.team.matchup.starters,
+    ...matchup.opponent.matchup.starters,
+  ]);
 
   @override
   Widget build(BuildContext context) {
@@ -224,11 +255,13 @@ class _FantasyScreenState extends State<FantasyScreen> {
               matchup: matchup,
               isLoading: _isLoading,
               onRefresh: _refreshMatchup,
+              playerMetadata: _playerMetadata,
             ),
             const SizedBox(height: 12),
             _RecentPointChangesCard(
               changes: _recentPointChanges,
               reconciliations: _reconciliations,
+              playerMetadata: _playerMetadata,
             ),
           ],
         ],
@@ -242,11 +275,13 @@ class _MatchupCard extends StatelessWidget {
     required this.matchup,
     required this.isLoading,
     required this.onRefresh,
+    required this.playerMetadata,
   });
 
   final SleeperFantasyMatchup matchup;
   final bool isLoading;
   final VoidCallback onRefresh;
+  final Map<String, SleeperFantasyPlayer> playerMetadata;
 
   @override
   Widget build(BuildContext context) {
@@ -289,11 +324,13 @@ class _MatchupCard extends StatelessWidget {
             _StarterList(
               title: '${matchup.team.name} starters',
               team: matchup.team,
+              playerMetadata: playerMetadata,
             ),
             const SizedBox(height: 20),
             _StarterList(
               title: '${matchup.opponent.name} starters',
               team: matchup.opponent,
+              playerMetadata: playerMetadata,
             ),
           ],
         ),
@@ -306,10 +343,12 @@ class _RecentPointChangesCard extends StatelessWidget {
   const _RecentPointChangesCard({
     required this.changes,
     required this.reconciliations,
+    required this.playerMetadata,
   });
 
   final List<FantasyPointDelta> changes;
   final List<FantasyPointReconciliation> reconciliations;
+  final Map<String, SleeperFantasyPlayer> playerMetadata;
 
   @override
   Widget build(BuildContext context) {
@@ -335,7 +374,7 @@ class _RecentPointChangesCard extends StatelessWidget {
                       Expanded(
                         child: Text(
                           '${change.side == FantasyMatchupSide.user ? 'You' : 'Opponent'} · '
-                          '${change.playerId}',
+                          '${playerMetadata[change.playerId]?.fullName ?? change.playerId}',
                         ),
                       ),
                       Text(_signedPoints(change.delta)),
@@ -381,10 +420,15 @@ class _TeamScore extends StatelessWidget {
 }
 
 class _StarterList extends StatelessWidget {
-  const _StarterList({required this.title, required this.team});
+  const _StarterList({
+    required this.title,
+    required this.team,
+    required this.playerMetadata,
+  });
 
   final String title;
   final SleeperFantasyTeam team;
+  final Map<String, SleeperFantasyPlayer> playerMetadata;
 
   @override
   Widget build(BuildContext context) {
@@ -398,7 +442,12 @@ class _StarterList extends StatelessWidget {
             padding: const EdgeInsets.symmetric(vertical: 4),
             child: Row(
               children: [
-                Expanded(child: SelectableText(starter.playerId)),
+                Expanded(
+                  child: SelectableText(
+                    playerMetadata[starter.playerId]?.fullName ??
+                        starter.playerId,
+                  ),
+                ),
                 Text(starter.points == null ? '--' : _points(starter.points!)),
               ],
             ),
