@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'fantasy_point_delta_tracker.dart';
 import 'sleeper_api_client.dart';
 import 'sleeper_fantasy_repository.dart';
 import 'sleeper_league_id_store.dart';
@@ -17,6 +18,7 @@ class FantasyScreen extends StatefulWidget {
 
 class _FantasyScreenState extends State<FantasyScreen> {
   final _leagueIdController = TextEditingController();
+  final _deltaTracker = FantasyPointDeltaTracker();
   SleeperApiClient? _ownedApiClient;
   late final SleeperFantasyRepository _repository;
   late final SleeperLeagueIdStore _leagueIdStore;
@@ -25,6 +27,8 @@ class _FantasyScreenState extends State<FantasyScreen> {
   int? _selectedRosterId;
   bool _isLoading = false;
   String? _error;
+  List<FantasyPointDelta> _recentPointChanges = const [];
+  List<FantasyPointReconciliation> _reconciliations = const [];
 
   @override
   void initState() {
@@ -62,7 +66,10 @@ class _FantasyScreenState extends State<FantasyScreen> {
       _snapshot = null;
       _selectedRosterId = null;
       _selectedMatchup = null;
+      _recentPointChanges = const [];
+      _reconciliations = const [];
     });
+    _deltaTracker.reset();
     try {
       final snapshot = await _repository.loadLeague(leagueId);
       await _leagueIdStore.save(leagueId);
@@ -80,13 +87,45 @@ class _FantasyScreenState extends State<FantasyScreen> {
     }
   }
 
+  Future<void> _refreshMatchup() async {
+    final rosterId = _selectedRosterId;
+    if (rosterId == null) return;
+    final leagueId = _leagueIdController.text.trim();
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+    try {
+      final snapshot = await _repository.loadLeague(leagueId);
+      final matchup = snapshot.matchupForRoster(rosterId);
+      final deltaResult = _deltaTracker.observe(matchup);
+      if (!mounted) return;
+      setState(() {
+        _snapshot = snapshot;
+        _selectedMatchup = matchup;
+        _recentPointChanges = deltaResult.events;
+        _reconciliations = deltaResult.reconciliations;
+        _isLoading = false;
+      });
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = error.toString();
+        _isLoading = false;
+      });
+    }
+  }
+
   void _selectRoster(int? rosterId) {
     if (rosterId == null || _snapshot == null) return;
     try {
       final matchup = _snapshot!.matchupForRoster(rosterId);
+      final deltaResult = _deltaTracker.observe(matchup);
       setState(() {
         _selectedRosterId = rosterId;
         _selectedMatchup = matchup;
+        _recentPointChanges = deltaResult.events;
+        _reconciliations = deltaResult.reconciliations;
         _error = null;
       });
     } on Object catch (error) {
@@ -181,7 +220,16 @@ class _FantasyScreenState extends State<FantasyScreen> {
           ],
           if (_selectedMatchup case final matchup?) ...[
             const SizedBox(height: 12),
-            _MatchupCard(matchup: matchup),
+            _MatchupCard(
+              matchup: matchup,
+              isLoading: _isLoading,
+              onRefresh: _refreshMatchup,
+            ),
+            const SizedBox(height: 12),
+            _RecentPointChangesCard(
+              changes: _recentPointChanges,
+              reconciliations: _reconciliations,
+            ),
           ],
         ],
       ),
@@ -190,9 +238,15 @@ class _FantasyScreenState extends State<FantasyScreen> {
 }
 
 class _MatchupCard extends StatelessWidget {
-  const _MatchupCard({required this.matchup});
+  const _MatchupCard({
+    required this.matchup,
+    required this.isLoading,
+    required this.onRefresh,
+  });
 
   final SleeperFantasyMatchup matchup;
+  final bool isLoading;
+  final VoidCallback onRefresh;
 
   @override
   Widget build(BuildContext context) {
@@ -202,9 +256,20 @@ class _MatchupCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(
-              'Current matchup',
-              style: Theme.of(context).textTheme.titleLarge,
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Current matchup',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                ),
+                IconButton(
+                  onPressed: isLoading ? null : onRefresh,
+                  tooltip: 'Refresh matchup',
+                  icon: const Icon(Icons.refresh),
+                ),
+              ],
             ),
             const SizedBox(height: 12),
             Row(
@@ -230,6 +295,60 @@ class _MatchupCard extends StatelessWidget {
               title: '${matchup.opponent.name} starters',
               team: matchup.opponent,
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RecentPointChangesCard extends StatelessWidget {
+  const _RecentPointChangesCard({
+    required this.changes,
+    required this.reconciliations,
+  });
+
+  final List<FantasyPointDelta> changes;
+  final List<FantasyPointReconciliation> reconciliations;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'RECENT POINT CHANGES',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 10),
+            if (changes.isEmpty)
+              const Text('No starter point changes detected.')
+            else
+              for (final change in changes)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '${change.side == FantasyMatchupSide.user ? 'You' : 'Opponent'} · '
+                          '${change.playerId}',
+                        ),
+                      ),
+                      Text(_signedPoints(change.delta)),
+                    ],
+                  ),
+                ),
+            if (reconciliations.any((item) => !item.matches)) ...[
+              const SizedBox(height: 10),
+              Text(
+                'Diagnostic: starter deltas differ from a matchup total change.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
           ],
         ),
       ),
@@ -290,3 +409,6 @@ class _StarterList extends StatelessWidget {
 }
 
 String _points(double value) => value.toStringAsFixed(value % 1 == 0 ? 0 : 2);
+
+String _signedPoints(double value) =>
+    '${value >= 0 ? '+' : ''}${value.toStringAsFixed(value % 1 == 0 ? 1 : 2)}';
