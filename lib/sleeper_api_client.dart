@@ -1,0 +1,98 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:http/http.dart' as http;
+
+import 'sleeper_models.dart';
+
+class SleeperApiException implements Exception {
+  const SleeperApiException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class SleeperApiClient {
+  SleeperApiClient({http.Client? client, Uri? baseUri})
+    : _client = client ?? http.Client(),
+      _ownsClient = client == null,
+      _baseUri = baseUri ?? Uri.https('api.sleeper.app', '/v1');
+
+  static const _timeout = Duration(seconds: 12);
+  final http.Client _client;
+  final bool _ownsClient;
+  final Uri _baseUri;
+
+  Future<SleeperLeague> fetchLeague(String leagueId) async =>
+      SleeperLeague.fromJson(await _getMap('/league/$leagueId'));
+
+  Future<List<SleeperUser>> fetchLeagueUsers(String leagueId) async =>
+      (await _getList(
+        '/league/$leagueId/users',
+      )).map(SleeperUser.fromJson).toList(growable: false);
+
+  Future<List<SleeperRoster>> fetchLeagueRosters(String leagueId) async =>
+      (await _getList(
+        '/league/$leagueId/rosters',
+      )).map(SleeperRoster.fromJson).toList(growable: false);
+
+  Future<SleeperNflState> fetchNflState() async =>
+      SleeperNflState.fromJson(await _getMap('/state/nfl'));
+
+  Future<List<SleeperMatchup>> fetchMatchups(String leagueId, int week) async =>
+      (await _getList(
+        '/league/$leagueId/matchups/$week',
+      )).map(SleeperMatchup.fromJson).toList(growable: false);
+
+  void close() {
+    if (_ownsClient) _client.close();
+  }
+
+  Future<Map<String, dynamic>> _getMap(String path) async {
+    final decoded = await _getJson(path);
+    if (decoded is! Map<String, dynamic>) {
+      throw const SleeperApiException('Sleeper returned an unexpected object.');
+    }
+    return decoded;
+  }
+
+  Future<List<Map<String, dynamic>>> _getList(String path) async {
+    final decoded = await _getJson(path);
+    if (decoded is! List) {
+      throw const SleeperApiException('Sleeper returned an unexpected list.');
+    }
+    return decoded
+        .map((item) {
+          if (item is! Map<String, dynamic>) {
+            throw const SleeperApiException(
+              'Sleeper returned a malformed list item.',
+            );
+          }
+          return item;
+        })
+        .toList(growable: false);
+  }
+
+  Future<Object?> _getJson(String path) async {
+    final uri = _baseUri.replace(path: '${_baseUri.path}$path');
+    try {
+      final response = await _client.get(uri).timeout(_timeout);
+      if (response.statusCode != 200) {
+        throw SleeperApiException(
+          'Sleeper returned HTTP ${response.statusCode}.',
+        );
+      }
+      return jsonDecode(response.body);
+    } on TimeoutException {
+      throw const SleeperApiException('Sleeper request timed out.');
+    } on FormatException {
+      throw const SleeperApiException('Sleeper returned malformed JSON.');
+    } on SleeperApiException {
+      rethrow;
+    } on Object catch (error) {
+      throw SleeperApiException('Unable to reach Sleeper: $error');
+    }
+  }
+}

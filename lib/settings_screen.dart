@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'device_transport.dart';
+import 'fantasy_screen.dart';
 import 'game_editor.dart';
 import 'live_games_screen.dart';
 import 'push_notification_service.dart';
@@ -40,6 +41,17 @@ class SettingsScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.sports_football_outlined),
+              title: const Text('Fantasy Football'),
+              subtitle: const Text('Connect a Sleeper league'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => const FantasyScreen()),
+              ),
+            ),
+          ),
           Card(
             child: ListTile(
               leading: const Icon(Icons.build_outlined),
