@@ -16,6 +16,179 @@ import 'package:sports_hub_mobile/sports_repository.dart';
 import 'package:sports_hub_mobile/tracked_device_session.dart';
 
 void main() {
+  test('idle WAKE starts exactly one live refresh', () async {
+    final gate = SportsOperationGate();
+    var refreshes = 0;
+
+    await gate.requestLiveRefresh(() async => refreshes++);
+
+    expect(refreshes, 1);
+    expect(gate.isLiveRefreshActive, isFalse);
+  });
+
+  test('ten WAKEs during an active pass produce one follow-up pass', () async {
+    final gate = SportsOperationGate();
+    final firstRelease = Completer<void>();
+    final secondRelease = Completer<void>();
+    var refreshes = 0;
+    var activeRefreshes = 0;
+    var maximumActiveRefreshes = 0;
+
+    Future<void> refresh() async {
+      refreshes++;
+      activeRefreshes++;
+      maximumActiveRefreshes = activeRefreshes > maximumActiveRefreshes
+          ? activeRefreshes
+          : maximumActiveRefreshes;
+      await (refreshes == 1 ? firstRelease.future : secondRelease.future);
+      activeRefreshes--;
+    }
+
+    final drain = gate.requestLiveRefresh(refresh);
+    expect(refreshes, 1);
+    for (var wake = 0; wake < 10; wake++) {
+      await gate.requestLiveRefresh(refresh);
+    }
+    expect(refreshes, 1);
+
+    firstRelease.complete();
+    await Future<void>.delayed(Duration.zero);
+    expect(refreshes, 2);
+    expect(activeRefreshes, 1);
+    secondRelease.complete();
+    await drain;
+
+    expect(refreshes, 2);
+    expect(maximumActiveRefreshes, 1);
+  });
+
+  test(
+    'pending follow-up runs after failure and ownership is released',
+    () async {
+      final gate = SportsOperationGate();
+      final firstRelease = Completer<void>();
+      var refreshes = 0;
+
+      Future<void> refresh() async {
+        refreshes++;
+        if (refreshes == 1) {
+          await firstRelease.future;
+          throw StateError('unexpected refresh failure');
+        }
+      }
+
+      final drain = gate.requestLiveRefresh(refresh);
+      final failure = expectLater(drain, throwsA(isA<StateError>()));
+      await gate.requestLiveRefresh(refresh);
+      firstRelease.complete();
+      await failure;
+
+      expect(refreshes, 2);
+      expect(gate.isLiveRefreshActive, isFalse);
+      await gate.requestLiveRefresh(() async => refreshes++);
+      expect(refreshes, 3);
+    },
+  );
+
+  for (final reason in ['disconnect', 'disposal']) {
+    test('$reason clears a pending follow-up refresh', () async {
+      final gate = SportsOperationGate();
+      final release = Completer<void>();
+      var refreshes = 0;
+
+      final drain = gate.requestLiveRefresh(() async {
+        refreshes++;
+        await release.future;
+      });
+      await gate.requestLiveRefresh(() async => refreshes++);
+      gate.clearDeferredWake();
+      release.complete();
+      await drain;
+
+      expect(refreshes, 1);
+      expect(gate.isLiveRefreshActive, isFalse);
+      await gate.requestLiveRefresh(() async => refreshes++);
+      expect(refreshes, 2);
+    });
+  }
+
+  test(
+    'follow-up coordinator pass sees baseline advanced by first pass',
+    () async {
+      final source = _ControlledMlbSource([3, 4]);
+      final repository = SportsRepository(source);
+      final session = TrackedDeviceSession()
+        ..recordTeamSlate(
+          league: SportsLeague.mlb,
+          selectedDate: _date,
+          games: [_gameData(2)],
+        );
+      final transport = _Transport();
+      final sender = SessionAwareDeviceSender(
+        transport: transport,
+        session: session,
+      );
+      final coordinator = LiveRefreshCoordinator(
+        repository: repository,
+        transport: sender,
+        session: session,
+        isBleConnected: () => true,
+      );
+      final gate = SportsOperationGate();
+
+      final drain = gate.requestLiveRefresh(
+        coordinator.refreshTrackedSessionOnce,
+      );
+      await source.firstFetchStarted.future;
+      await gate.requestLiveRefresh(coordinator.refreshTrackedSessionOnce);
+      source.releaseFirstFetch();
+      await drain;
+
+      expect(transport.mlbSlates.map((slate) => slate.single.awayScore), [
+        3,
+        4,
+      ]);
+      expect(
+        (session[SportsLeague.mlb] as TrackedTeamSlate).games.single.awayScore,
+        4,
+      );
+      expect(source.fetchCount, 2);
+    },
+  );
+
+  test('unchanged follow-up data does not send again', () async {
+    final source = _ControlledMlbSource([3, 3]);
+    final repository = SportsRepository(source);
+    final session = TrackedDeviceSession()
+      ..recordTeamSlate(
+        league: SportsLeague.mlb,
+        selectedDate: _date,
+        games: [_gameData(2)],
+      );
+    final transport = _Transport();
+    final coordinator = LiveRefreshCoordinator(
+      repository: repository,
+      transport: SessionAwareDeviceSender(
+        transport: transport,
+        session: session,
+      ),
+      session: session,
+      isBleConnected: () => true,
+    );
+    final gate = SportsOperationGate();
+
+    final drain = gate.requestLiveRefresh(
+      coordinator.refreshTrackedSessionOnce,
+    );
+    await source.firstFetchStarted.future;
+    await gate.requestLiveRefresh(coordinator.refreshTrackedSessionOnce);
+    source.releaseFirstFetch();
+    await drain;
+
+    expect(transport.mlbSlates, hasLength(1));
+    expect(source.fetchCount, 2);
+  });
+
   test(
     'multiple WAKEs during initial sync coalesce to one deferred refresh',
     () async {
@@ -32,6 +205,39 @@ void main() {
       release.complete();
       await initial;
       expect(refreshes, 1);
+    },
+  );
+
+  test(
+    'WAKE during post-sync reconciliation creates one further pass',
+    () async {
+      final gate = SportsOperationGate();
+      final initialRelease = Completer<void>();
+      final firstRefreshStarted = Completer<void>();
+      final firstRefreshRelease = Completer<void>();
+      var refreshes = 0;
+
+      Future<void> refresh() async {
+        refreshes++;
+        if (refreshes == 1) {
+          firstRefreshStarted.complete();
+          await firstRefreshRelease.future;
+        }
+      }
+
+      final initial = gate.runInitialSync(() => initialRelease.future);
+      await gate.requestLiveRefresh(refresh);
+      initialRelease.complete();
+      await firstRefreshStarted.future;
+
+      await gate.requestLiveRefresh(refresh);
+      await gate.requestLiveRefresh(refresh);
+      expect(refreshes, 1);
+      firstRefreshRelease.complete();
+      await initial;
+
+      expect(refreshes, 2);
+      expect(gate.isLiveRefreshActive, isFalse);
     },
   );
 
@@ -267,6 +473,43 @@ void main() {
 }
 
 final _date = DateTime(2026, 8, 22);
+
+class _ControlledMlbSource implements SportsDataSource {
+  _ControlledMlbSource(this.scores);
+
+  final List<int> scores;
+  final firstFetchStarted = Completer<void>();
+  final _firstFetchRelease = Completer<void>();
+  var fetchCount = 0;
+
+  void releaseFirstFetch() => _firstFetchRelease.complete();
+
+  @override
+  Future<List<SportsGame>> fetchGamesForDate(
+    SportsLeague league,
+    DateTime selectedDate,
+  ) async {
+    if (league != SportsLeague.mlb) return const [];
+    final index = fetchCount++;
+    if (index == 0) {
+      firstFetchStarted.complete();
+      await _firstFetchRelease.future;
+    }
+    return [_sportsGame(scores[index])];
+  }
+}
+
+GameData _gameData(int score) => GameData(
+  eventId: 'mlb-1',
+  league: 'MLB',
+  awayTeam: 'NYY',
+  homeTeam: 'BOS',
+  awayScore: score,
+  homeScore: 1,
+  status: 'LIVE',
+  clock: 'Top 5th',
+  scheduledStartTime: _date,
+);
 
 class _Source implements SportsDataSource {
   _Source({this.pendingNfl, required this.mlbScores});

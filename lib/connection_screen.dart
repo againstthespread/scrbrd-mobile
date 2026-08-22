@@ -135,6 +135,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     _isDisposing = true;
     WidgetsBinding.instance.removeObserver(this);
     _liveRefreshCoordinator.cancelCurrentRefresh('connection screen disposed');
+    _sportsOperationGate.clearDeferredWake();
     _scoreRefreshSubscription?.cancel();
     _wakeNotificationSubscription?.cancel();
     _snapshotSubscription?.cancel();
