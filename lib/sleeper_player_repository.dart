@@ -114,6 +114,27 @@ class SleeperPlayerRepository {
     }
   }
 
+  /// Resolves from memory/disk only and never downloads the full player index.
+  Future<Map<String, SleeperFantasyPlayer>> resolveCachedPlayersSafely(
+    Iterable<String> playerIds,
+  ) async {
+    try {
+      var index = _memoryIndex;
+      if (index == null) {
+        final cached = await _cache.read();
+        index = cached?.players ?? const {};
+        _memoryIndex = cached?.players;
+      }
+      return {
+        for (final id in playerIds.toSet())
+          // ignore: use_null_aware_elements
+          if (index[id] case final player?) id: player,
+      };
+    } on Object {
+      return const {};
+    }
+  }
+
   Future<Map<String, SleeperFantasyPlayer>> _loadIndex() {
     final memoryIndex = _memoryIndex;
     if (memoryIndex != null) return Future.value(memoryIndex);

@@ -7,6 +7,9 @@ import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'ble_device_state.dart';
 import 'device_transport.dart';
 import 'game_data.dart';
+import 'fantasy_alert_packet_serializer.dart';
+import 'fantasy_alert_transport.dart';
+import 'fantasy_point_alert.dart';
 import 'game_packet_serializer.dart';
 import 'golf_leaderboard.dart';
 import 'golf_packet_serializer.dart';
@@ -27,11 +30,13 @@ typedef BleWriteWithResponse =
       required List<int> value,
     });
 
-class BluetoothDeviceTransport implements DeviceTransport {
+class BluetoothDeviceTransport
+    implements DeviceTransport, FantasyAlertTransport {
   BluetoothDeviceTransport({
     this.protocol = const SportsHubBleProtocol(),
     this.serializer = const GamePacketSerializer(),
     this.golfSerializer = const GolfPacketSerializer(),
+    this.fantasyAlertSerializer = const FantasyAlertPacketSerializer(),
     this.scanTimeout = const Duration(seconds: 8),
     this.bleReadyTimeout = const Duration(seconds: 4),
     this.bleStatusProvider,
@@ -45,6 +50,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
   final SportsHubBleProtocol protocol;
   final GamePacketSerializer serializer;
   final GolfPacketSerializer golfSerializer;
+  final FantasyAlertPacketSerializer fantasyAlertSerializer;
   final Duration scanTimeout;
   final Duration bleReadyTimeout;
   final BleStatus Function()? bleStatusProvider;
@@ -290,6 +296,10 @@ class BluetoothDeviceTransport implements DeviceTransport {
       throw StateError('Golf transfer failed: $error');
     }
   }
+
+  @override
+  Future<void> sendFantasyAlert(FantasyPointAlert alert) =>
+      _sendPacket(fantasyAlertSerializer.serialize(alert));
 
   Future<void> _sendPacket(List<int> packet) async {
     final characteristic = _writableCharacteristic;

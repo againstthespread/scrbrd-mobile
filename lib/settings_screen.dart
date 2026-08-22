@@ -2,11 +2,14 @@ import 'package:flutter/material.dart';
 
 import 'device_transport.dart';
 import 'fantasy_screen.dart';
+import 'fantasy_live_observation_coordinator.dart';
 import 'game_editor.dart';
 import 'live_games_screen.dart';
 import 'push_notification_service.dart';
 import 'sports_repository.dart';
 import 'tracked_device_session.dart';
+import 'sleeper_fantasy_config.dart';
+import 'sleeper_player_repository.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({
@@ -21,6 +24,9 @@ class SettingsScreen extends StatelessWidget {
     required this.onStartLiveActivity,
     required this.onEndLiveActivity,
     required this.backgroundRefreshStatus,
+    required this.fantasyCoordinator,
+    required this.fantasyPlayerRepository,
+    required this.fantasyConfigStore,
   });
 
   final SportsRepository repository;
@@ -33,6 +39,9 @@ class SettingsScreen extends StatelessWidget {
   final Future<void> Function() onStartLiveActivity;
   final Future<void> Function() onEndLiveActivity;
   final String backgroundRefreshStatus;
+  final FantasyLiveObservationCoordinator fantasyCoordinator;
+  final SleeperPlayerRepository fantasyPlayerRepository;
+  final SleeperFantasyConfigStore fantasyConfigStore;
 
   @override
   Widget build(BuildContext context) {
@@ -41,14 +50,28 @@ class SettingsScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          Card(
-            child: ListTile(
-              leading: const Icon(Icons.sports_football_outlined),
-              title: const Text('Fantasy Football'),
-              subtitle: const Text('Connect a Sleeper league'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const FantasyScreen()),
+          AnimatedBuilder(
+            animation: fantasyCoordinator,
+            builder: (context, _) => Card(
+              child: ListTile(
+                leading: const Icon(Icons.sports_football_outlined),
+                title: const Text('Fantasy Football'),
+                subtitle: Text(
+                  fantasyCoordinator.status.configured
+                      ? 'Configured • Alerts '
+                            '${fantasyCoordinator.status.alertsEnabled ? 'On' : 'Off'}'
+                      : 'Connect a Sleeper league',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => FantasyScreen(
+                      coordinator: fantasyCoordinator,
+                      playerRepository: fantasyPlayerRepository,
+                      configStore: fantasyConfigStore,
+                    ),
+                  ),
+                ),
               ),
             ),
           ),

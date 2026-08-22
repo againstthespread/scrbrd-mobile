@@ -143,3 +143,14 @@ Golf rules:
 - Golf staging is validated and activated atomically. Invalid or incomplete transfers leave an existing PGA leaderboard and all team leagues unchanged.
 - PGA occupies one received-league slot. Single-click/`NEXT_GAME` advances five golfers per page and wraps; league changes reset PGA to page 1.
 - A live-data replacement of PGA preserves the current page when possible and clamps it if the page count shrinks.
+
+Fantasy scoring alert (ephemeral):
+
+```json
+{"version":1,"type":"fantasy_alert","player":"Ja'Marr Chase","headline":"","points":15.0,"userName":"PETER","userScore":104.7,"opponentName":"MIKE","opponentScore":97.2,"confidence":"none"}
+```
+
+- The alert is a transient overlay and never changes the tracked sports session.
+- `points` is the authoritative Sleeper starter-point delta. Mobile does not infer or explain the scoring play.
+- Empty `headline` and `confidence: "none"` intentionally use the existing firmware fallback display.
+- Packets are compact UTF-8 JSON up to 512 bytes. `player` is at most 32 bytes and matchup names are at most 20 bytes.

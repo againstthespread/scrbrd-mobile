@@ -13,6 +13,30 @@ void main() {
     expect(find.text('Peter Sports Hub'), findsNothing);
   });
 
+  testWidgets('home fantasy action opens the consumer setup screen', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const SportsHubApp());
+    await tester.tap(find.text('SET UP FANTASY'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Fantasy Football'), findsWidgets);
+    expect(find.text('CONNECT LEAGUE'), findsOneWidget);
+    expect(find.textContaining('Developer Tools'), findsNothing);
+  });
+
+  testWidgets('Settings retains its secondary Fantasy Football route', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const SportsHubApp());
+    await tester.tap(find.byTooltip('Settings'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Fantasy Football'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('CONNECT LEAGUE'), findsOneWidget);
+  });
+
   testWidgets('manual editor previews the protocol JSON packet', (
     tester,
   ) async {

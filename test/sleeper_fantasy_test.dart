@@ -134,6 +134,35 @@ void main() {
     expect(result.week, 6);
     expect(paths, contains('/v1/league/league-1/matchups/6'));
   });
+
+  test('ordinary refresh requests only current-week matchups', () async {
+    final paths = <String>[];
+    final client = MockClient((request) async {
+      paths.add(request.url.path);
+      final body = switch (request.url.path) {
+        '/v1/league/league-1' => {
+          'league_id': 'league-1',
+          'name': 'League',
+          'scoring_settings': <String, dynamic>{},
+        },
+        '/v1/league/league-1/users' => <Object>[],
+        '/v1/league/league-1/rosters' => <Object>[],
+        '/v1/state/nfl' => {'week': 6, 'season': '2026'},
+        '/v1/league/league-1/matchups/6' => <Object>[],
+        _ => throw StateError('Unexpected URL: ${request.url}'),
+      };
+      return http.Response(jsonEncode(body), 200);
+    });
+    final repository = SleeperFantasyRepository(
+      SleeperApiClient(client: client),
+    );
+    await repository.loadLeague('league-1');
+    paths.clear();
+
+    await repository.refreshMatchups('league-1');
+
+    expect(paths, ['/v1/league/league-1/matchups/6']);
+  });
 }
 
 SleeperLeagueSnapshot _snapshot() => SleeperLeagueSnapshot(

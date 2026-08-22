@@ -83,9 +83,17 @@ class SleeperLeagueSnapshot {
 }
 
 class SleeperFantasyRepository {
-  const SleeperFantasyRepository(this._apiClient);
+  SleeperFantasyRepository(
+    this._apiClient, {
+    DateTime Function()? clock,
+    this.weekRefreshInterval = const Duration(hours: 6),
+  }) : _clock = clock ?? DateTime.now;
 
   final SleeperApiClient _apiClient;
+  final DateTime Function() _clock;
+  final Duration weekRefreshInterval;
+  final Map<String, SleeperLeagueSnapshot> _snapshots = {};
+  final Map<String, DateTime> _weekCheckedAt = {};
 
   Future<SleeperLeagueSnapshot> loadLeague(String leagueId) async {
     final normalizedId = leagueId.trim();
@@ -102,13 +110,55 @@ class SleeperFantasyRepository {
       normalizedId,
       nflState.week,
     );
-    return SleeperLeagueSnapshot(
+    final snapshot = SleeperLeagueSnapshot(
       league: league,
       week: nflState.week,
       users: users,
       rosters: rosters,
       matchups: matchups,
     );
+    _snapshots[normalizedId] = snapshot;
+    _weekCheckedAt[normalizedId] = _clock();
+    return snapshot;
+  }
+
+  /// High-frequency path: normally performs only GET /league/{id}/matchups/{week}.
+  Future<SleeperLeagueSnapshot> refreshMatchups(String leagueId) async {
+    final normalizedId = leagueId.trim();
+    var cached = _snapshots[normalizedId];
+    if (cached == null) return loadLeague(normalizedId);
+
+    final lastCheck = _weekCheckedAt[normalizedId];
+    if (lastCheck == null ||
+        _clock().difference(lastCheck) >= weekRefreshInterval) {
+      final nflState = await _apiClient.fetchNflState();
+      _weekCheckedAt[normalizedId] = _clock();
+      if (nflState.week != cached.week) {
+        cached = SleeperLeagueSnapshot(
+          league: cached.league,
+          week: nflState.week,
+          users: cached.users,
+          rosters: cached.rosters,
+          matchups: const [],
+        );
+      }
+    }
+
+    final matchups = await _apiClient.fetchMatchups(normalizedId, cached.week);
+    final refreshed = SleeperLeagueSnapshot(
+      league: cached.league,
+      week: cached.week,
+      users: cached.users,
+      rosters: cached.rosters,
+      matchups: matchups,
+    );
+    _snapshots[normalizedId] = refreshed;
+    return refreshed;
+  }
+
+  void invalidate(String leagueId) {
+    _snapshots.remove(leagueId.trim());
+    _weekCheckedAt.remove(leagueId.trim());
   }
 }
 

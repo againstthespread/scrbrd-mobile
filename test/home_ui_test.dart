@@ -122,6 +122,51 @@ void main() {
     expect(opened, isTrue);
   });
 
+  testWidgets('Home shows fantasy setup entry when not configured', (
+    tester,
+  ) async {
+    await _pumpHome(tester);
+
+    expect(find.text('Fantasy Football'), findsOneWidget);
+    expect(
+      find.text(
+        'Connect your Sleeper league and get live fantasy scoring alerts on SCRBRD.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('SET UP FANTASY'), findsOneWidget);
+  });
+
+  testWidgets('fantasy home action invokes the primary navigation callback', (
+    tester,
+  ) async {
+    var opened = false;
+    await _pumpHome(tester, onOpenFantasy: () => opened = true);
+
+    await tester.tap(find.byKey(const Key('home-fantasy-action')));
+    expect(opened, isTrue);
+  });
+
+  testWidgets('configured fantasy card reflects alerts On and Off', (
+    tester,
+  ) async {
+    await _pumpHome(
+      tester,
+      fantasyConfigured: true,
+      fantasyAlertsEnabled: true,
+    );
+    expect(find.text('Configured • Alerts On'), findsOneWidget);
+    expect(find.text('VIEW MATCHUP'), findsOneWidget);
+
+    await _pumpHome(
+      tester,
+      fantasyConfigured: true,
+      fantasyAlertsEnabled: false,
+    );
+    expect(find.text('Configured • Alerts Off'), findsOneWidget);
+    expect(find.text('VIEW MATCHUP'), findsOneWidget);
+  });
+
   testWidgets('normal Home hides developer and prototype details', (
     tester,
   ) async {
@@ -190,6 +235,9 @@ Future<void> _pumpHome(
   ),
   Map<SportsLeague, TrackedLeagueContent> content = const {},
   VoidCallback? onViewGames,
+  VoidCallback? onOpenFantasy,
+  bool fantasyConfigured = false,
+  bool fantasyAlertsEnabled = true,
 }) {
   return tester.pumpWidget(
     MaterialApp(
@@ -201,6 +249,9 @@ Future<void> _pumpHome(
         onDisconnect: () {},
         onCandidateSelected: (_) {},
         onViewGames: onViewGames ?? () {},
+        onOpenFantasy: onOpenFantasy ?? () {},
+        fantasyConfigured: fantasyConfigured,
+        fantasyAlertsEnabled: fantasyAlertsEnabled,
         onOpenSettings: () {},
       ),
     ),

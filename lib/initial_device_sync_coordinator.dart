@@ -29,6 +29,7 @@ class InitialDeviceSyncCoordinator {
     SportsOperationGate? operationGate,
     this.onStatusChanged,
     this.onDiagnostic,
+    this.onInitialSyncComplete,
   }) : clock = clock ?? DateTime.now,
        operationGate = operationGate ?? SportsOperationGate();
 
@@ -43,6 +44,7 @@ class InitialDeviceSyncCoordinator {
   final SportsOperationGate operationGate;
   final void Function(InitialSyncSnapshot snapshot)? onStatusChanged;
   final void Function(String message)? onDiagnostic;
+  final Future<void> Function()? onInitialSyncComplete;
 
   InitialSyncSnapshot _snapshot = const InitialSyncSnapshot(
     status: InitialSyncStatus.idle,
@@ -179,6 +181,11 @@ class InitialDeviceSyncCoordinator {
         lastErrorSummary: failures.isEmpty ? null : failures.join('; '),
       ),
     );
+    try {
+      await onInitialSyncComplete?.call();
+    } on Object catch (error) {
+      _diagnose('Post-sync optional domain failed: $error');
+    }
     _diagnose(
       'Initial sync complete; leagues sent=$sentCount; '
       'failures=${failures.length}',

@@ -6,6 +6,8 @@ import 'background_score_refresh_dispatcher.dart';
 import 'ble_device_state.dart';
 import 'bluetooth_device_transport.dart';
 import 'initial_device_sync_coordinator.dart';
+import 'fantasy_live_observation_coordinator.dart';
+import 'fantasy_screen.dart';
 import 'live_activity_diagnostics.dart';
 import 'live_games_screen.dart';
 import 'live_refresh_coordinator.dart';
@@ -16,6 +18,10 @@ import 'sports_league.dart';
 import 'sports_operation_gate.dart';
 import 'sports_repository.dart';
 import 'session_aware_device_sender.dart';
+import 'sleeper_api_client.dart';
+import 'sleeper_fantasy_config.dart';
+import 'sleeper_fantasy_repository.dart';
+import 'sleeper_player_repository.dart';
 import 'tracked_device_session.dart';
 
 class ConnectionScreen extends StatefulWidget {
@@ -40,6 +46,11 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   late final LiveRefreshCoordinator _liveRefreshCoordinator;
   late final InitialDeviceSyncCoordinator _initialSyncCoordinator;
   late final SportsOperationGate _sportsOperationGate;
+  late final SleeperApiClient _sleeperApiClient;
+  late final SleeperFantasyRepository _fantasyRepository;
+  late final SleeperPlayerRepository _sleeperPlayerRepository;
+  late final SleeperFantasyConfigStore _fantasyConfigStore;
+  late final FantasyLiveObservationCoordinator _fantasyCoordinator;
   StreamSubscription<BleDeviceSnapshot>? _snapshotSubscription;
   StreamSubscription<List<int>>? _wakeNotificationSubscription;
   StreamSubscription<BackgroundScoreRefreshRequest>? _scoreRefreshSubscription;
@@ -75,6 +86,23 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     _sportsOperationGate = SportsOperationGate(
       onDiagnostic: _recordBackgroundUpdaterDiagnostic,
     );
+    _sleeperApiClient = SleeperApiClient();
+    _fantasyRepository = SleeperFantasyRepository(_sleeperApiClient);
+    _sleeperPlayerRepository = SleeperPlayerRepository(
+      apiClient: _sleeperApiClient,
+    );
+    _fantasyConfigStore = SharedPreferencesSleeperFantasyConfigStore();
+    _fantasyCoordinator = FantasyLiveObservationCoordinator(
+      configStore: _fantasyConfigStore,
+      repository: _fantasyRepository,
+      playerRepository: _sleeperPlayerRepository,
+      transport: _deviceSender,
+      isBleConnected: () =>
+          _transport.currentSnapshot.state.isPhysicallyConnected,
+      onDiagnostic: (message) => debugPrint('FANTASY: $message'),
+    );
+    _fantasyCoordinator.addListener(_handleFantasyStatusChanged);
+    unawaited(_fantasyCoordinator.loadConfigurationStatus());
     _liveRefreshCoordinator = LiveRefreshCoordinator(
       repository: widget.repository,
       transport: _deviceSender,
@@ -91,6 +119,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       operationGate: _sportsOperationGate,
       onStatusChanged: _recordInitialSyncStatus,
       onDiagnostic: (message) => debugPrint('INITIAL DEVICE SYNC: $message'),
+      onInitialSyncComplete: _fantasyCoordinator.establishStartupBaseline,
     );
     _deviceSnapshot = _transport.currentSnapshot;
     _wakeNotificationSubscription = _transport.wakeNotifications.listen(
@@ -103,8 +132,10 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       final isConnected = snapshot.state.isPhysicallyConnected;
       if (!wasConnected && isConnected) {
         debugPrint('physical BLE connection established');
+        _fantasyCoordinator.beginConnectionSession();
       } else if (wasConnected && !isConnected) {
         debugPrint('physical BLE connection ended');
+        _fantasyCoordinator.endConnectionSession();
       }
       _initialSyncCoordinator.handleConnectionState(snapshot.state);
       if (snapshot.state == BleConnectionState.disconnected ||
@@ -140,9 +171,16 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     _wakeNotificationSubscription?.cancel();
     _snapshotSubscription?.cancel();
     _transport.dispose();
+    _fantasyCoordinator.removeListener(_handleFantasyStatusChanged);
+    _fantasyCoordinator.dispose();
+    _sleeperApiClient.close();
     _trackedSession.removeListener(_handleTrackedSessionChanged);
     _trackedSession.dispose();
     super.dispose();
+  }
+
+  void _handleFantasyStatusChanged() {
+    if (mounted && !_isDisposing) setState(() {});
   }
 
   @override
@@ -160,7 +198,11 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     );
     unawaited(
       _sportsOperationGate.requestLiveRefresh(
-        _liveRefreshCoordinator.refreshTrackedSessionOnce,
+        () => runIsolatedWakeDomains(
+          refreshSports: _liveRefreshCoordinator.refreshTrackedSessionOnce,
+          observeFantasy: _fantasyCoordinator.observe,
+          onDiagnostic: _recordBackgroundUpdaterDiagnostic,
+        ),
       ),
     );
   }
@@ -225,6 +267,21 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           onStartLiveActivity: _startLiveActivityDiagnostic,
           onEndLiveActivity: _endLiveActivityDiagnostic,
           backgroundRefreshStatus: _backgroundUpdaterStatus,
+          fantasyCoordinator: _fantasyCoordinator,
+          fantasyPlayerRepository: _sleeperPlayerRepository,
+          fantasyConfigStore: _fantasyConfigStore,
+        ),
+      ),
+    );
+  }
+
+  void _openFantasy() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => FantasyScreen(
+          coordinator: _fantasyCoordinator,
+          playerRepository: _sleeperPlayerRepository,
+          configStore: _fantasyConfigStore,
         ),
       ),
     );
@@ -246,6 +303,9 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       onDisconnect: _isBusy ? null : _disconnect,
       onCandidateSelected: _connectToCandidate,
       onViewGames: _openLiveGames,
+      onOpenFantasy: _openFantasy,
+      fantasyConfigured: _fantasyCoordinator.status.configured,
+      fantasyAlertsEnabled: _fantasyCoordinator.status.alertsEnabled,
       onOpenSettings: _openSettings,
     );
   }
@@ -261,6 +321,9 @@ class ScrbrdHomeView extends StatelessWidget {
     required this.onDisconnect,
     required this.onCandidateSelected,
     required this.onViewGames,
+    required this.onOpenFantasy,
+    this.fantasyConfigured = false,
+    this.fantasyAlertsEnabled = true,
     required this.onOpenSettings,
   });
 
@@ -271,6 +334,9 @@ class ScrbrdHomeView extends StatelessWidget {
   final VoidCallback? onDisconnect;
   final ValueChanged<BleDeviceCandidate> onCandidateSelected;
   final VoidCallback onViewGames;
+  final VoidCallback onOpenFantasy;
+  final bool fantasyConfigured;
+  final bool fantasyAlertsEnabled;
   final VoidCallback onOpenSettings;
 
   bool get _connected =>
@@ -356,6 +422,12 @@ class ScrbrdHomeView extends StatelessWidget {
                 style: TextStyle(color: theme.colorScheme.error),
               ),
             ],
+            const SizedBox(height: 24),
+            _FantasyHomeCard(
+              configured: fantasyConfigured,
+              alertsEnabled: fantasyAlertsEnabled,
+              onOpen: onOpenFantasy,
+            ),
             if (trackedContent.isNotEmpty) ...[
               const SizedBox(height: 24),
               Text(
@@ -376,6 +448,69 @@ class ScrbrdHomeView extends StatelessWidget {
               onPressed: onViewGames,
               icon: const Icon(Icons.calendar_today_outlined),
               label: const Text("View Today's Games"),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FantasyHomeCard extends StatelessWidget {
+  const _FantasyHomeCard({
+    required this.configured,
+    required this.alertsEnabled,
+    required this.onOpen,
+  });
+
+  final bool configured;
+  final bool alertsEnabled;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                CircleAvatar(
+                  backgroundColor: theme.colorScheme.secondaryContainer,
+                  child: Icon(
+                    Icons.sports_football,
+                    color: theme.colorScheme.onSecondaryContainer,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Fantasy Football',
+                    style: theme.textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              configured
+                  ? 'Configured • Alerts ${alertsEnabled ? 'On' : 'Off'}'
+                  : 'Connect your Sleeper league and get live fantasy scoring '
+                        'alerts on SCRBRD.',
+              style: theme.textTheme.bodyLarge?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.tonal(
+              key: const Key('home-fantasy-action'),
+              onPressed: onOpen,
+              child: Text(configured ? 'VIEW MATCHUP' : 'SET UP FANTASY'),
             ),
           ],
         ),

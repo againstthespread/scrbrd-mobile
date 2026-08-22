@@ -1,10 +1,13 @@
 import 'device_transport.dart';
+import 'fantasy_point_alert.dart';
+import 'fantasy_alert_transport.dart';
 import 'game_data.dart';
 import 'golf_leaderboard.dart';
 import 'sports_league.dart';
 import 'tracked_device_session.dart';
 
-class SessionAwareDeviceSender implements DeviceTransport {
+class SessionAwareDeviceSender
+    implements DeviceTransport, FantasyAlertTransport {
   const SessionAwareDeviceSender({
     required this.transport,
     required this.session,
@@ -65,6 +68,15 @@ class SessionAwareDeviceSender implements DeviceTransport {
   @override
   Future<void> sendGolfLeaderboard(GolfLeaderboard leaderboard) async {
     await sendGolf(leaderboard);
+  }
+
+  @override
+  Future<void> sendFantasyAlert(FantasyPointAlert alert) {
+    final fantasyTransport = transport;
+    if (fantasyTransport is! FantasyAlertTransport) {
+      throw UnsupportedError('Fantasy-alert transport is unavailable.');
+    }
+    return (fantasyTransport as FantasyAlertTransport).sendFantasyAlert(alert);
   }
 
   Future<void> sendGolf(
