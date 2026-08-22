@@ -4,10 +4,12 @@ import 'package:sports_hub_mobile/device_transport.dart';
 import 'package:sports_hub_mobile/game_data.dart';
 import 'package:sports_hub_mobile/golf_leaderboard.dart';
 import 'package:sports_hub_mobile/live_games_screen.dart';
+import 'package:sports_hub_mobile/session_aware_device_sender.dart';
 import 'package:sports_hub_mobile/sports_data_source.dart';
 import 'package:sports_hub_mobile/sports_game.dart';
 import 'package:sports_hub_mobile/sports_league.dart';
 import 'package:sports_hub_mobile/sports_repository.dart';
+import 'package:sports_hub_mobile/tracked_device_session.dart';
 
 void main() {
   testWidgets(
@@ -55,7 +57,48 @@ void main() {
       expect(dataSource.fetchCount, 1);
     },
   );
+
+  testWidgets('Games refresh does not initialize TrackedDeviceSession', (
+    tester,
+  ) async {
+    final dataSource = _FakeSportsDataSource([
+      [_sportsGameFromGameData(_gameForRefresh)],
+      [_sportsGameFromGameData(_gameForRefresh)],
+    ]);
+    final session = TrackedDeviceSession();
+    final sender = SessionAwareDeviceSender(
+      transport: _RecordingTransport(),
+      session: session,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LiveGamesScreen(
+          repository: SportsRepository(dataSource),
+          transport: sender,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(session.snapshot(), isEmpty);
+
+    await tester.tap(find.byTooltip('Refresh'));
+    await tester.pumpAndSettle();
+    expect(session.snapshot(), isEmpty);
+  });
 }
+
+final _gameForRefresh = GameData(
+  eventId: 'mlb-refresh',
+  league: 'MLB',
+  awayTeam: 'NYY',
+  homeTeam: 'BOS',
+  awayScore: 1,
+  homeScore: 0,
+  status: 'LIVE',
+  clock: 'Top 3rd',
+  scheduledStartTime: DateTime(2026, 8, 22),
+);
 
 SportsGame _sportsGameFromGameData(GameData gameData) {
   return SportsGame(

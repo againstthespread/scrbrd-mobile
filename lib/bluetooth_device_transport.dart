@@ -12,18 +12,40 @@ import 'golf_leaderboard.dart';
 import 'golf_packet_serializer.dart';
 import 'sports_hub_ble_protocol.dart';
 
+typedef BleScanStreamFactory = Stream<DiscoveredDevice> Function();
+typedef BleConnectionStreamFactory =
+    Stream<ConnectionStateUpdate> Function({
+      required String id,
+      required Map<Uuid, List<Uuid>> servicesWithCharacteristicsToDiscover,
+      required Duration connectionTimeout,
+    });
+typedef BleWakeStreamFactory =
+    Stream<List<int>> Function(QualifiedCharacteristic characteristic);
+
 class BluetoothDeviceTransport implements DeviceTransport {
   BluetoothDeviceTransport({
     this.protocol = const SportsHubBleProtocol(),
     this.serializer = const GamePacketSerializer(),
     this.golfSerializer = const GolfPacketSerializer(),
     this.scanTimeout = const Duration(seconds: 8),
+    this.bleReadyTimeout = const Duration(seconds: 4),
+    this.bleStatusProvider,
+    this.bleStatusStreamProvider,
+    this.scanStreamProvider,
+    this.connectionStreamProvider,
+    this.wakeStreamProvider,
   });
 
   final SportsHubBleProtocol protocol;
   final GamePacketSerializer serializer;
   final GolfPacketSerializer golfSerializer;
   final Duration scanTimeout;
+  final Duration bleReadyTimeout;
+  final BleStatus Function()? bleStatusProvider;
+  final Stream<BleStatus> Function()? bleStatusStreamProvider;
+  final BleScanStreamFactory? scanStreamProvider;
+  final BleConnectionStreamFactory? connectionStreamProvider;
+  final BleWakeStreamFactory? wakeStreamProvider;
   FlutterReactiveBle? _ble;
 
   final _snapshotController = StreamController<BleDeviceSnapshot>.broadcast();
@@ -39,6 +61,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
     state: BleConnectionState.disconnected,
   );
   bool _isWriting = false;
+  int _scanGeneration = 0;
 
   Stream<BleDeviceSnapshot> get snapshots => _snapshotController.stream;
 
@@ -49,6 +72,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
 
   Future<void> scanForDevice() async {
     await disconnect();
+    final generation = _scanGeneration;
 
     _emit(
       const BleDeviceSnapshot(
@@ -56,27 +80,36 @@ class BluetoothDeviceTransport implements DeviceTransport {
         candidates: [],
       ),
     );
+    debugPrint('BLE scan started');
 
-    _scanSubscription = _bleClient
-        .scanForDevices(withServices: const [])
-        .listen(
-          _handleDiscoveredDevice,
-          onError: (Object error) {
-            _emitError('Bluetooth scan failed: $error');
-          },
-        );
+    if (!await _waitForBleReady() || generation != _scanGeneration) return;
+
+    _scanSubscription = _scanForDevices().listen(
+      (device) {
+        if (generation == _scanGeneration) {
+          _handleDiscoveredDevice(device);
+        }
+      },
+      onError: (Object error) {
+        if (generation == _scanGeneration) {
+          _emitError('Bluetooth scan failed: $error');
+        }
+      },
+    );
 
     await Future<void>.delayed(scanTimeout);
 
-    if (_snapshot.state == BleConnectionState.scanning) {
+    if (generation == _scanGeneration &&
+        _snapshot.state == BleConnectionState.scanning) {
       await _scanSubscription?.cancel();
       _scanSubscription = null;
+      final candidateCount = _devicesById.length;
+      debugPrint('BLE scan completed; candidates=$candidateCount');
       _emit(
         _snapshot.copyWith(
           state: BleConnectionState.disconnected,
-          errorMessage: _snapshot.candidates.isEmpty
-              ? 'No Peter Sports Hub device found.'
-              : null,
+          errorMessage: candidateCount == 0 ? 'No SCRBRD found.' : null,
+          clearError: candidateCount > 0,
         ),
       );
     }
@@ -109,15 +142,14 @@ class BluetoothDeviceTransport implements DeviceTransport {
     }
 
     final completer = Completer<void>();
-    _connectionSubscription = _bleClient
-        .connectToDevice(
+    _connectionSubscription =
+        _connectToDevice(
           id: discoveredDevice.id,
           servicesWithCharacteristicsToDiscover: {
             serviceUuid: [characteristicUuid, wakeCharacteristicUuid],
           },
           connectionTimeout: const Duration(seconds: 12),
-        )
-        .listen(
+        ).listen(
           (update) {
             if (update.connectionState == DeviceConnectionState.connected) {
               _writableCharacteristic = QualifiedCharacteristic(
@@ -171,6 +203,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
   }
 
   Future<void> disconnect() async {
+    _scanGeneration++;
     await _scanSubscription?.cancel();
     await _connectionSubscription?.cancel();
     await _cancelWakeNotificationSubscription();
@@ -288,6 +321,54 @@ class BluetoothDeviceTransport implements DeviceTransport {
     return _ble ??= FlutterReactiveBle();
   }
 
+  Stream<DiscoveredDevice> _scanForDevices() =>
+      scanStreamProvider?.call() ??
+      _bleClient.scanForDevices(withServices: const []);
+
+  Stream<ConnectionStateUpdate> _connectToDevice({
+    required String id,
+    required Map<Uuid, List<Uuid>> servicesWithCharacteristicsToDiscover,
+    required Duration connectionTimeout,
+  }) =>
+      connectionStreamProvider?.call(
+        id: id,
+        servicesWithCharacteristicsToDiscover:
+            servicesWithCharacteristicsToDiscover,
+        connectionTimeout: connectionTimeout,
+      ) ??
+      _bleClient.connectToDevice(
+        id: id,
+        servicesWithCharacteristicsToDiscover:
+            servicesWithCharacteristicsToDiscover,
+        connectionTimeout: connectionTimeout,
+      );
+
+  Future<bool> _waitForBleReady() async {
+    var status = bleStatusProvider?.call() ?? _bleClient.status;
+    if (status == BleStatus.ready) return true;
+    try {
+      status =
+          await (bleStatusStreamProvider?.call() ?? _bleClient.statusStream)
+              .firstWhere((value) => value != BleStatus.unknown)
+              .timeout(bleReadyTimeout);
+    } on TimeoutException {
+      _emitError('Bluetooth is not ready. Try again.');
+      return false;
+    }
+    if (status == BleStatus.ready) return true;
+    final message = switch (status) {
+      BleStatus.poweredOff => 'Turn on Bluetooth to connect to SCRBRD.',
+      BleStatus.unauthorized => 'Allow Bluetooth access to connect to SCRBRD.',
+      BleStatus.unsupported => 'Bluetooth is not supported on this device.',
+      BleStatus.locationServicesDisabled =>
+        'Enable location services to search for SCRBRD.',
+      BleStatus.unknown ||
+      BleStatus.ready => 'Bluetooth is not ready. Try again.',
+    };
+    _emitError(message);
+    return false;
+  }
+
   void _handleDiscoveredDevice(DiscoveredDevice device) {
     final name = device.name.trim();
     final matchesName = name == SportsHubBleProtocol.advertisingName;
@@ -300,6 +381,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
     }
 
     _devicesById[device.id] = device;
+    debugPrint('SCRBRD candidate discovered: ${device.id}');
     final candidates = _devicesById.values.map((device) {
       final displayName = device.name.trim().isEmpty
           ? SportsHubBleProtocol.advertisingName
@@ -351,28 +433,31 @@ class BluetoothDeviceTransport implements DeviceTransport {
     QualifiedCharacteristic characteristic,
   ) {
     unawaited(_wakeNotificationSubscription?.cancel());
-    _wakeNotificationSubscription = _bleClient
-        .subscribeToCharacteristic(characteristic)
-        .listen(
-          (value) {
-            debugPrint(
-              'TEMP BLE WAKE EXPERIMENT: wake notification received; '
-              'bytes=$value',
+    _wakeNotificationSubscription =
+        (wakeStreamProvider?.call(characteristic) ??
+                _bleClient.subscribeToCharacteristic(characteristic))
+            .listen(
+              (value) {
+                debugPrint(
+                  'TEMP BLE WAKE EXPERIMENT: wake notification received; '
+                  'bytes=$value',
+                );
+                if (!_wakeNotificationController.isClosed) {
+                  _wakeNotificationController.add(value);
+                }
+              },
+              onError: (Object error) {
+                debugPrint(
+                  'TEMP BLE WAKE EXPERIMENT: wake notification subscription '
+                  'failed: $error',
+                );
+              },
+              onDone: () {
+                debugPrint(
+                  'TEMP BLE WAKE EXPERIMENT: wake subscription cancelled',
+                );
+              },
             );
-            if (!_wakeNotificationController.isClosed) {
-              _wakeNotificationController.add(value);
-            }
-          },
-          onError: (Object error) {
-            debugPrint(
-              'TEMP BLE WAKE EXPERIMENT: wake notification subscription '
-              'failed: $error',
-            );
-          },
-          onDone: () {
-            debugPrint('TEMP BLE WAKE EXPERIMENT: wake subscription cancelled');
-          },
-        );
     debugPrint('TEMP BLE WAKE EXPERIMENT: wake subscription started');
   }
 

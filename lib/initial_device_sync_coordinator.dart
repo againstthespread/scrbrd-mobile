@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'ble_device_state.dart';
 import 'session_aware_device_sender.dart';
+import 'sports_operation_gate.dart';
 import 'sports_league.dart';
 import 'sports_repository.dart';
 
@@ -25,9 +26,11 @@ class InitialDeviceSyncCoordinator {
     required this.sender,
     required this.isBleConnected,
     DateTime Function()? clock,
+    SportsOperationGate? operationGate,
     this.onStatusChanged,
     this.onDiagnostic,
-  }) : clock = clock ?? DateTime.now;
+  }) : clock = clock ?? DateTime.now,
+       operationGate = operationGate ?? SportsOperationGate();
 
   static const syncStartCommand = 'SYNC_START';
   static const syncCompleteCommand = 'SYNC_COMPLETE';
@@ -37,6 +40,7 @@ class InitialDeviceSyncCoordinator {
   final SessionAwareDeviceSender sender;
   final bool Function() isBleConnected;
   final DateTime Function() clock;
+  final SportsOperationGate operationGate;
   final void Function(InitialSyncSnapshot snapshot)? onStatusChanged;
   final void Function(String message)? onDiagnostic;
 
@@ -73,6 +77,10 @@ class InitialDeviceSyncCoordinator {
   }
 
   Future<void> _run(int generation) async {
+    await operationGate.runInitialSync(() => _runOwned(generation));
+  }
+
+  Future<void> _runOwned(int generation) async {
     final now = clock();
     final today = DateTime(now.year, now.month, now.day);
     _setSnapshot(const InitialSyncSnapshot(status: InitialSyncStatus.syncing));
@@ -185,6 +193,10 @@ class InitialDeviceSyncCoordinator {
   void _setSnapshot(InitialSyncSnapshot value) {
     _snapshot = value;
     onStatusChanged?.call(value);
+    if (value.status != InitialSyncStatus.idle &&
+        value.status != InitialSyncStatus.syncing) {
+      _diagnose('Initial sync terminal status=${value.status.name}');
+    }
   }
 
   String _dateText(DateTime date) =>

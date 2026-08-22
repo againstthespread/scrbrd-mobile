@@ -185,6 +185,48 @@ void main() {
     ).refreshTrackedSessionOnce();
     expect(transport.slates, isEmpty);
   });
+
+  for (final change in [
+    ('inning', _mlb(clock: 'Top 5th'), _mlb(clock: 'Bot 5th')),
+    ('bases', _mlb(onFirst: false), _mlb(onFirst: true)),
+    ('outs', _mlb(outs: 0), _mlb(outs: 1)),
+  ]) {
+    test('first WAKE detects MLB ${change.$1} change', () async {
+      final session = TrackedDeviceSession()
+        ..recordTeamSlate(
+          league: SportsLeague.mlb,
+          selectedDate: _date,
+          games: [change.$2],
+        );
+      final transport = _Transport();
+
+      await _coordinator(
+        _Source({
+          SportsLeague.mlb: [change.$3],
+        }),
+        _GolfSource(_golf('-1')),
+        session,
+        transport,
+      ).refreshTrackedSessionOnce();
+
+      expect(transport.slates, hasLength(1));
+    });
+  }
+
+  test('first WAKE detects PGA THRU detail change', () async {
+    final session = TrackedDeviceSession()
+      ..recordGolf(_golf('-3', detail: 'THRU 7'));
+    final transport = _Transport();
+
+    await _coordinator(
+      _Source(const {}),
+      _GolfSource(_golf('-3', detail: 'THRU 8')),
+      session,
+      transport,
+    ).refreshTrackedSessionOnce();
+
+    expect(transport.golf, hasLength(1));
+  });
 }
 
 final _date = DateTime(2026, 8, 21);
@@ -251,11 +293,36 @@ GameData _nfl({required int down, required int distance}) => GameData(
   ),
 );
 
-GolfLeaderboard _golf(String score) => GolfLeaderboard(
+GameData _mlb({String clock = 'Top 5th', bool onFirst = false, int outs = 0}) =>
+    GameData(
+      eventId: 'mlb-state-1',
+      league: 'MLB',
+      awayTeam: 'A',
+      homeTeam: 'H',
+      awayScore: 1,
+      homeScore: 0,
+      status: 'LIVE',
+      clock: clock,
+      scheduledStartTime: _date,
+      baseballState: BaseballGameState(
+        runnerOnFirst: onFirst,
+        runnerOnSecond: false,
+        runnerOnThird: false,
+        outs: outs,
+      ),
+    );
+
+GolfLeaderboard _golf(String score, {String? detail}) => GolfLeaderboard(
   tournamentId: 'pga-1',
   tournamentName: 'Open',
   golfers: [
-    GolfLeaderboardRow(playerId: '1', name: 'Player', rank: '1', score: score),
+    GolfLeaderboardRow(
+      playerId: '1',
+      name: 'Player',
+      rank: '1',
+      score: score,
+      detail: detail,
+    ),
   ],
   isInProgress: true,
   isOver: false,

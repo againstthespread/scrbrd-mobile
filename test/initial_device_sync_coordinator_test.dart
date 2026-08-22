@@ -46,6 +46,19 @@ void main() {
     );
   });
 
+  test('connected sending connected remains one connection session', () async {
+    final harness = _Harness();
+    harness.coordinator.handleConnectionState(BleConnectionState.connected);
+    harness.coordinator.handleConnectionState(BleConnectionState.sending);
+    harness.coordinator.handleConnectionState(BleConnectionState.connected);
+    await harness.settle();
+
+    expect(
+      harness.transport.controls.where((value) => value == 'SYNC_START'),
+      hasLength(1),
+    );
+  });
+
   test('SYNC_START precedes fetch and all-empty sends SYNC_EMPTY', () async {
     final events = <String>[];
     final harness = _Harness(events: events);

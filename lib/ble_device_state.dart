@@ -7,6 +7,12 @@ enum BleConnectionState {
   error,
 }
 
+extension BleConnectionStateSemantics on BleConnectionState {
+  bool get isPhysicallyConnected =>
+      this == BleConnectionState.connected ||
+      this == BleConnectionState.sending;
+}
+
 class BleDeviceCandidate {
   const BleDeviceCandidate({required this.id, required this.name});
 

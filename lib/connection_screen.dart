@@ -13,6 +13,7 @@ import 'push_notification_service.dart';
 import 'settings_screen.dart';
 import 'sports_data_provider.dart';
 import 'sports_league.dart';
+import 'sports_operation_gate.dart';
 import 'sports_repository.dart';
 import 'session_aware_device_sender.dart';
 import 'tracked_device_session.dart';
@@ -38,6 +39,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   late final TrackedDeviceSession _trackedSession;
   late final LiveRefreshCoordinator _liveRefreshCoordinator;
   late final InitialDeviceSyncCoordinator _initialSyncCoordinator;
+  late final SportsOperationGate _sportsOperationGate;
   StreamSubscription<BleDeviceSnapshot>? _snapshotSubscription;
   StreamSubscription<List<int>>? _wakeNotificationSubscription;
   StreamSubscription<BackgroundScoreRefreshRequest>? _scoreRefreshSubscription;
@@ -71,13 +73,16 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       transport: _transport,
       session: _trackedSession,
     );
+    _sportsOperationGate = SportsOperationGate(
+      onDiagnostic: _recordBackgroundUpdaterDiagnostic,
+    );
     _liveRefreshCoordinator = LiveRefreshCoordinator(
       repository: widget.repository,
       transport: _deviceSender,
       session: _trackedSession,
       isAppBackgrounded: () => _isAppBackgrounded,
       isBleConnected: () =>
-          _transport.currentSnapshot.state == BleConnectionState.connected,
+          _transport.currentSnapshot.state.isPhysicallyConnected,
       isLiveActivityActive: _liveActivityDiagnostics.isActive,
       onDiagnostic: _recordBackgroundUpdaterDiagnostic,
     );
@@ -85,7 +90,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       repository: widget.repository,
       sender: _deviceSender,
       isBleConnected: () =>
-          _transport.currentSnapshot.state == BleConnectionState.connected,
+          _transport.currentSnapshot.state.isPhysicallyConnected,
+      operationGate: _sportsOperationGate,
       onStatusChanged: _recordInitialSyncStatus,
       onDiagnostic: (message) => debugPrint('INITIAL DEVICE SYNC: $message'),
     );
@@ -96,10 +102,18 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     _scoreRefreshSubscription = BackgroundScoreRefreshDispatcher.instance.events
         .listen((request) => unawaited(_handleBackgroundScoreRefresh(request)));
     _snapshotSubscription = _transport.snapshots.listen((snapshot) {
+      final wasConnected = _deviceSnapshot.state.isPhysicallyConnected;
+      final isConnected = snapshot.state.isPhysicallyConnected;
+      if (!wasConnected && isConnected) {
+        debugPrint('physical BLE connection established');
+      } else if (wasConnected && !isConnected) {
+        debugPrint('physical BLE connection ended');
+      }
       _initialSyncCoordinator.handleConnectionState(snapshot.state);
       if (snapshot.state == BleConnectionState.disconnected ||
           snapshot.state == BleConnectionState.error) {
         _liveRefreshCoordinator.cancelCurrentRefresh('BLE disconnected');
+        _sportsOperationGate.clearDeferredWake();
       }
       if (mounted) setState(() => _deviceSnapshot = snapshot);
     });
@@ -113,7 +127,9 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   Future<void> _handleBackgroundScoreRefresh(
     BackgroundScoreRefreshRequest request,
   ) async {
-    await _liveRefreshCoordinator.refreshTrackedSessionOnce();
+    await _sportsOperationGate.requestLiveRefresh(
+      _liveRefreshCoordinator.refreshTrackedSessionOnce,
+    );
     request.complete();
   }
 
@@ -150,7 +166,11 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       'TEMP BLE WAKE EXPERIMENT: wake notification received; '
       'lifecycle=${_lifecycleState.name}; payload=$payload',
     );
-    unawaited(_liveRefreshCoordinator.refreshTrackedSessionOnce());
+    unawaited(
+      _sportsOperationGate.requestLiveRefresh(
+        _liveRefreshCoordinator.refreshTrackedSessionOnce,
+      ),
+    );
   }
 
   Future<void> _startLiveActivityDiagnostic() async {
@@ -443,8 +463,10 @@ class _ConnectionStatusCard extends StatelessWidget {
   }
 
   (String, String?) _statusText() {
-    if (snapshot.state == BleConnectionState.scanning ||
-        snapshot.state == BleConnectionState.connecting) {
+    if (snapshot.state == BleConnectionState.scanning) {
+      return ('Looking for SCRBRD...', null);
+    }
+    if (snapshot.state == BleConnectionState.connecting) {
       return ('Connecting...', 'Looking for your SCRBRD');
     }
     if (snapshot.state == BleConnectionState.error) {
