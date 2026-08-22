@@ -13,6 +13,269 @@ import 'package:sports_hub_mobile/sports_repository.dart';
 import 'package:sports_hub_mobile/tracked_device_session.dart';
 
 void main() {
+  test('all tracked league fetches start concurrently', () async {
+    final teamCompleters = {
+      for (final league in [
+        SportsLeague.nfl,
+        SportsLeague.nba,
+        SportsLeague.mlb,
+      ])
+        league: Completer<List<SportsGame>>(),
+    };
+    final golfCompleter = Completer<GolfLeaderboard>();
+    final source = _ConcurrentSource({
+      for (final entry in teamCompleters.entries) entry.key: entry.value.future,
+    });
+    final golf = _ConcurrentGolfSource(golfCompleter.future);
+    final session = _allLeagueSession();
+
+    final refresh = LiveRefreshCoordinator(
+      repository: SportsRepository(source, golfDataSource: golf),
+      transport: _Transport(),
+      session: session,
+      isBleConnected: () => true,
+    ).refreshTrackedSessionOnce();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(source.started, [
+      SportsLeague.nfl,
+      SportsLeague.nba,
+      SportsLeague.mlb,
+    ]);
+    expect(golf.started, isTrue);
+
+    for (final entry in teamCompleters.entries) {
+      entry.value.complete([_sportsGameFrom(_game(entry.key.label, '1', 1))]);
+    }
+    golfCompleter.complete(_golf('-1'));
+    await refresh;
+  });
+
+  test('one failed fetch does not prevent changed MLB and PGA sends', () async {
+    final source = _ConcurrentSource({
+      SportsLeague.nfl: Future<List<SportsGame>>.error(
+        StateError('NFL unavailable'),
+      ),
+      SportsLeague.mlb: Future.value([_sportsGameFrom(_game('MLB', '1', 2))]),
+    });
+    final transport = _Transport();
+    final session = TrackedDeviceSession()
+      ..recordTeamSlate(
+        league: SportsLeague.nfl,
+        selectedDate: _date,
+        games: [_game('NFL', '1', 1)],
+      )
+      ..recordTeamSlate(
+        league: SportsLeague.mlb,
+        selectedDate: _date,
+        games: [_game('MLB', '1', 1)],
+      )
+      ..recordGolf(_golf('-1'));
+
+    await LiveRefreshCoordinator(
+      repository: SportsRepository(
+        source,
+        golfDataSource: _ConcurrentGolfSource(Future.value(_golf('-2'))),
+      ),
+      transport: transport,
+      session: session,
+      isBleConnected: () => true,
+    ).refreshTrackedSessionOnce();
+
+    expect(transport.slates.single.single.league, 'MLB');
+    expect(transport.golf, hasLength(1));
+    expect(
+      (session[SportsLeague.nfl] as TrackedTeamSlate).games.single.awayScore,
+      1,
+    );
+  });
+
+  test('MLB fetch failure does not prevent changed PGA send', () async {
+    final transport = _Transport();
+    final session = TrackedDeviceSession()
+      ..recordTeamSlate(
+        league: SportsLeague.mlb,
+        selectedDate: _date,
+        games: [_game('MLB', '1', 1)],
+      )
+      ..recordGolf(_golf('-1'));
+
+    await LiveRefreshCoordinator(
+      repository: SportsRepository(
+        _ConcurrentSource({
+          SportsLeague.mlb: Future<List<SportsGame>>.error(
+            StateError('MLB unavailable'),
+          ),
+        }),
+        golfDataSource: _ConcurrentGolfSource(Future.value(_golf('-2'))),
+      ),
+      transport: transport,
+      session: session,
+      isBleConnected: () => true,
+    ).refreshTrackedSessionOnce();
+
+    expect(transport.slates, isEmpty);
+    expect(transport.golf, hasLength(1));
+    expect(
+      (session[SportsLeague.mlb] as TrackedTeamSlate).games.single.awayScore,
+      1,
+    );
+  });
+
+  test('changed league BLE sends are sequential and ordered', () async {
+    final source = _ConcurrentSource({
+      for (final league in [
+        SportsLeague.nfl,
+        SportsLeague.nba,
+        SportsLeague.mlb,
+      ])
+        league: Future.value([_sportsGameFrom(_game(league.label, '1', 2))]),
+    });
+    final transport = _BlockingTransport();
+    final refresh = LiveRefreshCoordinator(
+      repository: SportsRepository(
+        source,
+        golfDataSource: _ConcurrentGolfSource(Future.value(_golf('-2'))),
+      ),
+      transport: transport,
+      session: _allLeagueSession(),
+      isBleConnected: () => true,
+    ).refreshTrackedSessionOnce();
+
+    await Future<void>.delayed(Duration.zero);
+    expect(transport.started, ['NFL']);
+    transport.releaseNext();
+    await Future<void>.delayed(Duration.zero);
+    expect(transport.started, ['NFL', 'NBA']);
+    transport.releaseNext();
+    await Future<void>.delayed(Duration.zero);
+    expect(transport.started, ['NFL', 'NBA', 'MLB']);
+    transport.releaseNext();
+    await Future<void>.delayed(Duration.zero);
+    expect(transport.started, ['NFL', 'NBA', 'MLB', 'PGA']);
+    transport.releaseNext();
+    await refresh;
+
+    expect(transport.maximumConcurrentSends, 1);
+  });
+
+  test(
+    'failed send retains that baseline and later league still advances',
+    () async {
+      final session = TrackedDeviceSession()
+        ..recordTeamSlate(
+          league: SportsLeague.nfl,
+          selectedDate: _date,
+          games: [_game('NFL', '1', 1)],
+        )
+        ..recordTeamSlate(
+          league: SportsLeague.mlb,
+          selectedDate: _date,
+          games: [_game('MLB', '1', 1)],
+        );
+      final transport = _FailingTransport('NFL');
+      await LiveRefreshCoordinator(
+        repository: SportsRepository(
+          _ConcurrentSource({
+            SportsLeague.nfl: Future.value([
+              _sportsGameFrom(_game('NFL', '1', 2)),
+            ]),
+            SportsLeague.mlb: Future.value([
+              _sportsGameFrom(_game('MLB', '1', 2)),
+            ]),
+          }),
+        ),
+        transport: transport,
+        session: session,
+        isBleConnected: () => true,
+      ).refreshTrackedSessionOnce();
+
+      expect(
+        (session[SportsLeague.nfl] as TrackedTeamSlate).games.single.awayScore,
+        1,
+      );
+      expect(
+        (session[SportsLeague.mlb] as TrackedTeamSlate).games.single.awayScore,
+        2,
+      );
+      expect(transport.attempted, ['NFL', 'MLB']);
+    },
+  );
+
+  test('later league comparison uses the original stable snapshot', () async {
+    final session = TrackedDeviceSession()
+      ..recordTeamSlate(
+        league: SportsLeague.nfl,
+        selectedDate: _date,
+        games: [_game('NFL', '1', 1)],
+      )
+      ..recordTeamSlate(
+        league: SportsLeague.mlb,
+        selectedDate: _date,
+        games: [_game('MLB', '1', 1)],
+      );
+    final transport = _MutatingTransport(session);
+
+    await LiveRefreshCoordinator(
+      repository: SportsRepository(
+        _ConcurrentSource({
+          SportsLeague.nfl: Future.value([
+            _sportsGameFrom(_game('NFL', '1', 2)),
+          ]),
+          SportsLeague.mlb: Future.value([
+            _sportsGameFrom(_game('MLB', '1', 2)),
+          ]),
+        }),
+      ),
+      transport: transport,
+      session: session,
+      isBleConnected: () => true,
+    ).refreshTrackedSessionOnce();
+
+    expect(transport.attempted, ['NFL', 'MLB']);
+  });
+
+  test('disconnect after first send suppresses remaining sends', () async {
+    var connected = true;
+    final transport = _DisconnectingTransport(() => connected = false);
+    final session = TrackedDeviceSession()
+      ..recordTeamSlate(
+        league: SportsLeague.nfl,
+        selectedDate: _date,
+        games: [_game('NFL', '1', 1)],
+      )
+      ..recordTeamSlate(
+        league: SportsLeague.mlb,
+        selectedDate: _date,
+        games: [_game('MLB', '1', 1)],
+      );
+    await LiveRefreshCoordinator(
+      repository: SportsRepository(
+        _ConcurrentSource({
+          SportsLeague.nfl: Future.value([
+            _sportsGameFrom(_game('NFL', '1', 2)),
+          ]),
+          SportsLeague.mlb: Future.value([
+            _sportsGameFrom(_game('MLB', '1', 2)),
+          ]),
+        }),
+      ),
+      transport: transport,
+      session: session,
+      isBleConnected: () => connected,
+    ).refreshTrackedSessionOnce();
+
+    expect(transport.attempted, ['NFL']);
+    expect(
+      (session[SportsLeague.nfl] as TrackedTeamSlate).games.single.awayScore,
+      2,
+    );
+    expect(
+      (session[SportsLeague.mlb] as TrackedTeamSlate).games.single.awayScore,
+      1,
+    );
+  });
+
   test('one wake checks MLB and PGA and sends only changed PGA', () async {
     final team = _Source({
       SportsLeague.mlb: [_game('MLB', '1', 1)],
@@ -160,7 +423,7 @@ void main() {
     pending.complete([_game('NFL', '1', 2)]);
     await refresh;
 
-    expect(source.requested, [SportsLeague.nfl]);
+    expect(source.requested, [SportsLeague.nfl, SportsLeague.mlb]);
     expect(transport.slates, isEmpty);
   });
 
@@ -289,6 +552,19 @@ TrackedDeviceSession _session({
   return session;
 }
 
+TrackedDeviceSession _allLeagueSession() {
+  final session = TrackedDeviceSession();
+  for (final league in [SportsLeague.nfl, SportsLeague.nba, SportsLeague.mlb]) {
+    session.recordTeamSlate(
+      league: league,
+      selectedDate: _date,
+      games: [_game(league.label, '1', 1)],
+    );
+  }
+  session.recordGolf(_golf('-1'));
+  return session;
+}
+
 LiveRefreshCoordinator _coordinator(
   _Source source,
   _GolfSource golf,
@@ -314,6 +590,20 @@ GameData _game(String league, String id, int score) => GameData(
   status: 'LIVE',
   clock: 'Top 5th',
   scheduledStartTime: _date,
+);
+
+SportsGame _sportsGameFrom(GameData game) => SportsGame(
+  eventId: game.eventId,
+  league: game.league,
+  awayTeam: game.awayTeam,
+  homeTeam: game.homeTeam,
+  awayScore: game.awayScore,
+  homeScore: game.homeScore,
+  status: game.status,
+  clock: game.clock,
+  scheduledStartTime: game.scheduledStartTime,
+  baseballState: game.baseballState,
+  footballState: game.footballState,
 );
 
 GameData _nfl({required int down, required int distance}) => GameData(
@@ -418,6 +708,39 @@ class _GolfSource implements GolfDataSource {
       response;
 }
 
+class _ConcurrentSource implements SportsDataSource {
+  _ConcurrentSource(this.responses);
+
+  final Map<SportsLeague, Future<List<SportsGame>>> responses;
+  final started = <SportsLeague>[];
+
+  @override
+  Future<List<SportsGame>> fetchGamesForDate(
+    SportsLeague league,
+    DateTime date,
+  ) {
+    started.add(league);
+    return responses[league] ?? Future.value(const []);
+  }
+}
+
+class _ConcurrentGolfSource implements GolfDataSource {
+  _ConcurrentGolfSource(this.response);
+
+  final Future<GolfLeaderboard> response;
+  bool started = false;
+
+  @override
+  Future<GolfLeaderboard> fetchGolfLeaderboardByTournamentId(String id) {
+    started = true;
+    return response;
+  }
+
+  @override
+  Future<GolfLeaderboard?> fetchGolfLeaderboardForDate(DateTime date) async =>
+      response;
+}
+
 class _Transport implements DeviceTransport {
   final slates = <List<GameData>>[];
   final golf = <GolfLeaderboard>[];
@@ -430,4 +753,110 @@ class _Transport implements DeviceTransport {
   @override
   Future<void> sendGolfLeaderboard(GolfLeaderboard leaderboard) async =>
       golf.add(leaderboard);
+}
+
+class _BlockingTransport implements DeviceTransport {
+  final started = <String>[];
+  Completer<void>? _release;
+  var _activeSends = 0;
+  var maximumConcurrentSends = 0;
+
+  void releaseNext() => _release!.complete();
+
+  Future<void> _send(String label) async {
+    started.add(label);
+    _activeSends++;
+    if (_activeSends > maximumConcurrentSends) {
+      maximumConcurrentSends = _activeSends;
+    }
+    final release = _release = Completer<void>();
+    await release.future;
+    _activeSends--;
+  }
+
+  @override
+  Future<void> sendControlCommand(String command) async {}
+
+  @override
+  Future<void> sendGameData(GameData gameData) => _send(gameData.league);
+
+  @override
+  Future<void> sendGameSlate(List<GameData> games) => _send(games.first.league);
+
+  @override
+  Future<void> sendGolfLeaderboard(GolfLeaderboard leaderboard) => _send('PGA');
+}
+
+class _FailingTransport implements DeviceTransport {
+  _FailingTransport(this.failLeague);
+
+  final String failLeague;
+  final attempted = <String>[];
+
+  @override
+  Future<void> sendControlCommand(String command) async {}
+
+  @override
+  Future<void> sendGameData(GameData gameData) async {}
+
+  @override
+  Future<void> sendGameSlate(List<GameData> games) async {
+    final league = games.first.league;
+    attempted.add(league);
+    if (league == failLeague) throw StateError('$league transfer failed');
+  }
+
+  @override
+  Future<void> sendGolfLeaderboard(GolfLeaderboard leaderboard) async {}
+}
+
+class _DisconnectingTransport implements DeviceTransport {
+  _DisconnectingTransport(this.onFirstSend);
+
+  final void Function() onFirstSend;
+  final attempted = <String>[];
+
+  @override
+  Future<void> sendControlCommand(String command) async {}
+
+  @override
+  Future<void> sendGameData(GameData gameData) async {}
+
+  @override
+  Future<void> sendGameSlate(List<GameData> games) async {
+    attempted.add(games.first.league);
+    if (attempted.length == 1) onFirstSend();
+  }
+
+  @override
+  Future<void> sendGolfLeaderboard(GolfLeaderboard leaderboard) async {}
+}
+
+class _MutatingTransport implements DeviceTransport {
+  _MutatingTransport(this.session);
+
+  final TrackedDeviceSession session;
+  final attempted = <String>[];
+
+  @override
+  Future<void> sendControlCommand(String command) async {}
+
+  @override
+  Future<void> sendGameData(GameData gameData) async {}
+
+  @override
+  Future<void> sendGameSlate(List<GameData> games) async {
+    final league = games.first.league;
+    attempted.add(league);
+    if (league == 'NFL') {
+      session.recordTeamSlate(
+        league: SportsLeague.mlb,
+        selectedDate: _date,
+        games: [_game('MLB', '1', 2)],
+      );
+    }
+  }
+
+  @override
+  Future<void> sendGolfLeaderboard(GolfLeaderboard leaderboard) async {}
 }
