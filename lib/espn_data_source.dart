@@ -83,6 +83,10 @@ class EspnDataSource implements SportsDataSource, GolfDataSource {
     );
     if (leaderboard != null) {
       _golfTournamentDates[leaderboard.tournamentId] = selectedDate;
+      debugPrint(
+        'PGA discovery cache: tournamentId=${leaderboard.tournamentId}; '
+        'selectedDate=${_compactDate(selectedDate)}',
+      );
     }
     _logGolf(leaderboard);
     return leaderboard;
@@ -93,6 +97,10 @@ class EspnDataSource implements SportsDataSource, GolfDataSource {
     String tournamentId,
   ) async {
     final selectedDate = _golfTournamentDates[tournamentId];
+    debugPrint(
+      'PGA tracked tournament=$tournamentId; PGA provider discovered date='
+      '${selectedDate == null ? '<missing>' : _compactDate(selectedDate)}',
+    );
     if (selectedDate == null) {
       throw EspnDataException(
         'ESPN tournament $tournamentId has no discovered date. Refresh the '
@@ -115,6 +123,10 @@ class EspnDataSource implements SportsDataSource, GolfDataSource {
     _logGolf(leaderboard);
     return leaderboard;
   }
+
+  @visibleForTesting
+  DateTime? discoveredGolfDateForTesting(String tournamentId) =>
+      _golfTournamentDates[tournamentId];
 
   Future<Map<String, dynamic>> _getJson(
     Uri uri, {

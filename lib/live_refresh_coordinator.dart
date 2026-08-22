@@ -1,6 +1,7 @@
 import 'device_transport.dart';
 import 'game_data.dart';
 import 'game_packet_serializer.dart';
+import 'golf_leaderboard.dart';
 import 'golf_packet_serializer.dart';
 import 'session_aware_device_sender.dart';
 import 'sports_league.dart';
@@ -30,6 +31,7 @@ class LiveRefreshCoordinator {
 
   bool _isRefreshing = false;
   bool _cancelled = false;
+  int _pgaWakeRefreshCount = 0;
 
   Future<void> refreshTrackedSessionOnce() async {
     if (_isRefreshing) {
@@ -106,23 +108,43 @@ class LiveRefreshCoordinator {
   }
 
   Future<void> _refreshGolf(TrackedGolfLeaderboard tracked) async {
+    _pgaWakeRefreshCount++;
+    final trackedLeaderboard = tracked.leaderboard;
+    _diagnose('WAKE REFRESH #$_pgaWakeRefreshCount PGA');
     _diagnose(
-      'tracked content type=PGA; tournament ID=${tracked.leaderboard.tournamentId}',
+      'PGA tracked baseline: tournament ID=${trackedLeaderboard.tournamentId}; '
+      'tournament name=${trackedLeaderboard.tournamentName}; '
+      'golfer count=${trackedLeaderboard.golfers.length}',
     );
+    _diagnose('PGA tracked tournament=${trackedLeaderboard.tournamentId}');
     try {
       final fresh = await repository.fetchGolfLeaderboardByTournamentId(
-        tracked.leaderboard.tournamentId,
+        trackedLeaderboard.tournamentId,
       );
       _diagnose('PGA fetch succeeded; golfers=${fresh.golfers.length}');
-      if (_bytesEqual(
-        _golfSerializer.canonicalContent(tracked.leaderboard),
-        _golfSerializer.canonicalContent(fresh),
-      )) {
-        _diagnose('PGA no relevant change');
+      final trackedCanonical = _golfSerializer.canonicalContent(
+        trackedLeaderboard,
+      );
+      final freshCanonical = _golfSerializer.canonicalContent(fresh);
+      final equal = _bytesEqual(trackedCanonical, freshCanonical);
+      _diagnose(
+        'PGA canonical comparison: tracked canonical bytes='
+        '${trackedCanonical.length}; fresh canonical bytes='
+        '${freshCanonical.length}; equal=$equal',
+      );
+      if (equal) {
+        _diagnose('PGA no update: no relevant change');
         return;
       }
-      _diagnose('PGA change detected; full leaderboard write attempted');
-      if (!await _canContinue()) return;
+      _diagnoseGolfDifferences(trackedLeaderboard, fresh);
+      _diagnose('PGA change detected');
+      if (!await _canContinue()) {
+        _diagnose(
+          'PGA update not sent: BLE/background requirements unavailable',
+        );
+        return;
+      }
+      _diagnose('PGA transfer started');
       final sender = transport;
       if (sender is SessionAwareDeviceSender) {
         await sender.sendGolf(fresh, selectedDate: tracked.selectedDate);
@@ -130,9 +152,75 @@ class LiveRefreshCoordinator {
         await sender.sendGolfLeaderboard(fresh);
         session.recordGolf(fresh, selectedDate: tracked.selectedDate);
       }
-      _diagnose('PGA BLE write succeeded');
+      _diagnose('PGA transfer succeeded');
+      _diagnose('PGA baseline replaced');
     } on Object catch (error) {
-      _diagnose('PGA refresh/write failed: $error');
+      _diagnose('PGA no update: refresh/transfer failed: $error');
+    }
+  }
+
+  void _diagnoseGolfDifferences(
+    GolfLeaderboard tracked,
+    GolfLeaderboard fresh,
+  ) {
+    if (tracked.tournamentId != fresh.tournamentId) {
+      _diagnose(
+        'PGA difference: tournamentId tracked=${tracked.tournamentId} '
+        'fresh=${fresh.tournamentId}',
+      );
+    }
+    if (tracked.tournamentName != fresh.tournamentName) {
+      _diagnose(
+        'PGA difference: tournamentName tracked=${tracked.tournamentName} '
+        'fresh=${fresh.tournamentName}',
+      );
+    }
+    if (tracked.golfers.length != fresh.golfers.length) {
+      _diagnose(
+        'PGA difference: golfer count tracked=${tracked.golfers.length} '
+        'fresh=${fresh.golfers.length}',
+      );
+    }
+
+    final trackedById = {
+      for (final golfer in tracked.golfers) golfer.playerId: golfer,
+    };
+    final freshById = {
+      for (final golfer in fresh.golfers) golfer.playerId: golfer,
+    };
+    var logged = 0;
+    for (final playerId in {...trackedById.keys, ...freshById.keys}) {
+      final oldRow = trackedById[playerId];
+      final newRow = freshById[playerId];
+      if (oldRow == null || newRow == null) {
+        _diagnose(
+          'PGA difference: playerId=$playerId; '
+          'tracked=${oldRow == null ? 'missing' : 'present'}; '
+          'fresh=${newRow == null ? 'missing' : 'present'}',
+        );
+        if (++logged == 3) return;
+        continue;
+      }
+      final trackedIndex = tracked.golfers.indexOf(oldRow);
+      final freshIndex = fresh.golfers.indexOf(newRow);
+      if (oldRow.name == newRow.name &&
+          oldRow.rank == newRow.rank &&
+          oldRow.score == newRow.score &&
+          oldRow.detail == newRow.detail &&
+          trackedIndex == freshIndex) {
+        continue;
+      }
+      _diagnose(
+        'PGA difference: playerId=$playerId; name=${newRow.name}; '
+        'tracked rank=${oldRow.rank} score=${oldRow.score} '
+        'detail=${oldRow.detail ?? '<none>'} position=$trackedIndex; '
+        'fresh rank=${newRow.rank} score=${newRow.score} '
+        'detail=${newRow.detail ?? '<none>'} position=$freshIndex',
+      );
+      if (++logged == 3) return;
+    }
+    if (logged == 0) {
+      _diagnose('PGA difference: canonical metadata changed');
     }
   }
 

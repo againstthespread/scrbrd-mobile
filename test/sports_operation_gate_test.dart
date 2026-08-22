@@ -122,6 +122,156 @@ void main() {
       );
     },
   );
+
+  test(
+    'initial PGA baseline and repeated WAKEs send only meaningful changes',
+    () async {
+      final initialGolf = _pgaLeaderboard(score: 'E', detail: 'THRU 4');
+      final wakeOne = _pgaLeaderboard(score: '-1', detail: 'THRU 5');
+      final wakeTwo = _pgaLeaderboard(score: '-1', detail: 'THRU 5');
+      final wakeThree = _pgaLeaderboard(score: '-2', detail: 'THRU 6');
+      final golf = _QueuedGolfSource(initialGolf, [
+        wakeOne,
+        wakeTwo,
+        wakeThree,
+      ]);
+      final repository = SportsRepository(
+        _Source(mlbScores: const []),
+        golfDataSource: golf,
+      );
+      final session = TrackedDeviceSession();
+      final transport = _Transport();
+      final sender = SessionAwareDeviceSender(
+        transport: transport,
+        session: session,
+      );
+      final diagnostics = <String>[];
+      final gate = SportsOperationGate();
+      final initial = InitialDeviceSyncCoordinator(
+        repository: repository,
+        sender: sender,
+        isBleConnected: () => true,
+        operationGate: gate,
+        clock: () => _date,
+      );
+      final live = LiveRefreshCoordinator(
+        repository: repository,
+        transport: sender,
+        session: session,
+        isAppBackgrounded: () => false,
+        isBleConnected: () => true,
+        isLiveActivityActive: () async => true,
+        onDiagnostic: diagnostics.add,
+      );
+
+      await initial.startForConnectionForTest();
+
+      expect(gate.isInitialSyncActive, isFalse);
+      expect(transport.golf, [initialGolf]);
+      final baseline = session[SportsLeague.pga] as TrackedGolfLeaderboard;
+      expect(baseline.leaderboard.tournamentId, 'pga-live-1');
+      expect(baseline.leaderboard.tournamentName, 'Live Open');
+      expect(baseline.leaderboard.golfers, hasLength(2));
+      expect(baseline.leaderboard.golfers.first.score, 'E');
+      expect(baseline.leaderboard.golfers.first.detail, 'THRU 4');
+
+      await gate.requestLiveRefresh(live.refreshTrackedSessionOnce);
+      expect(transport.golf, [initialGolf, wakeOne]);
+      expect(
+        (session[SportsLeague.pga] as TrackedGolfLeaderboard)
+            .leaderboard
+            .golfers
+            .first
+            .score,
+        '-1',
+      );
+
+      await gate.requestLiveRefresh(live.refreshTrackedSessionOnce);
+      expect(transport.golf, [initialGolf, wakeOne]);
+
+      await gate.requestLiveRefresh(live.refreshTrackedSessionOnce);
+      expect(transport.golf, [initialGolf, wakeOne, wakeThree]);
+      expect(golf.requestedTournamentIds, [
+        'pga-live-1',
+        'pga-live-1',
+        'pga-live-1',
+      ]);
+      expect(diagnostics, contains('WAKE REFRESH #1 PGA'));
+      expect(diagnostics, contains('WAKE REFRESH #2 PGA'));
+      expect(diagnostics, contains('WAKE REFRESH #3 PGA'));
+      expect(
+        diagnostics,
+        contains(
+          allOf(contains('tracked canonical bytes='), contains('equal=false')),
+        ),
+      );
+      expect(
+        diagnostics,
+        contains(
+          allOf(
+            contains('PGA difference: playerId=golfer-a'),
+            contains('score=E'),
+            contains('score=-1'),
+            contains('detail=THRU 4'),
+            contains('detail=THRU 5'),
+          ),
+        ),
+      );
+      expect(
+        diagnostics.where((value) => value == 'PGA transfer succeeded'),
+        hasLength(2),
+      );
+      expect(
+        diagnostics.where((value) => value == 'PGA baseline replaced'),
+        hasLength(2),
+      );
+      expect(diagnostics, contains('PGA no update: no relevant change'));
+    },
+  );
+
+  test(
+    'failed PGA WAKE transfer does not replace successful baseline',
+    () async {
+      final initialGolf = _pgaLeaderboard(score: 'E', detail: 'THRU 4');
+      final freshGolf = _pgaLeaderboard(score: '-1', detail: 'THRU 5');
+      final golf = _QueuedGolfSource(initialGolf, [freshGolf]);
+      final repository = SportsRepository(
+        _Source(mlbScores: const []),
+        golfDataSource: golf,
+      );
+      final session = TrackedDeviceSession();
+      final transport = _Transport();
+      final sender = SessionAwareDeviceSender(
+        transport: transport,
+        session: session,
+      );
+      final gate = SportsOperationGate();
+      final initial = InitialDeviceSyncCoordinator(
+        repository: repository,
+        sender: sender,
+        isBleConnected: () => true,
+        operationGate: gate,
+        clock: () => _date,
+      );
+      final live = LiveRefreshCoordinator(
+        repository: repository,
+        transport: sender,
+        session: session,
+        isAppBackgrounded: () => false,
+        isBleConnected: () => true,
+        isLiveActivityActive: () async => true,
+      );
+
+      await initial.startForConnectionForTest();
+      transport.failNextGolf = true;
+      await gate.requestLiveRefresh(live.refreshTrackedSessionOnce);
+
+      expect(transport.golf, [initialGolf]);
+      final baseline = session[SportsLeague.pga] as TrackedGolfLeaderboard;
+      expect(baseline.leaderboard.golfers.first.score, 'E');
+      expect(baseline.leaderboard.golfers.first.detail, 'THRU 4');
+    },
+  );
 }
 
 final _date = DateTime(2026, 8, 22);
@@ -142,6 +292,7 @@ class _Source implements SportsDataSource {
       return pendingNfl!.future;
     }
     if (league != SportsLeague.mlb) return const [];
+    if (mlbScores.isEmpty) return const [];
     final index = mlbFetchCount < mlbScores.length
         ? mlbFetchCount
         : mlbScores.length - 1;
@@ -165,9 +316,31 @@ class _GolfSource implements GolfDataSource {
       fresh!;
 }
 
+class _QueuedGolfSource implements GolfDataSource {
+  _QueuedGolfSource(this.initial, this.freshResponses);
+
+  final GolfLeaderboard initial;
+  final List<GolfLeaderboard> freshResponses;
+  final requestedTournamentIds = <String>[];
+  int _freshIndex = 0;
+
+  @override
+  Future<GolfLeaderboard?> fetchGolfLeaderboardForDate(DateTime date) async =>
+      initial;
+
+  @override
+  Future<GolfLeaderboard> fetchGolfLeaderboardByTournamentId(String id) async {
+    requestedTournamentIds.add(id);
+    final response = freshResponses[_freshIndex];
+    _freshIndex++;
+    return response;
+  }
+}
+
 class _Transport implements DeviceTransport {
   final mlbSlates = <List<GameData>>[];
   final golf = <GolfLeaderboard>[];
+  bool failNextGolf = false;
 
   @override
   Future<void> sendControlCommand(String command) async {}
@@ -182,6 +355,10 @@ class _Transport implements DeviceTransport {
 
   @override
   Future<void> sendGolfLeaderboard(GolfLeaderboard leaderboard) async {
+    if (failNextGolf) {
+      failNextGolf = false;
+      throw StateError('PGA transfer failed');
+    }
     golf.add(leaderboard);
   }
 }
@@ -203,6 +380,32 @@ GolfLeaderboard _golf(String score) => GolfLeaderboard(
   tournamentName: 'Open',
   golfers: [
     GolfLeaderboardRow(playerId: '1', name: 'Player', rank: '1', score: score),
+  ],
+  isInProgress: true,
+  isOver: false,
+);
+
+GolfLeaderboard _pgaLeaderboard({
+  required String score,
+  required String detail,
+}) => GolfLeaderboard(
+  tournamentId: 'pga-live-1',
+  tournamentName: 'Live Open',
+  golfers: [
+    GolfLeaderboardRow(
+      playerId: 'golfer-a',
+      name: 'Golfer A',
+      rank: '1',
+      score: score,
+      detail: detail,
+    ),
+    const GolfLeaderboardRow(
+      playerId: 'golfer-b',
+      name: 'Golfer B',
+      rank: '2',
+      score: '+1',
+      detail: 'THRU 5',
+    ),
   ],
   isInProgress: true,
   isOver: false,

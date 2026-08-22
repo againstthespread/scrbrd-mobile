@@ -64,7 +64,7 @@ void main() {
     expect(requests[1].url.queryParameters['_scrbrd_ts'], '1700000000001');
   });
 
-  test('PGA refresh reuses tournament event ID', () async {
+  test('automatic PGA discovery primes date cache for WAKE refresh', () async {
     final requests = <http.Request>[];
     final source = EspnDataSource(
       client: MockClient((incoming) async {
@@ -73,10 +73,24 @@ void main() {
       }),
     );
     await source.fetchGolfLeaderboardForDate(DateTime(2026, 8, 20));
+    expect(source.discoveredGolfDateForTesting('401'), DateTime(2026, 8, 20));
     final leaderboard = await source.fetchGolfLeaderboardByTournamentId('401');
     expect(requests, hasLength(2));
     expect(requests.last.url.queryParameters['dates'], '20260820');
     expect(leaderboard.tournamentId, '401');
+  });
+
+  test('later PGA date discovery refreshes the same provider cache', () async {
+    final source = EspnDataSource(
+      client: MockClient(
+        (_) async => http.Response(jsonEncode(_emptyTournament), 200),
+      ),
+    );
+
+    await source.fetchGolfLeaderboardForDate(DateTime(2026, 8, 20));
+    await source.fetchGolfLeaderboardForDate(DateTime(2026, 8, 21));
+
+    expect(source.discoveredGolfDateForTesting('401'), DateTime(2026, 8, 21));
   });
 
   test(
