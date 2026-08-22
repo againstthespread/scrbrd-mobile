@@ -114,6 +114,31 @@ class SleeperPlayerRepository {
     }
   }
 
+  /// Resolves only from the in-memory or on-disk cache. Automatic BLE-WAKE
+  /// observations must never download Sleeper's full player dataset.
+  Future<Map<String, SleeperFantasyPlayer>> resolveCachedPlayersSafely(
+    Iterable<String> playerIds,
+  ) async {
+    try {
+      final requestedIds = playerIds.toSet();
+      if (requestedIds.isEmpty) return const {};
+      var index = _memoryIndex;
+      if (index == null) {
+        final cached = await _cache.read();
+        if (cached == null) return const {};
+        index = _memoryIndex = cached.players;
+      }
+      final resolved = <String, SleeperFantasyPlayer>{};
+      for (final id in requestedIds) {
+        final player = index[id];
+        if (player != null) resolved[id] = player;
+      }
+      return resolved;
+    } on Object {
+      return const {};
+    }
+  }
+
   Future<Map<String, SleeperFantasyPlayer>> _loadIndex() {
     final memoryIndex = _memoryIndex;
     if (memoryIndex != null) return Future.value(memoryIndex);

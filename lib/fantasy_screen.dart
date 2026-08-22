@@ -4,6 +4,7 @@ import 'fantasy_point_delta_tracker.dart';
 import 'console_device_transport.dart';
 import 'device_transport.dart';
 import 'fantasy_scoring_correlation.dart';
+import 'fantasy_live_observation_coordinator.dart';
 import 'espn_nfl_play_repository.dart';
 import 'fantasy_nfl_play.dart';
 import 'sleeper_api_client.dart';
@@ -11,6 +12,7 @@ import 'sleeper_fantasy_repository.dart';
 import 'sleeper_league_id_store.dart';
 import 'sleeper_models.dart';
 import 'sleeper_player_repository.dart';
+import 'sleeper_roster_id_store.dart';
 
 class FantasyScreen extends StatefulWidget {
   const FantasyScreen({
@@ -20,6 +22,8 @@ class FantasyScreen extends StatefulWidget {
     this.playerRepository,
     this.nflPlayRepository,
     this.transport,
+    this.runtime,
+    this.rosterIdStore,
   });
 
   final SleeperFantasyRepository? repository;
@@ -27,6 +31,8 @@ class FantasyScreen extends StatefulWidget {
   final SleeperPlayerRepository? playerRepository;
   final EspnNflPlayRepository? nflPlayRepository;
   final DeviceTransport? transport;
+  final FantasyLiveObservationCoordinator? runtime;
+  final SleeperRosterIdStore? rosterIdStore;
 
   @override
   State<FantasyScreen> createState() => _FantasyScreenState();
@@ -34,7 +40,7 @@ class FantasyScreen extends StatefulWidget {
 
 class _FantasyScreenState extends State<FantasyScreen> {
   final _leagueIdController = TextEditingController();
-  final _deltaTracker = FantasyPointDeltaTracker();
+  late final FantasyPointDeltaTracker _deltaTracker;
   final _correlator = const FantasyScoringCorrelator();
   SleeperApiClient? _ownedApiClient;
   SleeperApiClient? _ownedPlayerApiClient;
@@ -44,6 +50,7 @@ class _FantasyScreenState extends State<FantasyScreen> {
   late final bool _ownsNflPlayRepository;
   late final SleeperLeagueIdStore _leagueIdStore;
   late final DeviceTransport _transport;
+  late final SleeperRosterIdStore _rosterIdStore;
   SleeperLeagueSnapshot? _snapshot;
   SleeperFantasyMatchup? _selectedMatchup;
   int? _selectedRosterId;
@@ -80,6 +87,10 @@ class _FantasyScreenState extends State<FantasyScreen> {
     _ownsNflPlayRepository = widget.nflPlayRepository == null;
     _nflPlayRepository = widget.nflPlayRepository ?? EspnNflPlayRepository();
     _transport = widget.transport ?? const ConsoleDeviceTransport();
+    _deltaTracker = widget.runtime?.deltaTracker ?? FantasyPointDeltaTracker();
+    _rosterIdStore =
+        widget.rosterIdStore ?? SharedPreferencesSleeperRosterIdStore();
+    widget.runtime?.addListener(_handleRuntimeChanged);
     _restoreLeagueId();
   }
 
@@ -89,7 +100,12 @@ class _FantasyScreenState extends State<FantasyScreen> {
     _ownedApiClient?.close();
     _ownedPlayerApiClient?.close();
     if (_ownsNflPlayRepository) _nflPlayRepository.close();
+    widget.runtime?.removeListener(_handleRuntimeChanged);
     super.dispose();
+  }
+
+  void _handleRuntimeChanged() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _refreshNflPlays() async {
@@ -115,8 +131,10 @@ class _FantasyScreenState extends State<FantasyScreen> {
 
   Future<void> _restoreLeagueId() async {
     final savedId = await _leagueIdStore.read();
-    if (!mounted || savedId == null) return;
-    _leagueIdController.text = savedId;
+    final savedRosterId = await _rosterIdStore.read();
+    if (!mounted) return;
+    if (savedId != null) _leagueIdController.text = savedId;
+    _selectedRosterId = savedRosterId;
   }
 
   Future<void> _connectLeague() async {
@@ -126,7 +144,6 @@ class _FantasyScreenState extends State<FantasyScreen> {
       _isLoading = true;
       _error = null;
       _snapshot = null;
-      _selectedRosterId = null;
       _selectedMatchup = null;
       _recentPointChanges = const [];
       _reconciliations = const [];
@@ -138,8 +155,13 @@ class _FantasyScreenState extends State<FantasyScreen> {
       final snapshot = await _repository.loadLeague(leagueId);
       await _leagueIdStore.save(leagueId);
       if (!mounted) return;
+      final selectedRosterId =
+          snapshot.rosters.any((roster) => roster.rosterId == _selectedRosterId)
+          ? _selectedRosterId
+          : null;
       setState(() {
         _snapshot = snapshot;
+        _selectedRosterId = selectedRosterId;
         _isLoading = false;
       });
     } on Object catch (error) {
@@ -152,6 +174,7 @@ class _FantasyScreenState extends State<FantasyScreen> {
   }
 
   Future<void> _refreshMatchup() async {
+    if (widget.runtime != null) return _observeFantasyCycle();
     final rosterId = _selectedRosterId;
     if (rosterId == null) return;
     final leagueId = _leagueIdController.text.trim();
@@ -192,6 +215,26 @@ class _FantasyScreenState extends State<FantasyScreen> {
       _nflPlayError = null;
     });
     try {
+      final runtime = widget.runtime;
+      if (runtime != null) {
+        final result = await runtime.observe(sendOneAlert: false);
+        final matchup = result.matchup;
+        final metadata = matchup == null
+            ? const <String, SleeperFantasyPlayer>{}
+            : await _resolvePlayerMetadata(matchup);
+        if (!mounted) return;
+        setState(() {
+          if (matchup != null) _selectedMatchup = matchup;
+          _recentPointChanges = result.events
+              .map((event) => event.delta)
+              .toList(growable: false);
+          _playerMetadata = {..._playerMetadata, ...metadata};
+          _recentNflPlays = result.newPlays;
+          _recentFantasyEvents = result.events;
+          _isObservingFantasy = false;
+        });
+        return;
+      }
       final snapshot = await _repository.loadLeague(leagueId);
       final matchup = snapshot.matchupForRoster(rosterId);
       final deltaResult = _deltaTracker.observe(matchup);
@@ -259,6 +302,7 @@ class _FantasyScreenState extends State<FantasyScreen> {
   Future<void> _selectRoster(int? rosterId) async {
     if (rosterId == null || _snapshot == null) return;
     try {
+      await _rosterIdStore.save(rosterId);
       final matchup = _snapshot!.matchupForRoster(rosterId);
       final deltaResult = _deltaTracker.observe(matchup);
       setState(() {
@@ -299,6 +343,10 @@ class _FantasyScreenState extends State<FantasyScreen> {
             'Sleeper diagnostic',
             style: Theme.of(context).textTheme.titleLarge,
           ),
+          if (widget.runtime case final runtime?) ...[
+            const SizedBox(height: 12),
+            _AutomaticFantasyCard(status: runtime.status),
+          ],
           const SizedBox(height: 6),
           const Text(
             'Connect a league and select your roster to inspect the current '
@@ -407,6 +455,39 @@ class _FantasyScreenState extends State<FantasyScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _AutomaticFantasyCard extends StatelessWidget {
+  const _AutomaticFantasyCard({required this.status});
+
+  final FantasyRuntimeStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    final observed =
+        status.lastObservation?.toLocal().toIso8601String() ?? 'Never';
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'AUTOMATIC FANTASY',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            Text('Configured: ${status.configured ? 'Yes' : 'No'}'),
+            Text(
+              'Runtime baseline: ${status.baselineReady ? 'Ready' : 'Waiting'}',
+            ),
+            Text('Pending alerts: ${status.pendingAlerts}'),
+            Text('Last automatic observation: $observed'),
+            Text(status.lastResult),
+          ],
+        ),
       ),
     );
   }

@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'background_score_refresh_dispatcher.dart';
 import 'ble_device_state.dart';
 import 'bluetooth_device_transport.dart';
+import 'espn_nfl_play_repository.dart';
+import 'fantasy_live_observation_coordinator.dart';
 import 'initial_device_sync_coordinator.dart';
 import 'live_activity_diagnostics.dart';
 import 'live_games_screen.dart';
@@ -16,6 +18,11 @@ import 'sports_league.dart';
 import 'sports_operation_gate.dart';
 import 'sports_repository.dart';
 import 'session_aware_device_sender.dart';
+import 'sleeper_api_client.dart';
+import 'sleeper_fantasy_repository.dart';
+import 'sleeper_league_id_store.dart';
+import 'sleeper_player_repository.dart';
+import 'sleeper_roster_id_store.dart';
 import 'tracked_device_session.dart';
 
 class ConnectionScreen extends StatefulWidget {
@@ -40,6 +47,13 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   late final LiveRefreshCoordinator _liveRefreshCoordinator;
   late final InitialDeviceSyncCoordinator _initialSyncCoordinator;
   late final SportsOperationGate _sportsOperationGate;
+  late final SleeperApiClient _sleeperApiClient;
+  late final SleeperFantasyRepository _sleeperRepository;
+  late final SleeperPlayerRepository _sleeperPlayerRepository;
+  late final EspnNflPlayRepository _fantasyPlayRepository;
+  late final SleeperLeagueIdStore _sleeperLeagueIdStore;
+  late final SleeperRosterIdStore _sleeperRosterIdStore;
+  late final FantasyLiveObservationCoordinator _fantasyCoordinator;
   StreamSubscription<BleDeviceSnapshot>? _snapshotSubscription;
   StreamSubscription<List<int>>? _wakeNotificationSubscription;
   StreamSubscription<BackgroundScoreRefreshRequest>? _scoreRefreshSubscription;
@@ -52,6 +66,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   String _backgroundUpdaterStatus = 'Waiting for a BLE WAKE notification.';
   String _liveActivityDiagnosticStatus = 'Live Activity not started.';
   bool _isDisposing = false;
+  bool _fantasyBaselineStartedForConnection = false;
   InitialSyncSnapshot _initialSyncSnapshot = const InitialSyncSnapshot(
     status: InitialSyncStatus.idle,
   );
@@ -75,6 +90,26 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     _sportsOperationGate = SportsOperationGate(
       onDiagnostic: _recordBackgroundUpdaterDiagnostic,
     );
+    _sleeperApiClient = SleeperApiClient();
+    _sleeperRepository = SleeperFantasyRepository(_sleeperApiClient);
+    _sleeperPlayerRepository = SleeperPlayerRepository(
+      apiClient: _sleeperApiClient,
+    );
+    _fantasyPlayRepository = EspnNflPlayRepository();
+    _sleeperLeagueIdStore = SharedPreferencesSleeperLeagueIdStore();
+    _sleeperRosterIdStore = SharedPreferencesSleeperRosterIdStore();
+    _fantasyCoordinator = FantasyLiveObservationCoordinator(
+      leagueIdStore: _sleeperLeagueIdStore,
+      rosterIdStore: _sleeperRosterIdStore,
+      loadLeague: _sleeperRepository.loadLeague,
+      refreshPlays: _fantasyPlayRepository.refresh,
+      resolveCachedMetadata:
+          _sleeperPlayerRepository.resolveCachedPlayersSafely,
+      transport: _deviceSender,
+      isBleConnected: () =>
+          _transport.currentSnapshot.state.isPhysicallyConnected,
+      onDiagnostic: debugPrint,
+    )..addListener(_handleFantasyRuntimeChanged);
     _liveRefreshCoordinator = LiveRefreshCoordinator(
       repository: widget.repository,
       transport: _deviceSender,
@@ -105,6 +140,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         debugPrint('physical BLE connection established');
       } else if (wasConnected && !isConnected) {
         debugPrint('physical BLE connection ended');
+        _fantasyBaselineStartedForConnection = false;
       }
       _initialSyncCoordinator.handleConnectionState(snapshot.state);
       if (snapshot.state == BleConnectionState.disconnected ||
@@ -118,6 +154,10 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   }
 
   void _handleTrackedSessionChanged() {
+    if (mounted && !_isDisposing) setState(() {});
+  }
+
+  void _handleFantasyRuntimeChanged() {
     if (mounted && !_isDisposing) setState(() {});
   }
 
@@ -140,6 +180,10 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     _wakeNotificationSubscription?.cancel();
     _snapshotSubscription?.cancel();
     _transport.dispose();
+    _fantasyCoordinator.removeListener(_handleFantasyRuntimeChanged);
+    _fantasyCoordinator.dispose();
+    _fantasyPlayRepository.close();
+    _sleeperApiClient.close();
     _trackedSession.removeListener(_handleTrackedSessionChanged);
     _trackedSession.dispose();
     super.dispose();
@@ -158,10 +202,14 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       'BLE connected=$connected; refresh permitted=$connected; '
       'payload=$payload',
     );
-    unawaited(
-      _sportsOperationGate.requestLiveRefresh(
-        _liveRefreshCoordinator.refreshTrackedSessionOnce,
-      ),
+    unawaited(_sportsOperationGate.requestLiveRefresh(_runAcceptedWakeRefresh));
+  }
+
+  Future<void> _runAcceptedWakeRefresh() async {
+    await runIsolatedWakeDomains(
+      refreshSports: _liveRefreshCoordinator.refreshTrackedSessionOnce,
+      observeFantasy: _fantasyCoordinator.observe,
+      onDiagnostic: debugPrint,
     );
   }
 
@@ -189,6 +237,14 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   void _recordInitialSyncStatus(InitialSyncSnapshot snapshot) {
     if (mounted && !_isDisposing) {
       setState(() => _initialSyncSnapshot = snapshot);
+    }
+    final finished =
+        snapshot.status == InitialSyncStatus.complete ||
+        snapshot.status == InitialSyncStatus.empty ||
+        snapshot.status == InitialSyncStatus.partialFailure;
+    if (finished && !_fantasyBaselineStartedForConnection) {
+      _fantasyBaselineStartedForConnection = true;
+      unawaited(_fantasyCoordinator.observe(sendOneAlert: false));
     }
   }
 
@@ -225,6 +281,12 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           onStartLiveActivity: _startLiveActivityDiagnostic,
           onEndLiveActivity: _endLiveActivityDiagnostic,
           backgroundRefreshStatus: _backgroundUpdaterStatus,
+          fantasyCoordinator: _fantasyCoordinator,
+          sleeperRepository: _sleeperRepository,
+          sleeperPlayerRepository: _sleeperPlayerRepository,
+          fantasyPlayRepository: _fantasyPlayRepository,
+          sleeperLeagueIdStore: _sleeperLeagueIdStore,
+          sleeperRosterIdStore: _sleeperRosterIdStore,
         ),
       ),
     );
