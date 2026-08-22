@@ -4,12 +4,16 @@ import 'device_transport.dart';
 import 'fantasy_alert_packet_serializer.dart';
 import 'fantasy_alert_transport.dart';
 import 'fantasy_point_alert.dart';
+import 'fantasy_matchup_display_data.dart';
+import 'fantasy_matchup_packet_serializer.dart';
+import 'fantasy_matchup_transport.dart';
 import 'game_data.dart';
 import 'game_packet_serializer.dart';
 import 'golf_leaderboard.dart';
 import 'golf_packet_serializer.dart';
 
-class ConsoleDeviceTransport implements DeviceTransport, FantasyAlertTransport {
+class ConsoleDeviceTransport
+    implements DeviceTransport, FantasyAlertTransport, FantasyMatchupTransport {
   const ConsoleDeviceTransport({
     this.serializer = const GamePacketSerializer(),
   });
@@ -62,5 +66,19 @@ class ConsoleDeviceTransport implements DeviceTransport, FantasyAlertTransport {
     final packet = const FantasyAlertPacketSerializer().serialize(alert);
     // ignore: avoid_print
     print(utf8.decode(packet));
+  }
+
+  @override
+  Future<void> sendFantasyMatchup(FantasyMatchupDisplayData matchup) async {
+    // ignore: avoid_print
+    print(
+      utf8.decode(const FantasyMatchupPacketSerializer().serialize(matchup)),
+    );
+  }
+
+  @override
+  Future<void> clearFantasyMatchup() async {
+    // ignore: avoid_print
+    print(utf8.decode(const FantasyMatchupPacketSerializer().serializeClear()));
   }
 }

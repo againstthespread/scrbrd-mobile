@@ -10,6 +10,9 @@ import 'game_data.dart';
 import 'fantasy_alert_packet_serializer.dart';
 import 'fantasy_alert_transport.dart';
 import 'fantasy_point_alert.dart';
+import 'fantasy_matchup_display_data.dart';
+import 'fantasy_matchup_packet_serializer.dart';
+import 'fantasy_matchup_transport.dart';
 import 'game_packet_serializer.dart';
 import 'golf_leaderboard.dart';
 import 'golf_packet_serializer.dart';
@@ -31,12 +34,13 @@ typedef BleWriteWithResponse =
     });
 
 class BluetoothDeviceTransport
-    implements DeviceTransport, FantasyAlertTransport {
+    implements DeviceTransport, FantasyAlertTransport, FantasyMatchupTransport {
   BluetoothDeviceTransport({
     this.protocol = const SportsHubBleProtocol(),
     this.serializer = const GamePacketSerializer(),
     this.golfSerializer = const GolfPacketSerializer(),
     this.fantasyAlertSerializer = const FantasyAlertPacketSerializer(),
+    this.fantasyMatchupSerializer = const FantasyMatchupPacketSerializer(),
     this.scanTimeout = const Duration(seconds: 8),
     this.bleReadyTimeout = const Duration(seconds: 4),
     this.bleStatusProvider,
@@ -51,6 +55,7 @@ class BluetoothDeviceTransport
   final GamePacketSerializer serializer;
   final GolfPacketSerializer golfSerializer;
   final FantasyAlertPacketSerializer fantasyAlertSerializer;
+  final FantasyMatchupPacketSerializer fantasyMatchupSerializer;
   final Duration scanTimeout;
   final Duration bleReadyTimeout;
   final BleStatus Function()? bleStatusProvider;
@@ -300,6 +305,14 @@ class BluetoothDeviceTransport
   @override
   Future<void> sendFantasyAlert(FantasyPointAlert alert) =>
       _sendPacket(fantasyAlertSerializer.serialize(alert));
+
+  @override
+  Future<void> sendFantasyMatchup(FantasyMatchupDisplayData matchup) =>
+      _sendPacket(fantasyMatchupSerializer.serialize(matchup));
+
+  @override
+  Future<void> clearFantasyMatchup() =>
+      _sendPacket(fantasyMatchupSerializer.serializeClear());
 
   Future<void> _sendPacket(List<int> packet) async {
     final characteristic = _writableCharacteristic;

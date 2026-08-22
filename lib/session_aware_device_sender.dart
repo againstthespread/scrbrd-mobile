@@ -1,13 +1,15 @@
 import 'device_transport.dart';
 import 'fantasy_point_alert.dart';
 import 'fantasy_alert_transport.dart';
+import 'fantasy_matchup_display_data.dart';
+import 'fantasy_matchup_transport.dart';
 import 'game_data.dart';
 import 'golf_leaderboard.dart';
 import 'sports_league.dart';
 import 'tracked_device_session.dart';
 
 class SessionAwareDeviceSender
-    implements DeviceTransport, FantasyAlertTransport {
+    implements DeviceTransport, FantasyAlertTransport, FantasyMatchupTransport {
   const SessionAwareDeviceSender({
     required this.transport,
     required this.session,
@@ -77,6 +79,26 @@ class SessionAwareDeviceSender
       throw UnsupportedError('Fantasy-alert transport is unavailable.');
     }
     return (fantasyTransport as FantasyAlertTransport).sendFantasyAlert(alert);
+  }
+
+  @override
+  Future<void> sendFantasyMatchup(FantasyMatchupDisplayData matchup) {
+    final fantasyTransport = transport;
+    if (fantasyTransport is! FantasyMatchupTransport) {
+      throw UnsupportedError('Fantasy-matchup transport is unavailable.');
+    }
+    return (fantasyTransport as FantasyMatchupTransport).sendFantasyMatchup(
+      matchup,
+    );
+  }
+
+  @override
+  Future<void> clearFantasyMatchup() {
+    final fantasyTransport = transport;
+    if (fantasyTransport is! FantasyMatchupTransport) {
+      throw UnsupportedError('Fantasy-matchup transport is unavailable.');
+    }
+    return (fantasyTransport as FantasyMatchupTransport).clearFantasyMatchup();
   }
 
   Future<void> sendGolf(

@@ -150,6 +150,28 @@ Fantasy scoring alert (ephemeral):
 {"version":1,"type":"fantasy_alert","player":"Ja'Marr Chase","headline":"","points":15.0,"userName":"PETER","userScore":104.7,"opponentName":"MIKE","opponentScore":97.2,"confidence":"none"}
 ```
 
+Persistent fantasy matchup (participates in normal device category navigation):
+
+```json
+{"version":1,"type":"fantasy_matchup","leagueName":"Peter's League","userName":"PETER","userScore":104.7,"opponentName":"MIKE","opponentScore":97.2,"week":3,"status":"LIVE"}
+```
+
+`leagueName` is 1-48 characters; `userName` and `opponentName` are 1-20
+characters. Scores are finite decimals in the range -10000 through 10000,
+`week` is 1-30, and `status` is `UPCOMING`, `LIVE`, or `FINAL`. The complete
+UTF-8 JSON packet must remain at or below 512 bytes. This state is cached in
+device RAM across BLE disconnects and remains navigable with updates paused.
+
+Remove only the persistent Fantasy category with:
+
+```json
+{"version":1,"type":"fantasy_clear"}
+```
+
+`fantasy_matchup` and `fantasy_clear` do not alter team-sport/PGA content.
+`fantasy_alert` remains an independent temporary overlay; matchup updates may
+be stored beneath it and are visible after the alert expires.
+
 - The alert is a transient overlay and never changes the tracked sports session.
 - `points` is the authoritative Sleeper starter-point delta. Mobile does not infer or explain the scoring play.
 - Empty `headline` and `confidence: "none"` intentionally use the existing firmware fallback display.

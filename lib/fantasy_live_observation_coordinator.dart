@@ -1,6 +1,9 @@
 import 'package:flutter/foundation.dart';
 
 import 'fantasy_alert_transport.dart';
+import 'fantasy_device_session.dart';
+import 'fantasy_matchup_display_data.dart';
+import 'fantasy_matchup_transport.dart';
 import 'fantasy_point_alert.dart';
 import 'fantasy_point_delta_tracker.dart';
 import 'pending_fantasy_alert_store.dart';
@@ -73,13 +76,21 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     required this.playerRepository,
     required this.transport,
     required this.isBleConnected,
+    FantasyMatchupTransport? matchupTransport,
+    FantasyDeviceSession? deviceSession,
     FantasyPointDeltaTracker? deltaTracker,
     PendingFantasyAlertStore? pendingStore,
     FantasyMatchupLoader? setupLoader,
     FantasyMatchupLoader? matchupLoader,
     FantasyMetadataResolver? metadataResolver,
     this.onDiagnostic,
-  }) : deltaTracker = deltaTracker ?? FantasyPointDeltaTracker(),
+  }) : matchupTransport =
+           matchupTransport ??
+           (transport is FantasyMatchupTransport
+               ? transport as FantasyMatchupTransport
+               : null),
+       deviceSession = deviceSession ?? FantasyDeviceSession(),
+       deltaTracker = deltaTracker ?? FantasyPointDeltaTracker(),
        pendingStore = pendingStore ?? PendingFantasyAlertStore(),
        _setupLoader = setupLoader ?? repository.loadLeague,
        _matchupLoader = matchupLoader ?? repository.refreshMatchups,
@@ -90,6 +101,8 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   final SleeperFantasyRepository repository;
   final SleeperPlayerRepository playerRepository;
   final FantasyAlertTransport transport;
+  final FantasyMatchupTransport? matchupTransport;
+  final FantasyDeviceSession deviceSession;
   final bool Function() isBleConnected;
   final FantasyPointDeltaTracker deltaTracker;
   final PendingFantasyAlertStore pendingStore;
@@ -107,7 +120,11 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
 
   FantasyRuntimeStatus get status => _status;
 
-  void beginConnectionSession() => _sessionBaselineEstablished = false;
+  void beginConnectionSession() {
+    _sessionBaselineEstablished = false;
+    // Device RAM may belong to a restarted or different SCRBRD after reconnect.
+    deviceSession.reset();
+  }
 
   void endConnectionSession() => _sessionBaselineEstablished = false;
 
@@ -164,6 +181,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       ),
     );
     _resetProductionState('roster unavailable');
+    await _clearPersistentFantasy();
     _alertsEnabled = config.alertsEnabled;
     _status = FantasyRuntimeStatus(alertsEnabled: _alertsEnabled);
     notifyListeners();
@@ -242,7 +260,17 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     final result = await observe(sendOneAlert: false);
     if (result.configured && result.matchup != null) {
       _sessionBaselineEstablished = true;
+    } else if (!result.configured) {
+      await _clearPersistentFantasy();
     }
+  }
+
+  Future<void> removeConfiguration() async {
+    await configStore.clear();
+    _resetProductionState('configuration removed');
+    await _clearPersistentFantasy();
+    _status = const FantasyRuntimeStatus(configured: false);
+    notifyListeners();
   }
 
   Future<FantasyObservationResult> observe({bool sendOneAlert = true}) async {
@@ -277,6 +305,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
           '${matchup.team.roster.rosterId}|'
           '${matchup.opponent.roster.rosterId}|'
           '${matchup.team.matchup.matchupId}';
+      await _syncPersistentMatchup(matchup, context);
       if (_observationContext != context) {
         pendingStore.clear();
         _observationContext = context;
@@ -362,11 +391,44 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     }
   }
 
+  Future<void> _syncPersistentMatchup(
+    SleeperFantasyMatchup matchup,
+    String context,
+  ) async {
+    final persistentTransport = matchupTransport;
+    if (persistentTransport == null || !isBleConnected()) return;
+    final display = FantasyMatchupDisplayData.fromSleeper(matchup);
+    if (deviceSession.matches(display, context)) {
+      _diagnose('Fantasy matchup unchanged; persistent send skipped.');
+      return;
+    }
+    try {
+      await persistentTransport.sendFantasyMatchup(display);
+      deviceSession.record(display, context);
+      _diagnose('Fantasy matchup sent; persistent baseline advanced.');
+    } on Object catch (error) {
+      _diagnose('Fantasy matchup BLE failure; baseline retained: $error');
+    }
+  }
+
+  Future<void> _clearPersistentFantasy() async {
+    final persistentTransport = matchupTransport;
+    if (persistentTransport == null || !isBleConnected()) return;
+    try {
+      await persistentTransport.clearFantasyMatchup();
+      deviceSession.reset();
+      _diagnose('Persistent Fantasy content cleared.');
+    } on Object catch (error) {
+      _diagnose('Fantasy clear deferred after BLE failure: $error');
+    }
+  }
+
   void _resetProductionState(String reason) {
     deltaTracker.reset();
     pendingStore.clear();
     _observationContext = null;
     _sessionBaselineEstablished = false;
+    deviceSession.reset();
     _diagnose('Fantasy baseline reset: $reason');
   }
 

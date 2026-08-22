@@ -5,6 +5,8 @@ import 'package:http/testing.dart';
 import 'package:sports_hub_mobile/fantasy_alert_packet_serializer.dart';
 import 'package:sports_hub_mobile/fantasy_alert_transport.dart';
 import 'package:sports_hub_mobile/fantasy_live_observation_coordinator.dart';
+import 'package:sports_hub_mobile/fantasy_matchup_display_data.dart';
+import 'package:sports_hub_mobile/fantasy_matchup_transport.dart';
 import 'package:sports_hub_mobile/fantasy_point_alert.dart';
 import 'package:sports_hub_mobile/fantasy_point_delta_tracker.dart';
 import 'package:sports_hub_mobile/pending_fantasy_alert_store.dart';
@@ -61,6 +63,31 @@ void main() {
       expect(result.baselineReset, isTrue);
       expect(result.alerts, isEmpty);
       expect(transport.alerts, isEmpty);
+      expect(transport.matchups, hasLength(1));
+    });
+
+    test(
+      'unchanged matchup skips persistent send; score change sends',
+      () async {
+        snapshots = [_snapshot(), _snapshot(), _snapshot(userTotal: 105.7)];
+        await coordinator.observe();
+        await coordinator.observe();
+        expect(transport.matchups, hasLength(1));
+        await coordinator.observe();
+        expect(transport.matchups, hasLength(2));
+        expect(transport.matchups.last.userScore, 105.7);
+      },
+    );
+
+    test('failed persistent send retains baseline for next wake', () async {
+      snapshots = [_snapshot(), _snapshot(userTotal: 105.7)];
+      await coordinator.observe();
+      transport.failMatchup = true;
+      await coordinator.observe();
+      expect(transport.matchups, hasLength(1));
+      transport.failMatchup = false;
+      await coordinator.observe();
+      expect(transport.matchups, hasLength(2));
     });
 
     test('user delta sends once, unchanged wake does not resend', () async {
@@ -142,6 +169,14 @@ void main() {
       expect(transport.alerts, isEmpty);
     });
 
+    test('a new connection session resends persistent device state', () async {
+      await coordinator.establishStartupBaseline();
+      coordinator.endConnectionSession();
+      coordinator.beginConnectionSession();
+      await coordinator.establishStartupBaseline();
+      expect(transport.matchups, hasLength(2));
+    });
+
     test(
       'manual then automatic observation cannot duplicate transition',
       () async {
@@ -184,12 +219,21 @@ void main() {
     );
 
     test('alerts OFF persists and suppresses BLE delivery', () async {
-      snapshots = [_snapshot(), _snapshot(userPoints: 20)];
+      snapshots = [_snapshot(), _snapshot(userPoints: 20, userTotal: 105.7)];
       await coordinator.observe();
       await coordinator.setAlertsEnabled(false);
       await coordinator.observe();
       expect((await config.read())!.alertsEnabled, isFalse);
       expect(transport.alerts, isEmpty);
+      expect(transport.matchups, hasLength(2));
+    });
+
+    test('removing configuration sends fantasy clear only', () async {
+      await coordinator.observe();
+      await coordinator.removeConfiguration();
+      expect(transport.clears, 1);
+      expect(await config.read(), isNull);
+      expect(transport.matchups, hasLength(1));
     });
 
     test(
@@ -317,15 +361,29 @@ class _ConfigStore implements SleeperFantasyConfigStore {
   Future<void> clear() async => value = null;
 }
 
-class _Transport implements FantasyAlertTransport {
+class _Transport implements FantasyAlertTransport, FantasyMatchupTransport {
   final alerts = <FantasyPointAlert>[];
+  final matchups = <FantasyMatchupDisplayData>[];
   bool connected = true;
   bool fail = false;
+  bool failMatchup = false;
+  int clears = 0;
 
   @override
   Future<void> sendFantasyAlert(FantasyPointAlert alert) async {
     if (fail) throw StateError('BLE failed');
     alerts.add(alert);
+  }
+
+  @override
+  Future<void> sendFantasyMatchup(FantasyMatchupDisplayData matchup) async {
+    if (failMatchup) throw StateError('matchup BLE failed');
+    matchups.add(matchup);
+  }
+
+  @override
+  Future<void> clearFantasyMatchup() async {
+    clears++;
   }
 }
 
