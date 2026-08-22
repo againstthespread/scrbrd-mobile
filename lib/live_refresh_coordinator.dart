@@ -29,6 +29,7 @@ class LiveRefreshCoordinator {
   bool _cancelled = false;
   int _wakeRefreshCount = 0;
   int _pgaWakeRefreshCount = 0;
+  final Map<SportsLeague, Set<String>> _pendingTeamShrinkage = {};
 
   Future<void> refreshTrackedSessionOnce() async {
     if (_isRefreshing) {
@@ -133,6 +134,7 @@ class LiveRefreshCoordinator {
         _diagnose('WAKE #$wakeNumber $label empty; baseline retained');
         return;
       }
+      if (!_teamMembershipChangeIsSafe(tracked, fresh)) return;
       if (_bytesEqual(
         _gameSerializer.canonicalSlateContent(tracked.games),
         _gameSerializer.canonicalSlateContent(fresh),
@@ -144,6 +146,7 @@ class LiveRefreshCoordinator {
       if (!_canContinue()) return;
       _diagnose('WAKE #$wakeNumber $label transfer started');
       await _sendTeam(fresh, tracked);
+      _pendingTeamShrinkage.remove(tracked.league);
       _diagnose('WAKE #$wakeNumber $label transfer succeeded');
     } on Object catch (error) {
       _diagnose('WAKE #$wakeNumber $label transfer failed: $error');
@@ -298,8 +301,76 @@ class LiveRefreshCoordinator {
 
   void cancelCurrentRefresh(String reason) {
     _cancelled = true;
+    _pendingTeamShrinkage.clear();
     _diagnose('refresh cancellation requested; reason=$reason');
   }
+
+  bool _teamMembershipChangeIsSafe(
+    TrackedTeamSlate tracked,
+    List<GameData> fresh,
+  ) {
+    final trackedIds = _stableEventIds(tracked.games);
+    final freshIds = _stableEventIds(fresh);
+    final hasUsableIdentity =
+        trackedIds.length == tracked.games.length &&
+        freshIds.length == fresh.length;
+    final label = tracked.league.label;
+
+    if (!hasUsableIdentity) {
+      if (fresh.length < tracked.games.length) {
+        _diagnose(
+          '$label slate shrinkage suppressed: stable event IDs are missing '
+          'or duplicated; baseline retained',
+        );
+        return false;
+      }
+      return true;
+    }
+
+    final missingIds = trackedIds.difference(freshIds);
+    if (missingIds.isEmpty) {
+      if (_pendingTeamShrinkage.remove(tracked.league) != null) {
+        _diagnose(
+          '$label slate shrinkage recovered; previously missing IDs returned',
+        );
+      }
+      return true;
+    }
+
+    final candidate = _pendingTeamShrinkage[tracked.league];
+    if (candidate != null &&
+        candidate.length == missingIds.length &&
+        candidate.containsAll(missingIds)) {
+      _diagnose(
+        '$label slate shrinkage confirmed; '
+        'missingEventIds=${_sortedIds(missingIds)}; transfer permitted',
+      );
+      return true;
+    }
+
+    _pendingTeamShrinkage[tracked.league] = Set<String>.unmodifiable(
+      missingIds,
+    );
+    if (candidate == null) {
+      _diagnose(
+        '$label slate shrinkage suspected; '
+        'missingEventIds=${_sortedIds(missingIds)}; confirmation required',
+      );
+    } else {
+      _diagnose(
+        '$label slate shrinkage candidate changed; '
+        'old=${_sortedIds(candidate)}; new=${_sortedIds(missingIds)}',
+      );
+    }
+    return false;
+  }
+
+  Set<String> _stableEventIds(List<GameData> games) => {
+    for (final game in games)
+      if (game.eventId?.trim() case final id? when id.isNotEmpty) id,
+  };
+
+  List<String> _sortedIds(Set<String> ids) => ids.toList()..sort();
 
   bool _bytesEqual(List<int> a, List<int> b) {
     if (a.length != b.length) return false;
