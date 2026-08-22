@@ -21,6 +21,11 @@ typedef BleConnectionStreamFactory =
     });
 typedef BleWakeStreamFactory =
     Stream<List<int>> Function(QualifiedCharacteristic characteristic);
+typedef BleWriteWithResponse =
+    Future<void> Function(
+      QualifiedCharacteristic characteristic, {
+      required List<int> value,
+    });
 
 class BluetoothDeviceTransport implements DeviceTransport {
   BluetoothDeviceTransport({
@@ -34,6 +39,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
     this.scanStreamProvider,
     this.connectionStreamProvider,
     this.wakeStreamProvider,
+    this.writeWithResponse,
   });
 
   final SportsHubBleProtocol protocol;
@@ -46,6 +52,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
   final BleScanStreamFactory? scanStreamProvider;
   final BleConnectionStreamFactory? connectionStreamProvider;
   final BleWakeStreamFactory? wakeStreamProvider;
+  final BleWriteWithResponse? writeWithResponse;
   FlutterReactiveBle? _ble;
 
   final _snapshotController = StreamController<BleDeviceSnapshot>.broadcast();
@@ -61,6 +68,8 @@ class BluetoothDeviceTransport implements DeviceTransport {
     state: BleConnectionState.disconnected,
   );
   bool _isWriting = false;
+  int? _writingGeneration;
+  int _connectionGeneration = 0;
   int _scanGeneration = 0;
 
   Stream<BleDeviceSnapshot> get snapshots => _snapshotController.stream;
@@ -176,8 +185,8 @@ class BluetoothDeviceTransport implements DeviceTransport {
               }
             } else if (update.connectionState ==
                 DeviceConnectionState.disconnected) {
+              _invalidatePhysicalConnection('physical disconnect');
               unawaited(_cancelWakeNotificationSubscription());
-              _writableCharacteristic = null;
               _emit(
                 _snapshot.copyWith(
                   state: BleConnectionState.disconnected,
@@ -187,6 +196,8 @@ class BluetoothDeviceTransport implements DeviceTransport {
             }
           },
           onError: (Object error) {
+            _invalidatePhysicalConnection('connection failure');
+            unawaited(_cancelWakeNotificationSubscription());
             _emitError('Bluetooth connection failed: $error');
             if (!completer.isCompleted) {
               completer.complete();
@@ -204,13 +215,12 @@ class BluetoothDeviceTransport implements DeviceTransport {
 
   Future<void> disconnect() async {
     _scanGeneration++;
+    _invalidatePhysicalConnection('explicit disconnect');
     await _scanSubscription?.cancel();
     await _connectionSubscription?.cancel();
     await _cancelWakeNotificationSubscription();
     _scanSubscription = null;
     _connectionSubscription = null;
-    _writableCharacteristic = null;
-    _isWriting = false;
     _devicesById.clear();
     _emit(const BleDeviceSnapshot(state: BleConnectionState.disconnected));
   }
@@ -294,20 +304,35 @@ class BluetoothDeviceTransport implements DeviceTransport {
     }
 
     _isWriting = true;
-    final previousSnapshot = _snapshot;
+    final generation = _connectionGeneration;
+    _writingGeneration = generation;
     _emit(_snapshot.copyWith(state: BleConnectionState.sending));
+    debugPrint('BLE write started; generation=$generation');
 
     try {
-      await _bleClient.writeCharacteristicWithResponse(
-        characteristic,
-        value: packet,
-      );
-      _emit(previousSnapshot.copyWith(state: BleConnectionState.connected));
+      await _writeCharacteristicWithResponse(characteristic, value: packet);
+      if (_writeCanRestoreConnected(generation, characteristic)) {
+        _emit(_snapshot.copyWith(state: BleConnectionState.connected));
+      } else {
+        debugPrint(
+          'BLE write completion ignored; stale generation=$generation',
+        );
+      }
     } on Object catch (error) {
-      _emitError('Bluetooth write failed: $error');
+      if (_writeCanRestoreConnected(generation, characteristic)) {
+        _emitError('Bluetooth write failed: $error');
+      } else {
+        debugPrint(
+          'BLE write failure ignored for transport state; '
+          'stale generation=$generation; error=$error',
+        );
+      }
       rethrow;
     } finally {
-      _isWriting = false;
+      if (_writingGeneration == generation) {
+        _isWriting = false;
+        _writingGeneration = null;
+      }
     }
   }
 
@@ -319,6 +344,39 @@ class BluetoothDeviceTransport implements DeviceTransport {
 
   FlutterReactiveBle get _bleClient {
     return _ble ??= FlutterReactiveBle();
+  }
+
+  Future<void> _writeCharacteristicWithResponse(
+    QualifiedCharacteristic characteristic, {
+    required List<int> value,
+  }) =>
+      writeWithResponse?.call(characteristic, value: value) ??
+      _bleClient.writeCharacteristicWithResponse(characteristic, value: value);
+
+  bool _writeCanRestoreConnected(
+    int generation,
+    QualifiedCharacteristic characteristic,
+  ) =>
+      generation == _connectionGeneration &&
+      identical(characteristic, _writableCharacteristic) &&
+      _snapshot.state != BleConnectionState.disconnected &&
+      _snapshot.state != BleConnectionState.error;
+
+  void _invalidatePhysicalConnection(String reason) {
+    final previousGeneration = _connectionGeneration;
+    final wasActive =
+        _writableCharacteristic != null ||
+        _snapshot.state.isPhysicallyConnected;
+    _connectionGeneration++;
+    _writableCharacteristic = null;
+    _isWriting = false;
+    _writingGeneration = null;
+    if (wasActive) {
+      debugPrint(
+        'Physical BLE connection ended ($reason); generation='
+        '$previousGeneration->$_connectionGeneration',
+      );
+    }
   }
 
   Stream<DiscoveredDevice> _scanForDevices() =>
