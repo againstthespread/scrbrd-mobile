@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import 'fantasy_point_delta_tracker.dart';
+import 'espn_nfl_play_repository.dart';
+import 'fantasy_nfl_play.dart';
 import 'sleeper_api_client.dart';
 import 'sleeper_fantasy_repository.dart';
 import 'sleeper_league_id_store.dart';
@@ -13,11 +15,13 @@ class FantasyScreen extends StatefulWidget {
     this.repository,
     this.leagueIdStore,
     this.playerRepository,
+    this.nflPlayRepository,
   });
 
   final SleeperFantasyRepository? repository;
   final SleeperLeagueIdStore? leagueIdStore;
   final SleeperPlayerRepository? playerRepository;
+  final EspnNflPlayRepository? nflPlayRepository;
 
   @override
   State<FantasyScreen> createState() => _FantasyScreenState();
@@ -30,6 +34,8 @@ class _FantasyScreenState extends State<FantasyScreen> {
   SleeperApiClient? _ownedPlayerApiClient;
   late final SleeperFantasyRepository _repository;
   late final SleeperPlayerRepository _playerRepository;
+  late final EspnNflPlayRepository _nflPlayRepository;
+  late final bool _ownsNflPlayRepository;
   late final SleeperLeagueIdStore _leagueIdStore;
   SleeperLeagueSnapshot? _snapshot;
   SleeperFantasyMatchup? _selectedMatchup;
@@ -39,6 +45,9 @@ class _FantasyScreenState extends State<FantasyScreen> {
   List<FantasyPointDelta> _recentPointChanges = const [];
   List<FantasyPointReconciliation> _reconciliations = const [];
   Map<String, SleeperFantasyPlayer> _playerMetadata = const {};
+  List<FantasyNflPlay> _recentNflPlays = const [];
+  bool _isRefreshingNflPlays = false;
+  String? _nflPlayError;
 
   @override
   void initState() {
@@ -58,6 +67,8 @@ class _FantasyScreenState extends State<FantasyScreen> {
     }
     _leagueIdStore =
         widget.leagueIdStore ?? SharedPreferencesSleeperLeagueIdStore();
+    _ownsNflPlayRepository = widget.nflPlayRepository == null;
+    _nflPlayRepository = widget.nflPlayRepository ?? EspnNflPlayRepository();
     _restoreLeagueId();
   }
 
@@ -66,7 +77,29 @@ class _FantasyScreenState extends State<FantasyScreen> {
     _leagueIdController.dispose();
     _ownedApiClient?.close();
     _ownedPlayerApiClient?.close();
+    if (_ownsNflPlayRepository) _nflPlayRepository.close();
     super.dispose();
+  }
+
+  Future<void> _refreshNflPlays() async {
+    setState(() {
+      _isRefreshingNflPlays = true;
+      _nflPlayError = null;
+    });
+    try {
+      final plays = await _nflPlayRepository.refresh(DateTime.now());
+      if (!mounted) return;
+      setState(() {
+        _recentNflPlays = plays;
+        _isRefreshingNflPlays = false;
+      });
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _nflPlayError = error.toString();
+        _isRefreshingNflPlays = false;
+      });
+    }
   }
 
   Future<void> _restoreLeagueId() async {
@@ -264,7 +297,89 @@ class _FantasyScreenState extends State<FantasyScreen> {
               playerMetadata: _playerMetadata,
             ),
           ],
+          const SizedBox(height: 12),
+          _RecentNflPlaysCard(
+            plays: _recentNflPlays,
+            isRefreshing: _isRefreshingNflPlays,
+            error: _nflPlayError,
+            onRefresh: _refreshNflPlays,
+          ),
         ],
+      ),
+    );
+  }
+}
+
+class _RecentNflPlaysCard extends StatelessWidget {
+  const _RecentNflPlaysCard({
+    required this.plays,
+    required this.isRefreshing,
+    required this.error,
+    required this.onRefresh,
+  });
+
+  final List<FantasyNflPlay> plays;
+  final bool isRefreshing;
+  final String? error;
+  final VoidCallback onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'RECENT NFL PLAYS',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+                IconButton(
+                  onPressed: isRefreshing ? null : onRefresh,
+                  tooltip: 'Refresh NFL plays',
+                  icon: const Icon(Icons.refresh),
+                ),
+              ],
+            ),
+            if (isRefreshing) const LinearProgressIndicator(),
+            if (error != null)
+              Text(
+                error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              )
+            else if (plays.isEmpty)
+              const Text(
+                'No new plays detected. First refresh establishes a baseline.',
+              )
+            else
+              for (final play in plays)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        play.possessionTeam ?? 'NFL',
+                        style: Theme.of(context).textTheme.labelLarge,
+                      ),
+                      Text(play.description),
+                      Text(
+                        [
+                          if (play.quarter != null) 'Q${play.quarter}',
+                          if (play.gameClock != null) play.gameClock!,
+                        ].join(' '),
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+          ],
+        ),
       ),
     );
   }
