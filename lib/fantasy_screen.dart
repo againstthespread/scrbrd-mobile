@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'fantasy_point_delta_tracker.dart';
+import 'fantasy_scoring_correlation.dart';
 import 'espn_nfl_play_repository.dart';
 import 'fantasy_nfl_play.dart';
 import 'sleeper_api_client.dart';
@@ -30,6 +31,7 @@ class FantasyScreen extends StatefulWidget {
 class _FantasyScreenState extends State<FantasyScreen> {
   final _leagueIdController = TextEditingController();
   final _deltaTracker = FantasyPointDeltaTracker();
+  final _correlator = const FantasyScoringCorrelator();
   SleeperApiClient? _ownedApiClient;
   SleeperApiClient? _ownedPlayerApiClient;
   late final SleeperFantasyRepository _repository;
@@ -48,6 +50,8 @@ class _FantasyScreenState extends State<FantasyScreen> {
   List<FantasyNflPlay> _recentNflPlays = const [];
   bool _isRefreshingNflPlays = false;
   String? _nflPlayError;
+  List<FantasyScoringEvent> _recentFantasyEvents = const [];
+  bool _isObservingFantasy = false;
 
   @override
   void initState() {
@@ -119,6 +123,7 @@ class _FantasyScreenState extends State<FantasyScreen> {
       _selectedMatchup = null;
       _recentPointChanges = const [];
       _reconciliations = const [];
+      _recentFantasyEvents = const [];
       _playerMetadata = const {};
     });
     _deltaTracker.reset();
@@ -166,6 +171,51 @@ class _FantasyScreenState extends State<FantasyScreen> {
       setState(() {
         _error = error.toString();
         _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _observeFantasyCycle() async {
+    final rosterId = _selectedRosterId;
+    if (rosterId == null || _isObservingFantasy) return;
+    final leagueId = _leagueIdController.text.trim();
+    setState(() {
+      _isObservingFantasy = true;
+      _error = null;
+      _nflPlayError = null;
+    });
+    try {
+      final snapshot = await _repository.loadLeague(leagueId);
+      final matchup = snapshot.matchupForRoster(rosterId);
+      final deltaResult = _deltaTracker.observe(matchup);
+      final metadata = await _resolvePlayerMetadata(matchup);
+      final allMetadata = {..._playerMetadata, ...metadata};
+      final plays = await _nflPlayRepository.refresh(DateTime.now());
+      final events = _correlator.correlate(
+        deltas: deltaResult.events,
+        players: allMetadata,
+        plays: plays,
+        scoringSettings: snapshot.league.scoringSettings,
+      );
+      for (final event in events) {
+        debugPrint('Fantasy correlation: ${event.diagnostic}');
+      }
+      if (!mounted) return;
+      setState(() {
+        _snapshot = snapshot;
+        _selectedMatchup = matchup;
+        _recentPointChanges = deltaResult.events;
+        _reconciliations = deltaResult.reconciliations;
+        _playerMetadata = allMetadata;
+        _recentNflPlays = plays;
+        _recentFantasyEvents = events;
+        _isObservingFantasy = false;
+      });
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _error = error.toString();
+        _isObservingFantasy = false;
       });
     }
   }
@@ -296,6 +346,12 @@ class _FantasyScreenState extends State<FantasyScreen> {
               reconciliations: _reconciliations,
               playerMetadata: _playerMetadata,
             ),
+            const SizedBox(height: 12),
+            _RecentFantasyEventsCard(
+              events: _recentFantasyEvents,
+              isRefreshing: _isObservingFantasy,
+              onRefresh: _observeFantasyCycle,
+            ),
           ],
           const SizedBox(height: 12),
           _RecentNflPlaysCard(
@@ -305,6 +361,75 @@ class _FantasyScreenState extends State<FantasyScreen> {
             onRefresh: _refreshNflPlays,
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _RecentFantasyEventsCard extends StatelessWidget {
+  const _RecentFantasyEventsCard({
+    required this.events,
+    required this.isRefreshing,
+    required this.onRefresh,
+  });
+
+  final List<FantasyScoringEvent> events;
+  final bool isRefreshing;
+  final VoidCallback onRefresh;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'RECENT FANTASY EVENTS',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+                IconButton(
+                  onPressed: isRefreshing ? null : onRefresh,
+                  tooltip: 'Refresh Sleeper and ESPN together',
+                  icon: const Icon(Icons.sync),
+                ),
+              ],
+            ),
+            if (isRefreshing) const LinearProgressIndicator(),
+            if (!isRefreshing && events.isEmpty)
+              const Text(
+                'No new correlated events. First refresh establishes both baselines.',
+              )
+            else
+              for (final event in events)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        event.player?.fullName ?? event.delta.playerId,
+                        style: Theme.of(context).textTheme.labelLarge,
+                      ),
+                      if (event.explanation case final explanation?)
+                        Text(explanation),
+                      Text(_signedPoints(event.delta.delta)),
+                      Text(
+                        event.confidence == FantasyCorrelationConfidence.none
+                            ? 'NO PLAY MATCH'
+                            : '${event.confidence.name.toUpperCase()} CONFIDENCE',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+          ],
+        ),
       ),
     );
   }
