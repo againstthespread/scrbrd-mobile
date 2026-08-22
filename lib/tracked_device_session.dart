@@ -1,5 +1,7 @@
 import 'dart:collection';
 
+import 'package:flutter/foundation.dart';
+
 import 'game_data.dart';
 import 'golf_leaderboard.dart';
 import 'sports_league.dart';
@@ -48,7 +50,7 @@ class TrackedGolfLeaderboard extends TrackedLeagueContent {
   final DateTime? selectedDate;
 }
 
-class TrackedDeviceSession {
+class TrackedDeviceSession extends ChangeNotifier {
   final Map<SportsLeague, TrackedLeagueContent> _entries = {};
 
   UnmodifiableMapView<SportsLeague, TrackedLeagueContent> snapshot() =>
@@ -66,6 +68,7 @@ class TrackedDeviceSession {
       selectedDate: selectedDate,
       games: games,
     );
+    notifyListeners();
   }
 
   void recordGolf(GolfLeaderboard leaderboard, {DateTime? selectedDate}) {
@@ -73,7 +76,10 @@ class TrackedDeviceSession {
       leaderboard: leaderboard,
       selectedDate: selectedDate,
     );
+    notifyListeners();
   }
 
-  void remove(SportsLeague league) => _entries.remove(league);
+  void remove(SportsLeague league) {
+    if (_entries.remove(league) != null) notifyListeners();
+  }
 }

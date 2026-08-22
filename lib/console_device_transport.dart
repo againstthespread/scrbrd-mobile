@@ -14,6 +14,12 @@ class ConsoleDeviceTransport implements DeviceTransport {
   final GamePacketSerializer serializer;
 
   @override
+  Future<void> sendControlCommand(String command) async {
+    // ignore: avoid_print
+    print(command);
+  }
+
+  @override
   Future<void> sendGameData(GameData gameData) async {
     final packetBytes = serializer.serialize(gameData);
     // ignore: avoid_print

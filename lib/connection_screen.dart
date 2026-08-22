@@ -5,11 +5,14 @@ import 'package:flutter/material.dart';
 import 'background_score_refresh_dispatcher.dart';
 import 'ble_device_state.dart';
 import 'bluetooth_device_transport.dart';
-import 'game_editor.dart';
+import 'initial_device_sync_coordinator.dart';
 import 'live_activity_diagnostics.dart';
 import 'live_games_screen.dart';
 import 'live_refresh_coordinator.dart';
 import 'push_notification_service.dart';
+import 'settings_screen.dart';
+import 'sports_data_provider.dart';
+import 'sports_league.dart';
 import 'sports_repository.dart';
 import 'session_aware_device_sender.dart';
 import 'tracked_device_session.dart';
@@ -30,13 +33,11 @@ class ConnectionScreen extends StatefulWidget {
 
 class _ConnectionScreenState extends State<ConnectionScreen>
     with WidgetsBindingObserver {
-  static const _deviceName = 'Peter Sports Hub';
-  static const _deviceTransport = 'Bluetooth Low Energy';
-
   late final BluetoothDeviceTransport _transport;
   late final SessionAwareDeviceSender _deviceSender;
   late final TrackedDeviceSession _trackedSession;
   late final LiveRefreshCoordinator _liveRefreshCoordinator;
+  late final InitialDeviceSyncCoordinator _initialSyncCoordinator;
   StreamSubscription<BleDeviceSnapshot>? _snapshotSubscription;
   StreamSubscription<List<int>>? _wakeNotificationSubscription;
   StreamSubscription<BackgroundScoreRefreshRequest>? _scoreRefreshSubscription;
@@ -44,28 +45,28 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   PushNotificationDiagnostics? _pushDiagnostics;
   final _liveActivityDiagnostics = LiveActivityDiagnostics();
 
-  // TEMPORARY LIVE ACTIVITY/BACKGROUND BLE PROTOTYPE: Remove or refactor later.
+  // Existing background-refresh diagnostics remain available in Developer Tools.
   var _isAppBackgrounded = false;
   var _lifecycleState = AppLifecycleState.resumed;
-  String _backgroundUpdaterStatus =
-      'Waiting for the app to background with BLE and Live Activity active.';
+  String _backgroundUpdaterStatus = 'Waiting for a BLE WAKE notification.';
   String _liveActivityDiagnosticStatus = 'Live Activity not started.';
   bool _isDisposing = false;
+  InitialSyncSnapshot _initialSyncSnapshot = const InitialSyncSnapshot(
+    status: InitialSyncStatus.idle,
+  );
 
   bool get _isBusy =>
       _deviceSnapshot.state == BleConnectionState.scanning ||
       _deviceSnapshot.state == BleConnectionState.connecting ||
       _deviceSnapshot.state == BleConnectionState.sending;
 
-  bool get _isConnected =>
-      _deviceSnapshot.state == BleConnectionState.connected;
-
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _transport = BluetoothDeviceTransport();
-    _trackedSession = TrackedDeviceSession();
+    _trackedSession = TrackedDeviceSession()
+      ..addListener(_handleTrackedSessionChanged);
     _deviceSender = SessionAwareDeviceSender(
       transport: _transport,
       session: _trackedSession,
@@ -80,31 +81,35 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       isLiveActivityActive: _liveActivityDiagnostics.isActive,
       onDiagnostic: _recordBackgroundUpdaterDiagnostic,
     );
+    _initialSyncCoordinator = InitialDeviceSyncCoordinator(
+      repository: widget.repository,
+      sender: _deviceSender,
+      isBleConnected: () =>
+          _transport.currentSnapshot.state == BleConnectionState.connected,
+      onStatusChanged: _recordInitialSyncStatus,
+      onDiagnostic: (message) => debugPrint('INITIAL DEVICE SYNC: $message'),
+    );
     _deviceSnapshot = _transport.currentSnapshot;
     _wakeNotificationSubscription = _transport.wakeNotifications.listen(
       _handleBleWakeNotification,
     );
     _scoreRefreshSubscription = BackgroundScoreRefreshDispatcher.instance.events
-        .listen((request) {
-          unawaited(_handleBackgroundScoreRefresh(request));
-        });
+        .listen((request) => unawaited(_handleBackgroundScoreRefresh(request)));
     _snapshotSubscription = _transport.snapshots.listen((snapshot) {
+      _initialSyncCoordinator.handleConnectionState(snapshot.state);
       if (snapshot.state == BleConnectionState.disconnected ||
           snapshot.state == BleConnectionState.error) {
         _liveRefreshCoordinator.cancelCurrentRefresh('BLE disconnected');
       }
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _deviceSnapshot = snapshot;
-      });
+      if (mounted) setState(() => _deviceSnapshot = snapshot);
     });
     _loadPushDiagnostics();
   }
 
-  // TEMPORARY EVENT-DRIVEN BACKGROUND SCORE PROTOTYPE: Remove or refactor later.
+  void _handleTrackedSessionChanged() {
+    if (mounted && !_isDisposing) setState(() {});
+  }
+
   Future<void> _handleBackgroundScoreRefresh(
     BackgroundScoreRefreshRequest request,
   ) async {
@@ -121,15 +126,15 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     _wakeNotificationSubscription?.cancel();
     _snapshotSubscription?.cancel();
     _transport.dispose();
+    _trackedSession.removeListener(_handleTrackedSessionChanged);
+    _trackedSession.dispose();
     super.dispose();
   }
 
-  // TEMPORARY LIVE ACTIVITY/BACKGROUND BLE PROTOTYPE: Remove or refactor later.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _lifecycleState = state;
     debugPrint('TEMP BACKGROUND SCORE UPDATER: lifecycle=${state.name}');
-
     if (state == AppLifecycleState.paused) {
       _isAppBackgrounded = true;
     } else if (state == AppLifecycleState.resumed) {
@@ -140,26 +145,19 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     }
   }
 
-  // TEMPORARY BLE WAKE-NOTIFICATION EXPERIMENT: Remove after iOS testing.
   void _handleBleWakeNotification(List<int> payload) {
     debugPrint(
       'TEMP BLE WAKE EXPERIMENT: wake notification received; '
       'lifecycle=${_lifecycleState.name}; payload=$payload',
     );
-    debugPrint(
-      'TEMP BLE WAKE EXPERIMENT: BLE wake refresh received; '
-      'lifecycle=${_isAppBackgrounded ? 'background' : 'foreground'}',
-    );
     unawaited(_liveRefreshCoordinator.refreshTrackedSessionOnce());
   }
 
-  // TEMPORARY LIVE ACTIVITY/BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing.
   Future<void> _startLiveActivityDiagnostic() async {
     final status = await _liveActivityDiagnostics.start();
     _setLiveActivityDiagnosticStatus(status);
   }
 
-  // TEMPORARY LIVE ACTIVITY/BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing.
   Future<void> _endLiveActivityDiagnostic() async {
     _liveRefreshCoordinator.cancelCurrentRefresh(
       'Live Activity ended manually',
@@ -168,52 +166,34 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     _setLiveActivityDiagnosticStatus(status);
   }
 
-  // TEMPORARY LIVE ACTIVITY/BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing.
   void _setLiveActivityDiagnosticStatus(String status) {
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _liveActivityDiagnosticStatus = status;
-    });
+    if (mounted) setState(() => _liveActivityDiagnosticStatus = status);
   }
 
-  // TEMPORARY LIVE ACTIVITY/BACKGROUND BLE PROTOTYPE: Remove or refactor later.
   void _recordBackgroundUpdaterDiagnostic(String message) {
     debugPrint('TEMP BACKGROUND SCORE UPDATER: $message');
-    if (!mounted || _isDisposing) {
-      return;
-    }
-
-    setState(() {
-      _backgroundUpdaterStatus = message;
-    });
-  }
-
-  Future<void> _connect() async {
-    await _transport.scanForDevice();
-  }
-
-  Future<void> _disconnect() async {
-    await _transport.disconnect();
-  }
-
-  void _handlePrimaryAction() {
-    if (_isConnected) {
-      _disconnect();
-      return;
-    }
-
-    if (!_isBusy) {
-      _connect();
+    if (mounted && !_isDisposing) {
+      setState(() => _backgroundUpdaterStatus = message);
     }
   }
+
+  void _recordInitialSyncStatus(InitialSyncSnapshot snapshot) {
+    if (mounted && !_isDisposing) {
+      setState(() => _initialSyncSnapshot = snapshot);
+    }
+  }
+
+  Future<void> _connect() => _transport.scanForDevice();
+
+  Future<void> _disconnect() => _transport.disconnect();
+
+  Future<void> _connectToCandidate(BleDeviceCandidate candidate) =>
+      _transport.connectToDevice(candidate);
 
   void _openLiveGames() {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (context) => LiveGamesScreen(
+        builder: (_) => LiveGamesScreen(
           repository: widget.repository,
           transport: _deviceSender,
         ),
@@ -221,218 +201,173 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     );
   }
 
-  Future<void> _connectToCandidate(BleDeviceCandidate candidate) async {
-    await _transport.connectToDevice(candidate);
-  }
-
-  Future<void> _loadPushDiagnostics() async {
-    final diagnostics = await widget.pushNotificationService.readDiagnostics();
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _pushDiagnostics = diagnostics;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    return Scaffold(
-      backgroundColor: colorScheme.surface,
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 620),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Icon(
-                    Icons.scoreboard_outlined,
-                    size: 56,
-                    color: colorScheme.primary,
-                  ),
-                  const SizedBox(height: 20),
-                  Text(
-                    'Sports Hub',
-                    textAlign: TextAlign.center,
-                    style: theme.textTheme.headlineLarge?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    'Connect to the handheld scoreboard to send compact game updates from your phone.',
-                    textAlign: TextAlign.center,
-                    style: theme.textTheme.bodyLarge?.copyWith(
-                      color: colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                  const SizedBox(height: 32),
-                  _ConnectionStatusCard(
-                    snapshot: _deviceSnapshot,
-                    deviceName: _deviceSnapshot.deviceName ?? _deviceName,
-                    deviceTransport: _deviceTransport,
-                  ),
-                  const SizedBox(height: 16),
-                  _TemporaryBackgroundBleDiagnosticsPanel(
-                    status: _backgroundUpdaterStatus,
-                  ),
-                  const SizedBox(height: 16),
-                  _PushNotificationDiagnosticsPanel(
-                    diagnostics: _pushDiagnostics,
-                    onRefresh: _loadPushDiagnostics,
-                  ),
-                  const SizedBox(height: 24),
-                  FilledButton(
-                    onPressed: _isBusy ? null : _handlePrimaryAction,
-                    style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                    ),
-                    child: Text(_isConnected ? 'Disconnect' : 'Connect'),
-                  ),
-                  if (_deviceSnapshot.state == BleConnectionState.scanning ||
-                      _deviceSnapshot.state == BleConnectionState.connecting ||
-                      _deviceSnapshot.state == BleConnectionState.sending) ...[
-                    const SizedBox(height: 16),
-                    const LinearProgressIndicator(),
-                    const SizedBox(height: 8),
-                    Text(
-                      _progressText(_deviceSnapshot.state),
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                  if (_deviceSnapshot.errorMessage != null) ...[
-                    const SizedBox(height: 16),
-                    Text(
-                      _deviceSnapshot.errorMessage!,
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: colorScheme.error,
-                      ),
-                    ),
-                  ],
-                  if (_deviceSnapshot.candidates.isNotEmpty &&
-                      !_isConnected) ...[
-                    const SizedBox(height: 24),
-                    Text(
-                      'Discovered Devices',
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    ..._deviceSnapshot.candidates.map(
-                      (candidate) => Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
-                        child: OutlinedButton.icon(
-                          onPressed:
-                              _deviceSnapshot.state ==
-                                  BleConnectionState.connecting
-                              ? null
-                              : () => _connectToCandidate(candidate),
-                          icon: const Icon(Icons.bluetooth_connected),
-                          label: Text(candidate.name),
-                        ),
-                      ),
-                    ),
-                  ],
-                  if (_isConnected) ...[
-                    const SizedBox(height: 24),
-                    _TemporaryLiveActivityDiagnosticsControls(
-                      status: _liveActivityDiagnosticStatus,
-                      onStart: _startLiveActivityDiagnostic,
-                      onEnd: _endLiveActivityDiagnostic,
-                    ),
-                    const SizedBox(height: 16),
-                    OutlinedButton.icon(
-                      onPressed: _openLiveGames,
-                      icon: const Icon(Icons.sports_football),
-                      label: const Text('Games'),
-                    ),
-                    const SizedBox(height: 16),
-                    GameEditor(transport: _deviceSender),
-                  ],
-                ],
-              ),
-            ),
-          ),
+  void _openSettings() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => SettingsScreen(
+          repository: widget.repository,
+          transport: _deviceSender,
+          providerLabel: selectSportsDataProvider().label,
+          pushDiagnostics: _pushDiagnostics,
+          onRefreshPushDiagnostics: _loadPushDiagnostics,
+          liveActivityStatus: _liveActivityDiagnosticStatus,
+          onStartLiveActivity: _startLiveActivityDiagnostic,
+          onEndLiveActivity: _endLiveActivityDiagnostic,
+          backgroundRefreshStatus: _backgroundUpdaterStatus,
         ),
       ),
     );
   }
 
-  String _progressText(BleConnectionState state) {
-    return switch (state) {
-      BleConnectionState.scanning => 'Scanning for $_deviceName...',
-      BleConnectionState.connecting => 'Connecting to $_deviceName...',
-      BleConnectionState.sending => 'Sending packet to $_deviceName...',
-      _ => '',
-    };
+  Future<PushNotificationDiagnostics> _loadPushDiagnostics() async {
+    final diagnostics = await widget.pushNotificationService.readDiagnostics();
+    if (mounted) setState(() => _pushDiagnostics = diagnostics);
+    return diagnostics;
   }
-}
-
-// TEMPORARY LIVE ACTIVITY/BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing.
-class _TemporaryLiveActivityDiagnosticsControls extends StatelessWidget {
-  const _TemporaryLiveActivityDiagnosticsControls({
-    required this.status,
-    required this.onStart,
-    required this.onEnd,
-  });
-
-  final String status;
-  final VoidCallback onStart;
-  final VoidCallback onEnd;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          'Temporary Live Activity diagnostic: $status',
-          style: theme.textTheme.bodySmall?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
-          ),
-        ),
-        const SizedBox(height: 8),
-        OutlinedButton(
-          onPressed: onStart,
-          child: const Text('TEMP: Start Live Activity'),
-        ),
-        OutlinedButton(
-          onPressed: onEnd,
-          child: const Text('TEMP: End Live Activity'),
-        ),
-      ],
+    return ScrbrdHomeView(
+      snapshot: _deviceSnapshot,
+      initialSyncSnapshot: _initialSyncSnapshot,
+      trackedContent: _trackedSession.snapshot(),
+      onConnect: _isBusy ? null : _connect,
+      onDisconnect: _isBusy ? null : _disconnect,
+      onCandidateSelected: _connectToCandidate,
+      onViewGames: _openLiveGames,
+      onOpenSettings: _openSettings,
     );
   }
 }
 
-// TEMPORARY LIVE ACTIVITY/BACKGROUND BLE PROTOTYPE: Remove or refactor later.
-class _TemporaryBackgroundBleDiagnosticsPanel extends StatelessWidget {
-  const _TemporaryBackgroundBleDiagnosticsPanel({required this.status});
+class ScrbrdHomeView extends StatelessWidget {
+  const ScrbrdHomeView({
+    super.key,
+    required this.snapshot,
+    required this.initialSyncSnapshot,
+    required this.trackedContent,
+    required this.onConnect,
+    required this.onDisconnect,
+    required this.onCandidateSelected,
+    required this.onViewGames,
+    required this.onOpenSettings,
+  });
 
-  final String status;
+  final BleDeviceSnapshot snapshot;
+  final InitialSyncSnapshot initialSyncSnapshot;
+  final Map<SportsLeague, TrackedLeagueContent> trackedContent;
+  final VoidCallback? onConnect;
+  final VoidCallback? onDisconnect;
+  final ValueChanged<BleDeviceCandidate> onCandidateSelected;
+  final VoidCallback onViewGames;
+  final VoidCallback onOpenSettings;
+
+  bool get _connected =>
+      snapshot.state == BleConnectionState.connected ||
+      snapshot.state == BleConnectionState.sending;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-
-    return Text(
-      'Temporary background score updater: $status',
-      style: theme.textTheme.bodySmall?.copyWith(
-        color: theme.colorScheme.onSurfaceVariant,
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('SCRBRD'),
+        actions: [
+          IconButton(
+            onPressed: onOpenSettings,
+            tooltip: 'Settings',
+            icon: const Icon(Icons.settings_outlined),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+          children: [
+            Text(
+              'Today, at a glance.',
+              style: theme.textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              _connected
+                  ? 'Your scoreboard is ready for today’s action.'
+                  : "Connect to your device to load today's sports.",
+              style: theme.textTheme.bodyLarge?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 20),
+            _ConnectionStatusCard(
+              snapshot: snapshot,
+              syncSnapshot: initialSyncSnapshot,
+            ),
+            if (!_connected) ...[
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: onConnect,
+                icon: const Icon(Icons.bluetooth_searching),
+                label: const Text('Connect to SCRBRD'),
+              ),
+            ] else ...[
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: onDisconnect,
+                  child: const Text('Disconnect'),
+                ),
+              ),
+            ],
+            if (snapshot.candidates.isNotEmpty && !_connected) ...[
+              const SizedBox(height: 18),
+              Text('Nearby SCRBRD devices', style: theme.textTheme.titleMedium),
+              const SizedBox(height: 8),
+              ...snapshot.candidates.map(
+                (candidate) => Card(
+                  child: ListTile(
+                    leading: const Icon(Icons.bluetooth),
+                    title: Text(candidate.name),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: snapshot.state == BleConnectionState.connecting
+                        ? null
+                        : () => onCandidateSelected(candidate),
+                  ),
+                ),
+              ),
+            ],
+            if (snapshot.state == BleConnectionState.error) ...[
+              const SizedBox(height: 12),
+              Text(
+                'Could not connect to SCRBRD. Try again.',
+                style: TextStyle(color: theme.colorScheme.error),
+              ),
+            ],
+            if (trackedContent.isNotEmpty) ...[
+              const SizedBox(height: 24),
+              Text(
+                "Today's Sports",
+                style: theme.textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 10),
+              _TrackedSportsCard(content: trackedContent),
+            ] else if (_connected &&
+                initialSyncSnapshot.status == InitialSyncStatus.empty) ...[
+              const SizedBox(height: 24),
+              const Center(child: Text('No sports loaded today.')),
+            ],
+            const SizedBox(height: 24),
+            OutlinedButton.icon(
+              onPressed: onViewGames,
+              icon: const Icon(Icons.calendar_today_outlined),
+              label: const Text("View Today's Games"),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -441,194 +376,153 @@ class _TemporaryBackgroundBleDiagnosticsPanel extends StatelessWidget {
 class _ConnectionStatusCard extends StatelessWidget {
   const _ConnectionStatusCard({
     required this.snapshot,
-    required this.deviceName,
-    required this.deviceTransport,
+    required this.syncSnapshot,
   });
 
   final BleDeviceSnapshot snapshot;
-  final String deviceName;
-  final String deviceTransport;
+  final InitialSyncSnapshot syncSnapshot;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final isConnected =
+    final connected =
         snapshot.state == BleConnectionState.connected ||
         snapshot.state == BleConnectionState.sending;
-    final isBusy =
-        snapshot.state == BleConnectionState.scanning ||
-        snapshot.state == BleConnectionState.connecting;
+    final (title, detail) = _statusText();
+    return Card(
+      color: theme.colorScheme.surfaceContainerHighest,
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Row(
+          children: [
+            CircleAvatar(
+              backgroundColor: connected
+                  ? theme.colorScheme.primaryContainer
+                  : theme.colorScheme.surfaceContainerLow,
+              child: Icon(
+                connected ? Icons.bluetooth_connected : Icons.bluetooth,
+                color: connected
+                    ? theme.colorScheme.primary
+                    : theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  if (detail != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      detail,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            if (snapshot.state == BleConnectionState.scanning ||
+                snapshot.state == BleConnectionState.connecting ||
+                syncSnapshot.status == InitialSyncStatus.syncing)
+              const SizedBox.square(
+                dimension: 22,
+                child: CircularProgressIndicator(strokeWidth: 2.5),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 
-    final statusText = switch (snapshot.state) {
-      BleConnectionState.connected ||
-      BleConnectionState.sending => 'Connected to $deviceName',
-      BleConnectionState.scanning => 'Scanning',
-      BleConnectionState.connecting => 'Connecting',
-      BleConnectionState.error => 'Connection error',
-      BleConnectionState.disconnected => 'Not connected',
+  (String, String?) _statusText() {
+    if (snapshot.state == BleConnectionState.scanning ||
+        snapshot.state == BleConnectionState.connecting) {
+      return ('Connecting...', 'Looking for your SCRBRD');
+    }
+    if (snapshot.state == BleConnectionState.error) {
+      return ('Disconnected', 'Could not connect to SCRBRD.');
+    }
+    if (snapshot.state == BleConnectionState.disconnected) {
+      return ('Disconnected', null);
+    }
+    return switch (syncSnapshot.status) {
+      InitialSyncStatus.syncing => (
+        "Syncing today's sports...",
+        '${syncSnapshot.successfullySyncedLeagueCount} leagues loaded',
+      ),
+      InitialSyncStatus.complete => (
+        'Connected',
+        '${syncSnapshot.successfullySyncedLeagueCount} leagues synced',
+      ),
+      InitialSyncStatus.partialFailure => (
+        'Connected',
+        "Some sports couldn't be loaded",
+      ),
+      InitialSyncStatus.empty => ('Connected', 'No sports loaded today'),
+      InitialSyncStatus.idle => ('Connected', null),
     };
+  }
+}
 
+class _TrackedSportsCard extends StatelessWidget {
+  const _TrackedSportsCard({required this.content});
+
+  final Map<SportsLeague, TrackedLeagueContent> content;
+
+  @override
+  Widget build(BuildContext context) {
+    final entries = SportsLeague.values
+        .where(content.containsKey)
+        .map((league) => content[league]!)
+        .toList();
     return Card(
-      elevation: 0,
-      color: colorScheme.surfaceContainerHighest,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  isConnected
-                      ? Icons.check_circle_outline
-                      : Icons.radio_button_unchecked,
-                  color: isConnected ? Colors.green : colorScheme.primary,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    isBusy ? '$statusText...' : statusText,
-                    style: theme.textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
-            _DeviceDetailRow(label: 'Device', value: deviceName),
-            const SizedBox(height: 8),
-            _DeviceDetailRow(label: 'Transport', value: deviceTransport),
+      child: Column(
+        children: [
+          for (var index = 0; index < entries.length; index++) ...[
+            _TrackedSportRow(content: entries[index]),
+            if (index != entries.length - 1) const Divider(height: 1),
           ],
-        ),
+        ],
       ),
     );
   }
 }
 
-class _PushNotificationDiagnosticsPanel extends StatelessWidget {
-  const _PushNotificationDiagnosticsPanel({
-    required this.diagnostics,
-    required this.onRefresh,
-  });
+class _TrackedSportRow extends StatelessWidget {
+  const _TrackedSportRow({required this.content});
 
-  final PushNotificationDiagnostics? diagnostics;
-  final VoidCallback onRefresh;
+  final TrackedLeagueContent content;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final diagnostics = this.diagnostics;
-
-    return Card(
-      elevation: 0,
-      color: colorScheme.surfaceContainerHighest,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    'Temporary FCM Diagnostics',
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-                IconButton(
-                  onPressed: onRefresh,
-                  icon: const Icon(Icons.refresh),
-                  tooltip: 'Refresh FCM diagnostics',
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            _DeviceDetailRow(
-              label: 'Permission',
-              value: diagnostics?.permissionStatus ?? 'Checking...',
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'APNs token',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: colorScheme.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(height: 4),
-            SelectableText(
-              diagnostics?.apnsTokenStatus ?? 'Checking...',
-              style: theme.textTheme.bodySmall?.copyWith(
-                fontFamily: 'monospace',
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'FCM token',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: colorScheme.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(height: 4),
-            SelectableText(
-              diagnostics?.tokenStatus ?? 'Checking...',
-              style: theme.textTheme.bodySmall?.copyWith(
-                fontFamily: 'monospace',
-              ),
-            ),
-            if (diagnostics?.errorMessage != null) ...[
-              const SizedBox(height: 8),
-              Text(
-                diagnostics!.errorMessage!,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: colorScheme.error,
-                ),
-              ),
-            ],
-          ],
+    final detail = switch (content) {
+      TrackedTeamSlate slate =>
+        '${slate.games.length} ${slate.games.length == 1 ? 'game' : 'games'}',
+      TrackedGolfLeaderboard golf => golf.leaderboard.tournamentName,
+    };
+    return ListTile(
+      leading: CircleAvatar(child: Text(content.league.label.substring(0, 1))),
+      title: Text(
+        content.league.label,
+        style: const TextStyle(fontWeight: FontWeight.w700),
+      ),
+      trailing: SizedBox(
+        width: 190,
+        child: Text(
+          detail,
+          textAlign: TextAlign.end,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
         ),
       ),
-    );
-  }
-}
-
-class _DeviceDetailRow extends StatelessWidget {
-  const _DeviceDetailRow({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    return Row(
-      children: [
-        SizedBox(
-          width: 88,
-          child: Text(
-            label,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: colorScheme.onSurfaceVariant,
-            ),
-          ),
-        ),
-        Expanded(
-          child: Text(
-            value,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
-      ],
     );
   }
 }

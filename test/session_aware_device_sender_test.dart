@@ -97,6 +97,8 @@ const _golf = GolfLeaderboard(
 class _Transport implements DeviceTransport {
   _Transport({this.fail = false});
   final bool fail;
+  @override
+  Future<void> sendControlCommand(String command) => _send();
   Future<void> _send() async {
     if (fail) throw StateError('failed');
   }

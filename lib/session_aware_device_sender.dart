@@ -14,6 +14,10 @@ class SessionAwareDeviceSender implements DeviceTransport {
   final TrackedDeviceSession session;
 
   @override
+  Future<void> sendControlCommand(String command) =>
+      transport.sendControlCommand(command);
+
+  @override
   Future<void> sendGameData(GameData gameData) async {
     await transport.sendGameData(gameData);
     final league = _leagueFor(gameData.league);

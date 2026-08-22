@@ -123,6 +123,9 @@ class _RecordingTransport implements DeviceTransport {
   final sentLeagues = <String>[];
 
   @override
+  Future<void> sendControlCommand(String command) async {}
+
+  @override
   Future<void> sendGameData(GameData gameData) async {}
 
   @override

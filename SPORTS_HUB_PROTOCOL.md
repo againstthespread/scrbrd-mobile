@@ -17,6 +17,14 @@ d8f6a9b2-7a5e-4e8c-9f2a-2b2f5b6c1001
 Encoding:
 compact UTF-8 JSON
 
+Initial connection sync commands use the existing writable characteristic:
+
+- `SYNC_START`: sent immediately before the mobile app fetches today's supported sports.
+- `SYNC_COMPLETE`: sent after at least one complete league dataset was successfully transferred.
+- `SYNC_EMPTY`: sent only when NFL, NBA, MLB, and PGA were all checked successfully and all were genuinely empty for today.
+- A partial provider failure with zero transmitted leagues does not send `SYNC_EMPTY`, because absence of content is not known.
+- These commands are backward-compatible short UTF-8 writes and do not change protocol version, UUIDs, or sports packet formats.
+
 Game packet:
 
 ```json
@@ -49,6 +57,18 @@ Optional MLB live-state fields:
 The four fields are emitted together for live MLB games when structured ESPN
 situation data is available. They are optional for backward compatibility and
 are omitted for non-MLB, upcoming, final, or unavailable situation state.
+
+Optional NFL live-state fields:
+
+| Field | Type | Rule |
+| --- | --- | --- |
+| `possession` | string | `away` or `home`. |
+| `down` | integer | Current down, 1 through 4. |
+| `distance` | integer | Yards to gain, 0 through 99. |
+| `goalToGo` | boolean | Render `Goal` instead of the numeric distance. |
+
+The four fields are emitted together only for live NFL games with valid
+structured situation data. Legacy and other-sport packets omit them.
 
 Canonical statuses:
 

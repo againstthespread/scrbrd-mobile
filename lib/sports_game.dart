@@ -11,6 +11,7 @@ class SportsGame {
     this.scheduledStartTime,
     this.eventId,
     this.baseballState,
+    this.footballState,
   });
 
   final String league;
@@ -24,6 +25,23 @@ class SportsGame {
   final DateTime? scheduledStartTime;
   final String? eventId;
   final BaseballGameState? baseballState;
+  final FootballGameState? footballState;
+}
+
+enum FootballPossession { away, home }
+
+class FootballGameState {
+  const FootballGameState({
+    required this.possession,
+    required this.down,
+    required this.distance,
+    required this.isGoalToGo,
+  });
+
+  final FootballPossession possession;
+  final int down;
+  final int distance;
+  final bool isGoalToGo;
 }
 
 class BaseballGameState {

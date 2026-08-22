@@ -55,6 +55,7 @@ class SportsRepository {
       scheduledStartTime: game.scheduledStartTime,
       eventId: game.eventId,
       baseballState: game.baseballState,
+      footballState: game.footballState,
     );
   }
 }

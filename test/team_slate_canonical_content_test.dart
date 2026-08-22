@@ -46,6 +46,46 @@ void main() {
     );
     expect(serializer.canonicalSlateContent([base.first]), isNot(canonical));
   });
+
+  test('NFL possession down distance and goal-to-go are canonical', () {
+    GameData nfl({
+      FootballPossession possession = FootballPossession.away,
+      int down = 1,
+      int distance = 10,
+      bool goal = false,
+    }) => GameData(
+      eventId: 'nfl-1',
+      league: 'NFL',
+      awayTeam: 'A',
+      homeTeam: 'H',
+      awayScore: 0,
+      homeScore: 0,
+      status: 'LIVE',
+      clock: 'Q1 10:00',
+      footballState: FootballGameState(
+        possession: possession,
+        down: down,
+        distance: distance,
+        isGoalToGo: goal,
+      ),
+    );
+    final baseline = serializer.canonicalSlateContent([nfl()]);
+    expect(
+      serializer.canonicalSlateContent([
+        nfl(possession: FootballPossession.home),
+      ]),
+      isNot(baseline),
+    );
+    expect(serializer.canonicalSlateContent([nfl(down: 2)]), isNot(baseline));
+    expect(
+      serializer.canonicalSlateContent([nfl(distance: 7)]),
+      isNot(baseline),
+    );
+    expect(
+      serializer.canonicalSlateContent([nfl(distance: 0, goal: true)]),
+      isNot(baseline),
+    );
+  });
 }
 
 GameData _game(

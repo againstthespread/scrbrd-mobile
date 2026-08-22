@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
@@ -179,6 +180,11 @@ class BluetoothDeviceTransport implements DeviceTransport {
     _isWriting = false;
     _devicesById.clear();
     _emit(const BleDeviceSnapshot(state: BleConnectionState.disconnected));
+  }
+
+  @override
+  Future<void> sendControlCommand(String command) async {
+    await _sendPacket(utf8.encode(command));
   }
 
   @override

@@ -67,6 +67,7 @@ class GamePacketSerializer {
       'clock': gameData.clock.trim(),
     };
     _addBaseballState(packet, gameData);
+    _addFootballState(packet, gameData);
     return jsonEncode(packet);
   }
 
@@ -262,6 +263,7 @@ class GamePacketSerializer {
       packetGame['id'] = eventId;
     }
     _addBaseballState(packetGame, game);
+    _addFootballState(packetGame, game);
     return packetGame;
   }
 
@@ -273,6 +275,17 @@ class GamePacketSerializer {
       'onSecond': state.runnerOnSecond,
       'onThird': state.runnerOnThird,
       'outs': state.outs,
+    });
+  }
+
+  void _addFootballState(Map<String, Object> json, GameData game) {
+    final state = game.footballState;
+    if (state == null) return;
+    json.addAll({
+      'possession': state.possession.name,
+      'down': state.down,
+      'distance': state.distance,
+      'goalToGo': state.isGoalToGo,
     });
   }
 
@@ -297,6 +310,15 @@ class GamePacketSerializer {
       throw const GamePacketValidationException(
         'baseball outs must be between 0 and 2.',
       );
+    }
+    final footballState = gameData.footballState;
+    if (footballState != null &&
+        (gameData.league.trim().toUpperCase() != 'NFL' ||
+            footballState.down < 1 ||
+            footballState.down > 4 ||
+            footballState.distance < 0 ||
+            footballState.distance > 99)) {
+      throw const GamePacketValidationException('invalid football state.');
     }
   }
 

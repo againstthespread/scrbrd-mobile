@@ -34,11 +34,11 @@ void main() {
           home: LiveGamesScreen(
             repository: SportsRepository(dataSource),
             transport: transport,
+            developerMode: true,
           ),
         ),
       );
 
-      await tester.tap(find.widgetWithText(FilledButton, 'Refresh'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('NYY at BOS'));
       await tester.pumpAndSettle();
@@ -95,6 +95,9 @@ class _FakeSportsDataSource implements SportsDataSource {
 
 class _RecordingTransport implements DeviceTransport {
   final sentGames = <GameData>[];
+
+  @override
+  Future<void> sendControlCommand(String command) async {}
 
   @override
   Future<void> sendGameData(GameData gameData) async {

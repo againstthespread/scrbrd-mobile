@@ -136,6 +136,8 @@ class _GameEditorState extends State<GameEditor> {
       statusDetail: widget.initialGameData?.statusDetail,
       scheduledStartTime: widget.initialGameData?.scheduledStartTime,
       eventId: widget.initialGameData?.eventId,
+      baseballState: widget.initialGameData?.baseballState,
+      footballState: widget.initialGameData?.footballState,
     );
   }
 

@@ -4,14 +4,13 @@ import 'package:sports_hub_mobile/game_editor.dart';
 import 'package:sports_hub_mobile/main.dart';
 
 void main() {
-  testWidgets('launches the Sports Hub connection screen', (tester) async {
+  testWidgets('launches the SCRBRD Home screen', (tester) async {
     await tester.pumpWidget(const SportsHubApp());
 
-    expect(find.text('Sports Hub'), findsOneWidget);
-    expect(find.text('Not connected'), findsOneWidget);
-    expect(find.text('Peter Sports Hub'), findsOneWidget);
-    expect(find.text('Bluetooth Low Energy'), findsOneWidget);
-    expect(find.text('Connect'), findsOneWidget);
+    expect(find.text('SCRBRD'), findsOneWidget);
+    expect(find.text('Disconnected'), findsOneWidget);
+    expect(find.text('Connect to SCRBRD'), findsOneWidget);
+    expect(find.text('Peter Sports Hub'), findsNothing);
   });
 
   testWidgets('manual editor previews the protocol JSON packet', (

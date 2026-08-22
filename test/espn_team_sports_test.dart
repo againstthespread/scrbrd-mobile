@@ -171,6 +171,77 @@ void main() {
     expect(game.clock, 'Q3 08:42');
   });
 
+  for (final testCase in [
+    (
+      possession: 'away-id',
+      down: 1,
+      distance: 10,
+      text: '1st & 10',
+      goal: false,
+    ),
+    (possession: 'home-id', down: 2, distance: 7, text: '2nd & 7', goal: false),
+    (possession: 'away-id', down: 3, distance: 1, text: '3rd & 1', goal: false),
+    (
+      possession: 'home-id',
+      down: 4,
+      distance: 0,
+      text: '4th & Goal',
+      goal: true,
+    ),
+  ]) {
+    test(
+      'maps NFL ${testCase.text} with ${testCase.possession} possession',
+      () {
+        final game = parseEspnTeamScoreboard(
+          SportsLeague.nfl,
+          _scoreboard(
+            status: _status('STATUS_IN_PROGRESS', 'in', false, null),
+            situation: {
+              'possession': testCase.possession,
+              'down': testCase.down,
+              'distance': testCase.distance,
+              'shortDownDistanceText': testCase.text,
+            },
+          ),
+        ).single;
+        expect(
+          game.footballState?.possession.name,
+          testCase.possession == 'away-id' ? 'away' : 'home',
+        );
+        expect(game.footballState?.down, testCase.down);
+        expect(game.footballState?.distance, testCase.distance);
+        expect(game.footballState?.isGoalToGo, testCase.goal);
+      },
+    );
+  }
+
+  test('missing NFL situation is tolerated', () {
+    final game = parseEspnTeamScoreboard(
+      SportsLeague.nfl,
+      _scoreboard(status: _status('STATUS_IN_PROGRESS', 'in', false, null)),
+    ).single;
+    expect(game.footballState, isNull);
+  });
+
+  test('upcoming and final NFL omit football state', () {
+    final situation = {
+      'possession': 'away-id',
+      'down': 1,
+      'distance': 10,
+      'shortDownDistanceText': '1st & 10',
+    };
+    for (final status in [
+      _status('STATUS_SCHEDULED', 'pre', false, '1:00 PM'),
+      _status('STATUS_FINAL', 'post', true, 'Final'),
+    ]) {
+      final game = parseEspnTeamScoreboard(
+        SportsLeague.nfl,
+        _scoreboard(status: status, situation: situation),
+      ).single;
+      expect(game.footballState, isNull);
+    }
+  });
+
   test('maps live NBA period and clock', () {
     final game = parseEspnTeamScoreboard(
       SportsLeague.nba,
@@ -208,14 +279,16 @@ Map<String, dynamic> _scoreboard({
           },
           'competitors': [
             {
+              'id': 'home-id',
               'homeAway': 'home',
               'score': '2',
-              'team': {'abbreviation': 'NYY'},
+              'team': {'id': 'home-id', 'abbreviation': 'NYY'},
             },
             {
+              'id': 'away-id',
               'homeAway': 'away',
               'score': '3',
-              'team': {'abbreviation': 'BOS'},
+              'team': {'id': 'away-id', 'abbreviation': 'BOS'},
             },
           ],
         },

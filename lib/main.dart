@@ -46,10 +46,25 @@ class SportsHubApp extends StatelessWidget {
     final sportsRepository = createSportsRepository();
 
     return MaterialApp(
-      title: 'Sports Hub',
+      title: 'SCRBRD',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF00A6C8),
+          brightness: Brightness.dark,
+        ),
+        scaffoldBackgroundColor: const Color(0xFF071521),
+        cardTheme: const CardThemeData(
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(16)),
+          ),
+        ),
+        filledButtonTheme: FilledButtonThemeData(
+          style: FilledButton.styleFrom(
+            padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 20),
+          ),
+        ),
         useMaterial3: true,
       ),
       home: ConnectionScreen(repository: sportsRepository),

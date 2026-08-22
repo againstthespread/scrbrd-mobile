@@ -14,10 +14,12 @@ class LiveGamesScreen extends StatefulWidget {
     super.key,
     required this.repository,
     required this.transport,
+    this.developerMode = false,
   });
 
   final SportsRepository repository;
   final DeviceTransport transport;
+  final bool developerMode;
 
   @override
   State<LiveGamesScreen> createState() => _LiveGamesScreenState();
@@ -40,6 +42,7 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
     super.initState();
     final now = DateTime.now();
     _selectedDate = DateTime(now.year, now.month, now.day);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshGames());
   }
 
   Future<void> _refreshGames() async {
@@ -220,7 +223,7 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
       MaterialPageRoute<void>(
         builder: (context) {
           return Scaffold(
-            appBar: AppBar(title: const Text('Packet Preview')),
+            appBar: AppBar(title: const Text('Manual Game Packet')),
             body: SafeArea(
               child: Center(
                 child: SingleChildScrollView(
@@ -248,7 +251,9 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Games'),
+        title: Text(
+          widget.developerMode ? 'Games and Slate Tools' : "Today's Games",
+        ),
         actions: [
           IconButton(
             onPressed: _isLoading ? null : _refreshGames,
@@ -269,51 +274,52 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
                 label: const Text('Refresh'),
               ),
               const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed:
-                          (_selectedLeague == SportsLeague.pga
-                                  ? _loadedGolfLeaderboard == null
-                                  : _games.isEmpty) ||
-                              _isSendingSlate ||
-                              _isSendingAllLeagues
-                          ? null
-                          : _sendLoadedSlate,
-                      icon: const Icon(Icons.send),
-                      label: Text(
-                        _isSendingSlate
-                            ? 'Sending slate...'
-                            : 'TEMP: Send Loaded Games to SCRBRD',
-                        textAlign: TextAlign.center,
+              if (widget.developerMode)
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed:
+                            (_selectedLeague == SportsLeague.pga
+                                    ? _loadedGolfLeaderboard == null
+                                    : _games.isEmpty) ||
+                                _isSendingSlate ||
+                                _isSendingAllLeagues
+                            ? null
+                            : _sendLoadedSlate,
+                        icon: const Icon(Icons.send),
+                        label: Text(
+                          _isSendingSlate
+                              ? 'Sending slate...'
+                              : 'Send Loaded Games to SCRBRD',
+                          textAlign: TextAlign.center,
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed:
-                          (_loadedGolfLeaderboard == null &&
-                                  _loadedGamesByLeague.values.every(
-                                    (games) => games.isEmpty,
-                                  )) ||
-                              _isSendingSlate ||
-                              _isSendingAllLeagues
-                          ? null
-                          : _sendAllLoadedLeagues,
-                      icon: const Icon(Icons.send_and_archive),
-                      label: Text(
-                        _isSendingAllLeagues
-                            ? 'Sending loaded leagues...'
-                            : 'TEMP: Send All Loaded Leagues to SCRBRD',
-                        textAlign: TextAlign.center,
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed:
+                            (_loadedGolfLeaderboard == null &&
+                                    _loadedGamesByLeague.values.every(
+                                      (games) => games.isEmpty,
+                                    )) ||
+                                _isSendingSlate ||
+                                _isSendingAllLeagues
+                            ? null
+                            : _sendAllLoadedLeagues,
+                        icon: const Icon(Icons.send_and_archive),
+                        label: Text(
+                          _isSendingAllLeagues
+                              ? 'Sending loaded leagues...'
+                              : 'Send All Loaded Leagues to SCRBRD',
+                          textAlign: TextAlign.center,
+                        ),
                       ),
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
+                  ],
+                ),
+              if (widget.developerMode) const SizedBox(height: 12),
               DropdownButtonFormField<SportsLeague>(
                 initialValue: _selectedLeague,
                 decoration: const InputDecoration(
@@ -354,7 +360,9 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
                         games: _games,
                         selectedLeague: _selectedLeague,
                         errorMessage: _errorMessage,
-                        onGameSelected: _openGamePreview,
+                        onGameSelected: widget.developerMode
+                            ? _openGamePreview
+                            : null,
                         emptyTextStyle: theme.textTheme.bodyLarge,
                       ),
               ),
@@ -381,7 +389,14 @@ class _GolfLeaderboardContent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (errorMessage != null) return Center(child: Text(errorMessage!));
+    if (errorMessage != null) {
+      return const Center(
+        child: Text(
+          'Could not load PGA right now. Try again.',
+          textAlign: TextAlign.center,
+        ),
+      );
+    }
     final value = leaderboard;
     if (value == null) {
       return const Center(
@@ -431,7 +446,7 @@ class _LiveGamesContent extends StatelessWidget {
   final List<GameData> games;
   final SportsLeague selectedLeague;
   final String? errorMessage;
-  final ValueChanged<GameData> onGameSelected;
+  final ValueChanged<GameData>? onGameSelected;
   final TextStyle? emptyTextStyle;
 
   @override
@@ -441,7 +456,7 @@ class _LiveGamesContent extends StatelessWidget {
     if (errorMessage != null) {
       return Center(
         child: Text(
-          errorMessage!,
+          'Could not load ${selectedLeague.label} right now. Try again.',
           textAlign: TextAlign.center,
           style: emptyTextStyle?.copyWith(color: colorScheme.error),
         ),
@@ -463,7 +478,10 @@ class _LiveGamesContent extends StatelessWidget {
       separatorBuilder: (context, index) => const SizedBox(height: 12),
       itemBuilder: (context, index) {
         final game = games[index];
-        return _LiveGameListItem(game: game, onTap: () => onGameSelected(game));
+        return _LiveGameListItem(
+          game: game,
+          onTap: onGameSelected == null ? null : () => onGameSelected!(game),
+        );
       },
     );
   }
@@ -473,7 +491,7 @@ class _LiveGameListItem extends StatelessWidget {
   const _LiveGameListItem({required this.game, required this.onTap});
 
   final GameData game;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {

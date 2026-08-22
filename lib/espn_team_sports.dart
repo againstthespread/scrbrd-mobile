@@ -73,7 +73,53 @@ SportsGame _parseEvent(SportsLeague league, Map<String, dynamic> event) {
     baseballState: league == SportsLeague.mlb && status == 'LIVE'
         ? _baseballState(competition)
         : null,
+    footballState: league == SportsLeague.nfl && status == 'LIVE'
+        ? _footballState(competition, away, home)
+        : null,
   );
+}
+
+FootballGameState? _footballState(
+  Map<String, dynamic> competition,
+  Map<String, dynamic> away,
+  Map<String, dynamic> home,
+) {
+  final situation = _map(competition['situation']);
+  if (situation == null) return null;
+  final possessionId = _nonEmpty(situation['possession']);
+  final down = _integer(situation['down']);
+  final distance = _integer(situation['distance']);
+  if (possessionId == null ||
+      down == null ||
+      down < 1 ||
+      down > 4 ||
+      distance == null ||
+      distance < 0) {
+    return null;
+  }
+  final possession = switch (possessionId) {
+    final id when _competitorIds(away).contains(id) => FootballPossession.away,
+    final id when _competitorIds(home).contains(id) => FootballPossession.home,
+    _ => null,
+  };
+  if (possession == null) return null;
+  final downText =
+      _nonEmpty(situation['shortDownDistanceText']) ??
+      _nonEmpty(situation['downDistanceText']) ??
+      '';
+  return FootballGameState(
+    possession: possession,
+    down: down,
+    distance: distance,
+    isGoalToGo:
+        distance == 0 ||
+        RegExp(r'\bgoal\b', caseSensitive: false).hasMatch(downText),
+  );
+}
+
+Set<String> _competitorIds(Map<String, dynamic> competitor) {
+  final team = _map(competitor['team']);
+  return <String>{?_nonEmpty(competitor['id']), ?_nonEmpty(team?['id'])};
 }
 
 BaseballGameState? _baseballState(Map<String, dynamic> competition) {

@@ -141,6 +141,50 @@ void main() {
       contains('refresh skipped because another refresh is in progress'),
     );
   });
+
+  test('NFL football state change sends one complete slate', () async {
+    final old = _nfl(down: 1, distance: 10);
+    final fresh = _nfl(down: 2, distance: 7);
+    final session = TrackedDeviceSession()
+      ..recordTeamSlate(
+        league: SportsLeague.nfl,
+        selectedDate: _date,
+        games: [old],
+      )
+      ..recordGolf(_golf('-1'));
+    final transport = _Transport();
+    await _coordinator(
+      _Source({
+        SportsLeague.nfl: [fresh],
+      }),
+      _GolfSource(_golf('-1')),
+      session,
+      transport,
+    ).refreshTrackedSessionOnce();
+    expect(transport.slates, hasLength(1));
+    expect(transport.slates.single.single.footballState?.down, 2);
+    expect(session[SportsLeague.pga], isA<TrackedGolfLeaderboard>());
+  });
+
+  test('unchanged NFL football state sends no slate', () async {
+    final game = _nfl(down: 3, distance: 1);
+    final session = TrackedDeviceSession()
+      ..recordTeamSlate(
+        league: SportsLeague.nfl,
+        selectedDate: _date,
+        games: [game],
+      );
+    final transport = _Transport();
+    await _coordinator(
+      _Source({
+        SportsLeague.nfl: [game],
+      }),
+      _GolfSource(_golf('-1')),
+      session,
+      transport,
+    ).refreshTrackedSessionOnce();
+    expect(transport.slates, isEmpty);
+  });
 }
 
 final _date = DateTime(2026, 8, 21);
@@ -189,6 +233,24 @@ GameData _game(String league, String id, int score) => GameData(
   scheduledStartTime: _date,
 );
 
+GameData _nfl({required int down, required int distance}) => GameData(
+  eventId: 'nfl-1',
+  league: 'NFL',
+  awayTeam: 'A',
+  homeTeam: 'H',
+  awayScore: 0,
+  homeScore: 0,
+  status: 'LIVE',
+  clock: 'Q2 5:00',
+  scheduledStartTime: _date,
+  footballState: FootballGameState(
+    possession: FootballPossession.away,
+    down: down,
+    distance: distance,
+    isGoalToGo: distance == 0,
+  ),
+);
+
 GolfLeaderboard _golf(String score) => GolfLeaderboard(
   tournamentId: 'pga-1',
   tournamentName: 'Open',
@@ -226,6 +288,7 @@ class _Source implements SportsDataSource {
             clock: g.clock,
             scheduledStartTime: g.scheduledStartTime,
             baseballState: g.baseballState,
+            footballState: g.footballState,
           ),
         )
         .toList();
@@ -250,6 +313,8 @@ class _GolfSource implements GolfDataSource {
 class _Transport implements DeviceTransport {
   final slates = <List<GameData>>[];
   final golf = <GolfLeaderboard>[];
+  @override
+  Future<void> sendControlCommand(String command) async {}
   @override
   Future<void> sendGameData(GameData gameData) async {}
   @override

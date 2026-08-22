@@ -14,6 +14,7 @@ class GameData {
     this.scheduledStartTime,
     this.eventId,
     this.baseballState,
+    this.footballState,
   });
 
   final int protocolVersion;
@@ -28,6 +29,7 @@ class GameData {
   final DateTime? scheduledStartTime;
   final String? eventId;
   final BaseballGameState? baseballState;
+  final FootballGameState? footballState;
 
   Map<String, Object> toJson() {
     final json = <String, Object>{
@@ -47,6 +49,15 @@ class GameData {
         'onSecond': state.runnerOnSecond,
         'onThird': state.runnerOnThird,
         'outs': state.outs,
+      });
+    }
+    final football = footballState;
+    if (football != null) {
+      json.addAll({
+        'possession': football.possession.name,
+        'down': football.down,
+        'distance': football.distance,
+        'goalToGo': football.isGoalToGo,
       });
     }
     return json;
