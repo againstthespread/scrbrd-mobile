@@ -36,4 +36,27 @@ void main() {
       findsOneWidget,
     );
   });
+
+  testWidgets(
+    'app resume does not cancel refresh solely for lifecycle change',
+    (tester) async {
+      final messages = <String>[];
+      final previousDebugPrint = debugPrint;
+      debugPrint = (message, {wrapWidth}) {
+        if (message != null) messages.add(message);
+      };
+      try {
+        await tester.pumpWidget(const SportsHubApp());
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        await tester.pump();
+      } finally {
+        debugPrint = previousDebugPrint;
+      }
+
+      expect(messages, isNot(contains(contains('app returned to foreground'))));
+    },
+  );
 }

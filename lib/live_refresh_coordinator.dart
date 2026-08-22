@@ -13,18 +13,14 @@ class LiveRefreshCoordinator {
     required this.repository,
     required this.transport,
     required this.session,
-    required this.isAppBackgrounded,
     required this.isBleConnected,
-    required this.isLiveActivityActive,
     this.onDiagnostic,
   });
 
   final SportsRepository repository;
   final DeviceTransport transport;
   final TrackedDeviceSession session;
-  final bool Function() isAppBackgrounded;
   final bool Function() isBleConnected;
-  final Future<bool> Function() isLiveActivityActive;
   final void Function(String message)? onDiagnostic;
   final GamePacketSerializer _gameSerializer = const GamePacketSerializer();
   final GolfPacketSerializer _golfSerializer = const GolfPacketSerializer();
@@ -41,11 +37,11 @@ class LiveRefreshCoordinator {
     _isRefreshing = true;
     _cancelled = false;
     try {
-      if (!await _canContinue()) return;
+      if (!_canContinue()) return;
       final snapshot = session.snapshot();
       _diagnose('refresh started; tracked leagues=${snapshot.length}');
       for (final league in SportsLeague.values) {
-        if (!await _canContinue()) break;
+        if (!_canContinue()) break;
         final content = snapshot[league];
         if (content == null) continue;
         if (content is TrackedTeamSlate) {
@@ -85,7 +81,7 @@ class LiveRefreshCoordinator {
       _diagnose(
         '${tracked.league.label} change detected; full slate write attempted',
       );
-      if (!await _canContinue()) return;
+      if (!_canContinue()) return;
       await _sendTeam(fresh, tracked);
       _diagnose('${tracked.league.label} BLE write succeeded');
     } on Object catch (error) {
@@ -138,10 +134,8 @@ class LiveRefreshCoordinator {
       }
       _diagnoseGolfDifferences(trackedLeaderboard, fresh);
       _diagnose('PGA change detected');
-      if (!await _canContinue()) {
-        _diagnose(
-          'PGA update not sent: BLE/background requirements unavailable',
-        );
+      if (!_canContinue()) {
+        _diagnose('PGA update not sent: BLE disconnected or refresh cancelled');
         return;
       }
       _diagnose('PGA transfer started');
@@ -224,15 +218,13 @@ class LiveRefreshCoordinator {
     }
   }
 
-  Future<bool> _canContinue() async {
+  bool _canContinue() {
     if (_cancelled || !isBleConnected()) {
       _diagnose('refresh cancelled: BLE disconnected or coordinator stopped');
       return false;
     }
-    if (!isAppBackgrounded()) return true;
-    final active = await isLiveActivityActive();
-    _diagnose('Live Activity active=$active');
-    return active;
+    _diagnose('BLE connected=true; refresh permitted');
+    return true;
   }
 
   void cancelCurrentRefresh(String reason) {

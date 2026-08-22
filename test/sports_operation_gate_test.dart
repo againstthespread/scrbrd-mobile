@@ -60,9 +60,7 @@ void main() {
         repository: repository,
         transport: sender,
         session: session,
-        isAppBackgrounded: () => false,
         isBleConnected: () => true,
-        isLiveActivityActive: () async => true,
       );
 
       final startup = initial.startForConnectionForTest();
@@ -103,9 +101,7 @@ void main() {
         repository: repository,
         transport: sender,
         session: session,
-        isAppBackgrounded: () => false,
         isBleConnected: () => true,
-        isLiveActivityActive: () async => true,
       );
 
       await initial.startForConnectionForTest();
@@ -158,9 +154,7 @@ void main() {
         repository: repository,
         transport: sender,
         session: session,
-        isAppBackgrounded: () => false,
         isBleConnected: () => true,
-        isLiveActivityActive: () async => true,
         onDiagnostic: diagnostics.add,
       );
 
@@ -257,9 +251,7 @@ void main() {
         repository: repository,
         transport: sender,
         session: session,
-        isAppBackgrounded: () => false,
         isBleConnected: () => true,
-        isLiveActivityActive: () async => true,
       );
 
       await initial.startForConnectionForTest();

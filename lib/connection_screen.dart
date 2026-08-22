@@ -48,7 +48,6 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   final _liveActivityDiagnostics = LiveActivityDiagnostics();
 
   // Existing background-refresh diagnostics remain available in Developer Tools.
-  var _isAppBackgrounded = false;
   var _lifecycleState = AppLifecycleState.resumed;
   String _backgroundUpdaterStatus = 'Waiting for a BLE WAKE notification.';
   String _liveActivityDiagnosticStatus = 'Live Activity not started.';
@@ -80,10 +79,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       repository: widget.repository,
       transport: _deviceSender,
       session: _trackedSession,
-      isAppBackgrounded: () => _isAppBackgrounded,
       isBleConnected: () =>
           _transport.currentSnapshot.state.isPhysicallyConnected,
-      isLiveActivityActive: _liveActivityDiagnostics.isActive,
       onDiagnostic: _recordBackgroundUpdaterDiagnostic,
     );
     _initialSyncCoordinator = InitialDeviceSyncCoordinator(
@@ -151,20 +148,14 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _lifecycleState = state;
     debugPrint('TEMP BACKGROUND SCORE UPDATER: lifecycle=${state.name}');
-    if (state == AppLifecycleState.paused) {
-      _isAppBackgrounded = true;
-    } else if (state == AppLifecycleState.resumed) {
-      _isAppBackgrounded = false;
-      _liveRefreshCoordinator.cancelCurrentRefresh(
-        'app returned to foreground',
-      );
-    }
   }
 
   void _handleBleWakeNotification(List<int> payload) {
+    final connected = _transport.currentSnapshot.state.isPhysicallyConnected;
     debugPrint(
-      'TEMP BLE WAKE EXPERIMENT: wake notification received; '
-      'lifecycle=${_lifecycleState.name}; payload=$payload',
+      'BLE WAKE: WAKE received; lifecycle=${_lifecycleState.name}; '
+      'BLE connected=$connected; refresh permitted=$connected; '
+      'payload=$payload',
     );
     unawaited(
       _sportsOperationGate.requestLiveRefresh(
@@ -179,9 +170,6 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   }
 
   Future<void> _endLiveActivityDiagnostic() async {
-    _liveRefreshCoordinator.cancelCurrentRefresh(
-      'Live Activity ended manually',
-    );
     final status = await _liveActivityDiagnostics.end();
     _setLiveActivityDiagnosticStatus(status);
   }

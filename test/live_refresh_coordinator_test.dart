@@ -92,32 +92,76 @@ void main() {
     },
   );
 
-  test('foreground needs no Live Activity; background does', () async {
+  for (final scenario in [
+    'foreground with BLE connected',
+    'background with BLE connected and no Live Activity',
+    'background with BLE connected and Live Activity active',
+  ]) {
+    test('$scenario permits refresh', () async {
+      final source = _Source({
+        SportsLeague.mlb: [_game('MLB', '1', 2)],
+      });
+      final transport = _Transport();
+
+      await _coordinator(
+        source,
+        _GolfSource(_golf('-1')),
+        _session(teamScore: 1, golfScore: null),
+        transport,
+      ).refreshTrackedSessionOnce();
+
+      expect(transport.slates, hasLength(1));
+    });
+  }
+
+  test('BLE disconnected denies refresh', () async {
     final source = _Source({
       SportsLeague.mlb: [_game('MLB', '1', 2)],
     });
-    final session = _session(teamScore: 1, golfScore: null);
-    final foreground = _Transport();
-    await _coordinator(
-      source,
-      _GolfSource(_golf('-1')),
-      session,
-      foreground,
-      background: false,
-      liveActivity: false,
-    ).refreshTrackedSessionOnce();
-    expect(foreground.slates, hasLength(1));
+    final transport = _Transport();
 
-    final background = _Transport();
     await _coordinator(
       source,
       _GolfSource(_golf('-1')),
-      session,
-      background,
-      background: true,
-      liveActivity: false,
+      _session(teamScore: 1, golfScore: null),
+      transport,
+      isConnected: () => false,
     ).refreshTrackedSessionOnce();
-    expect(background.slates, isEmpty);
+
+    expect(source.requested, isEmpty);
+    expect(transport.slates, isEmpty);
+  });
+
+  test('BLE disconnect during refresh cancels subsequent work', () async {
+    final pending = Completer<List<GameData>>();
+    final source = _Source({})..pending = pending;
+    final session = TrackedDeviceSession()
+      ..recordTeamSlate(
+        league: SportsLeague.nfl,
+        selectedDate: _date,
+        games: [_game('NFL', '1', 1)],
+      )
+      ..recordTeamSlate(
+        league: SportsLeague.mlb,
+        selectedDate: _date,
+        games: [_game('MLB', '1', 1)],
+      );
+    var connected = true;
+    final transport = _Transport();
+    final refresh = _coordinator(
+      source,
+      _GolfSource(_golf('-1')),
+      session,
+      transport,
+      isConnected: () => connected,
+    ).refreshTrackedSessionOnce();
+    await Future<void>.delayed(Duration.zero);
+    connected = false;
+    pending.complete([_game('NFL', '1', 2)]);
+    await refresh;
+
+    expect(source.requested, [SportsLeague.nfl]);
+    expect(transport.slates, isEmpty);
   });
 
   test('overlapping wakes are globally suppressed', () async {
@@ -250,16 +294,13 @@ LiveRefreshCoordinator _coordinator(
   _GolfSource golf,
   TrackedDeviceSession session,
   _Transport transport, {
-  bool background = false,
-  bool liveActivity = true,
+  bool Function()? isConnected,
   void Function(String)? diagnostics,
 }) => LiveRefreshCoordinator(
   repository: SportsRepository(source, golfDataSource: golf),
   transport: transport,
   session: session,
-  isAppBackgrounded: () => background,
-  isBleConnected: () => true,
-  isLiveActivityActive: () async => liveActivity,
+  isBleConnected: isConnected ?? () => true,
   onDiagnostic: diagnostics,
 );
 
