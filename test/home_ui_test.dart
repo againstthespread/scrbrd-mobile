@@ -227,7 +227,7 @@ class _EmptyDataSource implements SportsDataSource {
   ) async => const [];
 }
 
-class _NoopTransport implements DeviceTransport {
+class _NoopTransport extends DeviceTransport {
   @override
   Future<void> sendControlCommand(String command) async {}
 

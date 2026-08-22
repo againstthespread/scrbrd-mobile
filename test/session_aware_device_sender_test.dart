@@ -2,6 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sports_hub_mobile/device_transport.dart';
 import 'package:sports_hub_mobile/game_data.dart';
 import 'package:sports_hub_mobile/golf_leaderboard.dart';
+import 'package:sports_hub_mobile/fantasy_point_delta_tracker.dart';
+import 'package:sports_hub_mobile/fantasy_scoring_correlation.dart';
 import 'package:sports_hub_mobile/session_aware_device_sender.dart';
 import 'package:sports_hub_mobile/sports_league.dart';
 import 'package:sports_hub_mobile/tracked_device_session.dart';
@@ -68,6 +70,35 @@ void main() {
       same(old),
     );
   });
+
+  test('fantasy alert send does not mutate tracked session', () async {
+    final session = TrackedDeviceSession()
+      ..recordTeamSlate(
+        league: SportsLeague.nfl,
+        selectedDate: _date,
+        games: [_game('NFL', 'nfl')],
+      )
+      ..recordGolf(_golf);
+    final before = session.snapshot();
+    final transport = _Transport();
+    final sender = SessionAwareDeviceSender(
+      transport: transport,
+      session: session,
+    );
+
+    await sender.sendFantasyAlert(
+      _alert,
+      userName: 'Peter',
+      userScore: 104.7,
+      opponentName: 'Mike',
+      opponentScore: 97.2,
+    );
+
+    expect(transport.fantasyAlerts, 1);
+    expect(session.snapshot().keys, before.keys);
+    expect(session[SportsLeague.nfl], same(before[SportsLeague.nfl]));
+    expect(session[SportsLeague.pga], same(before[SportsLeague.pga]));
+  });
 }
 
 final _date = DateTime(2026, 8, 21);
@@ -97,6 +128,7 @@ const _golf = GolfLeaderboard(
 class _Transport implements DeviceTransport {
   _Transport({this.fail = false});
   final bool fail;
+  int fantasyAlerts = 0;
   @override
   Future<void> sendControlCommand(String command) => _send();
   Future<void> _send() async {
@@ -109,4 +141,31 @@ class _Transport implements DeviceTransport {
   Future<void> sendGameSlate(List<GameData> games) => _send();
   @override
   Future<void> sendGolfLeaderboard(GolfLeaderboard leaderboard) => _send();
+  @override
+  Future<void> sendFantasyAlert(
+    FantasyScoringEvent event, {
+    required String userName,
+    required double userScore,
+    required String opponentName,
+    required double opponentScore,
+  }) async {
+    fantasyAlerts++;
+    await _send();
+  }
 }
+
+const _alert = FantasyScoringEvent(
+  delta: FantasyPointDelta(
+    playerId: '1',
+    side: FantasyMatchupSide.user,
+    previousPoints: 0,
+    currentPoints: 12,
+    delta: 12,
+  ),
+  player: null,
+  matchedPlay: null,
+  confidence: FantasyCorrelationConfidence.none,
+  explanation: null,
+  predictedPoints: null,
+  diagnostic: 'test',
+);

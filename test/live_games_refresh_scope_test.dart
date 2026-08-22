@@ -150,7 +150,7 @@ const _leaderboard = GolfLeaderboard(
   isOver: false,
 );
 
-class _NoopTransport implements DeviceTransport {
+class _NoopTransport extends DeviceTransport {
   @override
   Future<void> sendControlCommand(String command) async {}
 

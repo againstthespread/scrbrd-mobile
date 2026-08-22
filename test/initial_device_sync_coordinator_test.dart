@@ -234,7 +234,7 @@ class _GolfSource implements GolfDataSource {
       golf!;
 }
 
-class _Transport implements DeviceTransport {
+class _Transport extends DeviceTransport {
   _Transport(this.failures, this.events);
   final Set<String> failures;
   final List<String>? events;

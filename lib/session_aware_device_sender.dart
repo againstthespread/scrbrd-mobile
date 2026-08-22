@@ -1,4 +1,5 @@
 import 'device_transport.dart';
+import 'fantasy_scoring_correlation.dart';
 import 'game_data.dart';
 import 'golf_leaderboard.dart';
 import 'sports_league.dart';
@@ -74,6 +75,21 @@ class SessionAwareDeviceSender implements DeviceTransport {
     await transport.sendGolfLeaderboard(leaderboard);
     session.recordGolf(leaderboard, selectedDate: selectedDate);
   }
+
+  @override
+  Future<void> sendFantasyAlert(
+    FantasyScoringEvent event, {
+    required String userName,
+    required double userScore,
+    required String opponentName,
+    required double opponentScore,
+  }) => transport.sendFantasyAlert(
+    event,
+    userName: userName,
+    userScore: userScore,
+    opponentName: opponentName,
+    opponentScore: opponentScore,
+  );
 
   SportsLeague? _leagueFor(String label) {
     final normalized = label.trim().toUpperCase();

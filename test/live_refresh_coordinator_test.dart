@@ -1098,7 +1098,7 @@ class _ConcurrentGolfSource implements GolfDataSource {
       response;
 }
 
-class _Transport implements DeviceTransport {
+class _Transport extends DeviceTransport {
   final slates = <List<GameData>>[];
   final golf = <GolfLeaderboard>[];
   bool failNextSlate = false;
@@ -1120,7 +1120,7 @@ class _Transport implements DeviceTransport {
       golf.add(leaderboard);
 }
 
-class _BlockingTransport implements DeviceTransport {
+class _BlockingTransport extends DeviceTransport {
   final started = <String>[];
   Completer<void>? _release;
   var _activeSends = 0;
@@ -1152,7 +1152,7 @@ class _BlockingTransport implements DeviceTransport {
   Future<void> sendGolfLeaderboard(GolfLeaderboard leaderboard) => _send('PGA');
 }
 
-class _FailingTransport implements DeviceTransport {
+class _FailingTransport extends DeviceTransport {
   _FailingTransport(this.failLeague);
 
   final String failLeague;
@@ -1175,7 +1175,7 @@ class _FailingTransport implements DeviceTransport {
   Future<void> sendGolfLeaderboard(GolfLeaderboard leaderboard) async {}
 }
 
-class _DisconnectingTransport implements DeviceTransport {
+class _DisconnectingTransport extends DeviceTransport {
   _DisconnectingTransport(this.onFirstSend);
 
   final void Function() onFirstSend;
@@ -1197,7 +1197,7 @@ class _DisconnectingTransport implements DeviceTransport {
   Future<void> sendGolfLeaderboard(GolfLeaderboard leaderboard) async {}
 }
 
-class _MutatingTransport implements DeviceTransport {
+class _MutatingTransport extends DeviceTransport {
   _MutatingTransport(this.session);
 
   final TrackedDeviceSession session;

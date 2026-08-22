@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import 'fantasy_point_delta_tracker.dart';
+import 'console_device_transport.dart';
+import 'device_transport.dart';
 import 'fantasy_scoring_correlation.dart';
 import 'espn_nfl_play_repository.dart';
 import 'fantasy_nfl_play.dart';
@@ -17,12 +19,14 @@ class FantasyScreen extends StatefulWidget {
     this.leagueIdStore,
     this.playerRepository,
     this.nflPlayRepository,
+    this.transport,
   });
 
   final SleeperFantasyRepository? repository;
   final SleeperLeagueIdStore? leagueIdStore;
   final SleeperPlayerRepository? playerRepository;
   final EspnNflPlayRepository? nflPlayRepository;
+  final DeviceTransport? transport;
 
   @override
   State<FantasyScreen> createState() => _FantasyScreenState();
@@ -39,6 +43,7 @@ class _FantasyScreenState extends State<FantasyScreen> {
   late final EspnNflPlayRepository _nflPlayRepository;
   late final bool _ownsNflPlayRepository;
   late final SleeperLeagueIdStore _leagueIdStore;
+  late final DeviceTransport _transport;
   SleeperLeagueSnapshot? _snapshot;
   SleeperFantasyMatchup? _selectedMatchup;
   int? _selectedRosterId;
@@ -50,6 +55,7 @@ class _FantasyScreenState extends State<FantasyScreen> {
   List<FantasyNflPlay> _recentNflPlays = const [];
   bool _isRefreshingNflPlays = false;
   String? _nflPlayError;
+  bool _isSendingFantasyAlert = false;
   List<FantasyScoringEvent> _recentFantasyEvents = const [];
   bool _isObservingFantasy = false;
 
@@ -73,6 +79,7 @@ class _FantasyScreenState extends State<FantasyScreen> {
         widget.leagueIdStore ?? SharedPreferencesSleeperLeagueIdStore();
     _ownsNflPlayRepository = widget.nflPlayRepository == null;
     _nflPlayRepository = widget.nflPlayRepository ?? EspnNflPlayRepository();
+    _transport = widget.transport ?? const ConsoleDeviceTransport();
     _restoreLeagueId();
   }
 
@@ -220,6 +227,35 @@ class _FantasyScreenState extends State<FantasyScreen> {
     }
   }
 
+  Future<void> _sendTestFantasyAlert() async {
+    if (_isSendingFantasyAlert) return;
+    final matchup = _selectedMatchup;
+    final event = _recentFantasyEvents.isNotEmpty
+        ? _recentFantasyEvents.first
+        : _sampleFantasyEvent();
+    setState(() => _isSendingFantasyAlert = true);
+    try {
+      await _transport.sendFantasyAlert(
+        event,
+        userName: matchup?.team.name ?? 'PETER',
+        userScore: matchup?.team.matchup.points ?? 104.7,
+        opponentName: matchup?.opponent.name ?? 'MIKE',
+        opponentScore: matchup?.opponent.matchup.points ?? 97.2,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Fantasy alert sent to SCRBRD.')),
+      );
+    } on Object catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Fantasy alert failed: $error')));
+    } finally {
+      if (mounted) setState(() => _isSendingFantasyAlert = false);
+    }
+  }
+
   Future<void> _selectRoster(int? rosterId) async {
     if (rosterId == null || _snapshot == null) return;
     try {
@@ -360,10 +396,48 @@ class _FantasyScreenState extends State<FantasyScreen> {
             error: _nflPlayError,
             onRefresh: _refreshNflPlays,
           ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: _isSendingFantasyAlert ? null : _sendTestFantasyAlert,
+            icon: const Icon(Icons.send_outlined),
+            label: Text(
+              _isSendingFantasyAlert
+                  ? 'SENDING TEST FANTASY ALERT...'
+                  : 'SEND TEST FANTASY ALERT TO SCRBRD',
+            ),
+          ),
         ],
       ),
     );
   }
+}
+
+FantasyScoringEvent _sampleFantasyEvent() {
+  const player = SleeperFantasyPlayer(
+    sleeperPlayerId: 'sample-chase',
+    fullName: "Ja'Marr Chase",
+    firstName: "Ja'Marr",
+    lastName: 'Chase',
+    position: 'WR',
+    nflTeam: 'CIN',
+    espnPlayerId: null,
+  );
+  const delta = FantasyPointDelta(
+    playerId: 'sample-chase',
+    side: FantasyMatchupSide.user,
+    previousPoints: 0,
+    currentPoints: 12,
+    delta: 12,
+  );
+  return const FantasyScoringEvent(
+    delta: delta,
+    player: player,
+    matchedPlay: null,
+    confidence: FantasyCorrelationConfidence.high,
+    explanation: '50 YD REC TD',
+    predictedPoints: 12,
+    diagnostic: 'deterministic manual fantasy alert sample',
+  );
 }
 
 class _RecentFantasyEventsCard extends StatelessWidget {

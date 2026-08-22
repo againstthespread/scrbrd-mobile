@@ -1,6 +1,8 @@
 import 'dart:convert';
 
 import 'device_transport.dart';
+import 'fantasy_alert_packet_serializer.dart';
+import 'fantasy_scoring_correlation.dart';
 import 'game_data.dart';
 import 'game_packet_serializer.dart';
 import 'golf_leaderboard.dart';
@@ -52,5 +54,24 @@ class ConsoleDeviceTransport implements DeviceTransport {
       // ignore: avoid_print
       print(utf8.decode(packet));
     }
+  }
+
+  @override
+  Future<void> sendFantasyAlert(
+    FantasyScoringEvent event, {
+    required String userName,
+    required double userScore,
+    required String opponentName,
+    required double opponentScore,
+  }) async {
+    final packet = const FantasyAlertPacketSerializer().serialize(
+      event,
+      userName: userName,
+      userScore: userScore,
+      opponentName: opponentName,
+      opponentScore: opponentScore,
+    );
+    // ignore: avoid_print
+    print(utf8.decode(packet));
   }
 }

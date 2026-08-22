@@ -6,6 +6,8 @@ import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:sports_hub_mobile/ble_device_state.dart';
 import 'package:sports_hub_mobile/bluetooth_device_transport.dart';
 import 'package:sports_hub_mobile/game_data.dart';
+import 'package:sports_hub_mobile/fantasy_point_delta_tracker.dart';
+import 'package:sports_hub_mobile/fantasy_scoring_correlation.dart';
 import 'package:sports_hub_mobile/golf_leaderboard.dart';
 import 'package:sports_hub_mobile/session_aware_device_sender.dart';
 import 'package:sports_hub_mobile/sports_league.dart';
@@ -91,6 +93,22 @@ void main() {
       await harness.dispose();
     },
   );
+
+  test('BluetoothDeviceTransport sends one fantasy alert packet', () async {
+    final harness = await _WriteHarness.create();
+    final send = harness.transport.sendFantasyAlert(
+      _testFantasyAlert,
+      userName: 'Peter',
+      userScore: 104.7,
+      opponentName: 'Mike',
+      opponentScore: 97.2,
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(harness.writeCount, 1);
+    harness.completeWrite(0);
+    await send;
+    await harness.dispose();
+  });
 
   test(
     'physical disconnect wins over stale in-flight write completion',
@@ -348,6 +366,22 @@ void main() {
     await harness.dispose();
   });
 }
+
+const _testFantasyAlert = FantasyScoringEvent(
+  delta: FantasyPointDelta(
+    playerId: '1',
+    side: FantasyMatchupSide.user,
+    previousPoints: 0,
+    currentPoints: 12,
+    delta: 12,
+  ),
+  player: null,
+  matchedPlay: null,
+  confidence: FantasyCorrelationConfidence.none,
+  explanation: null,
+  predictedPoints: null,
+  diagnostic: 'test',
+);
 
 class _ScanHarness {
   _ScanHarness({

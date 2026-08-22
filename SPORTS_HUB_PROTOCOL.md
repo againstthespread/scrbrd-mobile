@@ -143,3 +143,27 @@ Golf rules:
 - Golf staging is validated and activated atomically. Invalid or incomplete transfers leave an existing PGA leaderboard and all team leagues unchanged.
 - PGA occupies one received-league slot. Single-click/`NEXT_GAME` advances five golfers per page and wraps; league changes reset PGA to page 1.
 - A live-data replacement of PGA preserves the current page when possible and clamps it if the page count shrinks.
+
+Fantasy scoring alert (ephemeral overlay):
+
+```json
+{"version":1,"type":"fantasy_alert","player":"Ja'Marr Chase","headline":"50 YD REC TD","points":12.0,"userName":"PETER","userScore":104.7,"opponentName":"MIKE","opponentScore":97.2,"confidence":"high"}
+```
+
+- `fantasy_alert` is a transient display event, not a sports league, game,
+  slate, golf leaderboard, or tracked-session baseline.
+- The complete compact UTF-8 packet must not exceed 512 bytes.
+- `player` is required and limited to 32 UTF-8 bytes. `headline` is optional
+  and limited to 32 UTF-8 bytes. `userName` and `opponentName` are required
+  and limited to 20 UTF-8 bytes each.
+- `points`, `userScore`, and `opponentScore` are finite JSON numbers. `points`
+  comes directly from Sleeper's authoritative fantasy delta.
+- `confidence` is protocol metadata (`high`, `medium`, `low`, or `none`) and
+  is not rendered as consumer-facing text.
+- The ESP32 displays the alert for approximately seven seconds without
+  blocking its loop. A newer alert replaces the visible alert and restarts
+  that duration; alerts are not queued or persisted.
+- Sports updates and button navigation continue updating underlying state
+  while the overlay is active. On expiration, the centralized renderer draws
+  the newest selected team-sport game, PGA page, paused-content state, or
+  connection state exactly as it then exists.

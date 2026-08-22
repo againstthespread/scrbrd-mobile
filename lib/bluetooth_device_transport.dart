@@ -7,6 +7,8 @@ import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'ble_device_state.dart';
 import 'device_transport.dart';
 import 'game_data.dart';
+import 'fantasy_alert_packet_serializer.dart';
+import 'fantasy_scoring_correlation.dart';
 import 'game_packet_serializer.dart';
 import 'golf_leaderboard.dart';
 import 'golf_packet_serializer.dart';
@@ -32,6 +34,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
     this.protocol = const SportsHubBleProtocol(),
     this.serializer = const GamePacketSerializer(),
     this.golfSerializer = const GolfPacketSerializer(),
+    this.fantasyAlertSerializer = const FantasyAlertPacketSerializer(),
     this.scanTimeout = const Duration(seconds: 8),
     this.bleReadyTimeout = const Duration(seconds: 4),
     this.bleStatusProvider,
@@ -45,6 +48,7 @@ class BluetoothDeviceTransport implements DeviceTransport {
   final SportsHubBleProtocol protocol;
   final GamePacketSerializer serializer;
   final GolfPacketSerializer golfSerializer;
+  final FantasyAlertPacketSerializer fantasyAlertSerializer;
   final Duration scanTimeout;
   final Duration bleReadyTimeout;
   final BleStatus Function()? bleStatusProvider;
@@ -290,6 +294,23 @@ class BluetoothDeviceTransport implements DeviceTransport {
       throw StateError('Golf transfer failed: $error');
     }
   }
+
+  @override
+  Future<void> sendFantasyAlert(
+    FantasyScoringEvent event, {
+    required String userName,
+    required double userScore,
+    required String opponentName,
+    required double opponentScore,
+  }) => _sendPacket(
+    fantasyAlertSerializer.serialize(
+      event,
+      userName: userName,
+      userScore: userScore,
+      opponentName: opponentName,
+      opponentScore: opponentScore,
+    ),
+  );
 
   Future<void> _sendPacket(List<int> packet) async {
     final characteristic = _writableCharacteristic;

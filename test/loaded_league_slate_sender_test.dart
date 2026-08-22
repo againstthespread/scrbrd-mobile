@@ -116,7 +116,7 @@ GolfLeaderboard _golf() => const GolfLeaderboard(
   isOver: false,
 );
 
-class _RecordingTransport implements DeviceTransport {
+class _RecordingTransport extends DeviceTransport {
   _RecordingTransport({this.failingLeague});
 
   final String? failingLeague;

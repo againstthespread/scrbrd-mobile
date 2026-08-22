@@ -140,7 +140,7 @@ class _FakeSportsDataSource implements SportsDataSource {
   }
 }
 
-class _RecordingTransport implements DeviceTransport {
+class _RecordingTransport extends DeviceTransport {
   final sentGames = <GameData>[];
 
   @override

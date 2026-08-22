@@ -572,7 +572,7 @@ class _QueuedGolfSource implements GolfDataSource {
   }
 }
 
-class _Transport implements DeviceTransport {
+class _Transport extends DeviceTransport {
   final mlbSlates = <List<GameData>>[];
   final golf = <GolfLeaderboard>[];
   bool failNextGolf = false;

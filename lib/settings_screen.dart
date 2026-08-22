@@ -48,7 +48,9 @@ class SettingsScreen extends StatelessWidget {
               subtitle: const Text('Connect a Sleeper league'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const FantasyScreen()),
+                MaterialPageRoute<void>(
+                  builder: (_) => FantasyScreen(transport: transport),
+                ),
               ),
             ),
           ),
