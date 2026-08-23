@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'fantasy_matchup_display_data.dart';
+import 'utf8_display_text.dart';
 
 class FantasyMatchupPacketSerializer {
   const FantasyMatchupPacketSerializer();
@@ -10,9 +11,18 @@ class FantasyMatchupPacketSerializer {
   static const maxTeamNameLength = 20;
 
   List<int> serialize(FantasyMatchupDisplayData data) {
-    _validateText('leagueName', data.leagueName, maxLeagueNameLength);
-    _validateText('userName', data.userName, maxTeamNameLength);
-    _validateText('opponentName', data.opponentName, maxTeamNameLength);
+    final leagueName = truncateUtf8DisplayText(
+      data.leagueName,
+      maxLeagueNameLength,
+    );
+    final userName = truncateUtf8DisplayText(data.userName, maxTeamNameLength);
+    final opponentName = truncateUtf8DisplayText(
+      data.opponentName,
+      maxTeamNameLength,
+    );
+    _validateText('leagueName', leagueName);
+    _validateText('userName', userName);
+    _validateText('opponentName', opponentName);
     if (!data.userScore.isFinite ||
         !data.opponentScore.isFinite ||
         data.userScore.abs() > 10000 ||
@@ -26,10 +36,10 @@ class FantasyMatchupPacketSerializer {
       jsonEncode({
         'version': 1,
         'type': 'fantasy_matchup',
-        'leagueName': data.leagueName,
-        'userName': data.userName,
+        'leagueName': leagueName,
+        'userName': userName,
         'userScore': data.userScore,
-        'opponentName': data.opponentName,
+        'opponentName': opponentName,
         'opponentScore': data.opponentScore,
         'week': data.week,
         'status': data.status.wireValue,
@@ -44,9 +54,9 @@ class FantasyMatchupPacketSerializer {
   List<int> serializeClear() =>
       utf8.encode(jsonEncode({'version': 1, 'type': 'fantasy_clear'}));
 
-  void _validateText(String field, String value, int limit) {
-    if (value.trim().isEmpty || value.length > limit) {
-      throw FormatException('$field must contain 1-$limit characters.');
+  void _validateText(String field, String value) {
+    if (value.isEmpty) {
+      throw FormatException('$field must not be empty.');
     }
   }
 }

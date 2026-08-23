@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'fantasy_point_alert.dart';
+import 'utf8_display_text.dart';
 
 class FantasyAlertPacketSerializer {
   const FantasyAlertPacketSerializer();
@@ -15,15 +16,21 @@ class FantasyAlertPacketSerializer {
       jsonEncode({
         'version': 1,
         'type': 'fantasy_alert',
-        'player': _truncateUtf8(
+        'player': truncateUtf8DisplayText(
           alert.player?.fullName ?? alert.delta.playerId,
           maximumPlayerBytes,
         ),
         'headline': '',
         'points': alert.delta.delta,
-        'userName': _truncateUtf8(alert.userName, maximumTeamNameBytes),
+        'userName': truncateUtf8DisplayText(
+          alert.userName,
+          maximumTeamNameBytes,
+        ),
         'userScore': alert.userScore,
-        'opponentName': _truncateUtf8(alert.opponentName, maximumTeamNameBytes),
+        'opponentName': truncateUtf8DisplayText(
+          alert.opponentName,
+          maximumTeamNameBytes,
+        ),
         'opponentScore': alert.opponentScore,
         'confidence': 'none',
       }),
@@ -42,18 +49,4 @@ String formatFantasyAlertPoints(double points) {
   final hundredths = (points * 100).round();
   final digits = hundredths % 10 == 0 ? 1 : 2;
   return '${points >= 0 ? '+' : ''}${points.toStringAsFixed(digits)}';
-}
-
-String _truncateUtf8(String value, int maximumBytes) {
-  final bytes = utf8.encode(value.trim());
-  if (bytes.length <= maximumBytes) return value.trim();
-  var end = maximumBytes;
-  while (end > 0) {
-    try {
-      return utf8.decode(bytes.sublist(0, end));
-    } on FormatException {
-      end--;
-    }
-  }
-  return '';
 }

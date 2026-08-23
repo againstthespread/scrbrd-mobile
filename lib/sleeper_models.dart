@@ -117,18 +117,32 @@ class SleeperMatchup {
 }
 
 class SleeperNflState {
-  const SleeperNflState({required this.week, required this.season});
+  const SleeperNflState({
+    required this.week,
+    required this.season,
+    required this.seasonType,
+  });
 
   factory SleeperNflState.fromJson(Map<String, dynamic> json) {
     final week = _nullableInt(json['week']) ?? _nullableInt(json['leg']);
     if (week == null || week < 1) {
       throw const FormatException('Sleeper NFL state has no current week.');
     }
-    return SleeperNflState(week: week, season: _string(json['season']));
+    return SleeperNflState(
+      week: week,
+      season: _string(json['season']),
+      seasonType: _string(json['season_type']).toLowerCase(),
+    );
   }
 
   final int week;
   final String season;
+  final String seasonType;
+
+  bool get isPreseason => seasonType == 'pre' || seasonType == 'preseason';
+
+  /// Sleeper fantasy leagues use Week 1 throughout the NFL preseason.
+  int get fantasyWeek => isPreseason ? 1 : week;
 }
 
 class SleeperFantasyPlayer {

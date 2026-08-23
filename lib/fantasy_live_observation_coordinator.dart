@@ -407,7 +407,9 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       deviceSession.record(display, context);
       _diagnose('Fantasy matchup sent; persistent baseline advanced.');
     } on Object catch (error) {
-      _diagnose('Fantasy matchup BLE failure; baseline retained: $error');
+      _diagnose(
+        'FANTASY: persistent matchup send failed; baseline retained: $error',
+      );
     }
   }
 

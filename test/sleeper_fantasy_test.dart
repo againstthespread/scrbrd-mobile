@@ -69,9 +69,34 @@ void main() {
     });
 
     test('parses current NFL week', () {
-      final state = SleeperNflState.fromJson({'week': 8, 'season': '2026'});
+      final state = SleeperNflState.fromJson({
+        'week': 8,
+        'season': '2026',
+        'season_type': 'regular',
+      });
       expect(state.week, 8);
       expect(state.season, '2026');
+      expect(state.seasonType, 'regular');
+    });
+
+    test('preseason Weeks 2 and 3 resolve to fantasy Week 1', () {
+      for (final week in [2, 3]) {
+        final state = SleeperNflState.fromJson({
+          'week': week,
+          'season': '2026',
+          'season_type': 'pre',
+        });
+        expect(state.fantasyWeek, 1);
+      }
+    });
+
+    test('regular-season Week 2 remains fantasy Week 2', () {
+      final state = SleeperNflState.fromJson({
+        'week': 2,
+        'season': '2026',
+        'season_type': 'regular',
+      });
+      expect(state.fantasyWeek, 2);
     });
   });
 
@@ -162,6 +187,39 @@ void main() {
     await repository.refreshMatchups('league-1');
 
     expect(paths, ['/v1/league/league-1/matchups/6']);
+  });
+
+  test('load and refresh share preseason fantasy Week 1 resolution', () async {
+    final paths = <String>[];
+    final client = MockClient((request) async {
+      paths.add(request.url.path);
+      final body = switch (request.url.path) {
+        '/v1/league/league-1' => {
+          'league_id': 'league-1',
+          'name': 'League',
+          'status': 'in_season',
+          'scoring_settings': <String, dynamic>{},
+        },
+        '/v1/league/league-1/users' => <Object>[],
+        '/v1/league/league-1/rosters' => <Object>[],
+        '/v1/state/nfl' => {'week': 2, 'season': '2026', 'season_type': 'pre'},
+        '/v1/league/league-1/matchups/1' => <Object>[],
+        _ => throw StateError('Unexpected URL: ${request.url}'),
+      };
+      return http.Response(jsonEncode(body), 200);
+    });
+    final repository = SleeperFantasyRepository(
+      SleeperApiClient(client: client),
+      weekRefreshInterval: Duration.zero,
+    );
+
+    final loaded = await repository.loadLeague('league-1');
+    final refreshed = await repository.refreshMatchups('league-1');
+
+    expect(loaded.week, 1);
+    expect(refreshed.week, 1);
+    expect(paths.where((path) => path.endsWith('/matchups/1')), hasLength(2));
+    expect(paths, isNot(contains('/v1/league/league-1/matchups/2')));
   });
 }
 

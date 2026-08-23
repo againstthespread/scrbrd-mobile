@@ -66,6 +66,24 @@ void main() {
       expect(transport.matchups, hasLength(1));
     });
 
+    test('0-0 resolved Week 1 matchup sends as upcoming', () async {
+      snapshots = [
+        _snapshot(
+          week: 1,
+          userPoints: 0,
+          opponentPoints: 0,
+          userTotal: 0,
+          opponentTotal: 0,
+        ),
+      ];
+      await coordinator.establishStartupBaseline();
+      expect(transport.matchups.single.week, 1);
+      expect(
+        transport.matchups.single.status,
+        FantasyMatchupDisplayStatus.upcoming,
+      );
+    });
+
     test(
       'unchanged matchup skips persistent send; score change sends',
       () async {
@@ -88,6 +106,29 @@ void main() {
       transport.failMatchup = false;
       await coordinator.observe();
       expect(transport.matchups, hasLength(2));
+    });
+
+    test('long names send and advance the normalized device baseline', () async {
+      snapshots = [
+        _snapshot(
+          leagueName:
+              'A very long Sleeper league name that exceeds forty-eight characters',
+          userName: 'The Extremely Long Home Team Name',
+          opponentName: 'The Extremely Long Away Team Name',
+        ),
+      ];
+      await coordinator.observe();
+      await coordinator.observe();
+      expect(transport.matchups, hasLength(1));
+      expect(
+        utf8.encode(transport.matchups.single.leagueName).length,
+        lessThanOrEqualTo(48),
+      );
+      expect(
+        utf8.encode(transport.matchups.single.userName).length,
+        lessThanOrEqualTo(20),
+      );
+      expect(coordinator.deviceSession.baseline, transport.matchups.single);
     });
 
     test('user delta sends once, unchanged wake does not resend', () async {
@@ -394,19 +435,22 @@ SleeperLeagueSnapshot _snapshot({
   double opponentPoints = 5,
   double userTotal = 89.7,
   double opponentTotal = 88.2,
+  String leagueName = 'Friends',
+  String userName = 'Peter',
+  String opponentName = 'Mike',
 }) => SleeperLeagueSnapshot(
-  league: const SleeperLeague(
+  league: SleeperLeague(
     leagueId: 'league-1',
-    name: 'Friends',
+    name: leagueName,
     season: '2026',
     status: 'in_season',
     scoringSettings: {},
     rosterPositions: [],
   ),
   week: week,
-  users: const [
-    SleeperUser(userId: 'u1', displayName: 'Peter'),
-    SleeperUser(userId: 'u2', displayName: 'Mike'),
+  users: [
+    SleeperUser(userId: 'u1', displayName: userName),
+    SleeperUser(userId: 'u2', displayName: opponentName),
   ],
   rosters: [
     const SleeperRoster(

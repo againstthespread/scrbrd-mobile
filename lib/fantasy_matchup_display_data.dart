@@ -1,4 +1,5 @@
 import 'sleeper_models.dart';
+import 'utf8_display_text.dart';
 
 enum FantasyMatchupDisplayStatus {
   upcoming('UPCOMING'),
@@ -33,10 +34,10 @@ class FantasyMatchupDisplayData {
         ? FantasyMatchupDisplayStatus.live
         : FantasyMatchupDisplayStatus.upcoming;
     return FantasyMatchupDisplayData(
-      leagueName: matchup.league.name,
-      userName: matchup.team.name,
+      leagueName: truncateUtf8DisplayText(matchup.league.name, 48),
+      userName: truncateUtf8DisplayText(matchup.team.name, 20),
       userScore: matchup.team.matchup.points,
-      opponentName: matchup.opponent.name,
+      opponentName: truncateUtf8DisplayText(matchup.opponent.name, 20),
       opponentScore: matchup.opponent.matchup.points,
       week: matchup.week,
       status: status,

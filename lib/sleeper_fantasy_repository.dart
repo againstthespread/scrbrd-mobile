@@ -106,13 +106,11 @@ class SleeperFantasyRepository {
       _apiClient.fetchLeagueRosters(normalizedId),
       _apiClient.fetchNflState(),
     ).wait;
-    final matchups = await _apiClient.fetchMatchups(
-      normalizedId,
-      nflState.week,
-    );
+    final fantasyWeek = nflState.fantasyWeek;
+    final matchups = await _apiClient.fetchMatchups(normalizedId, fantasyWeek);
     final snapshot = SleeperLeagueSnapshot(
       league: league,
-      week: nflState.week,
+      week: fantasyWeek,
       users: users,
       rosters: rosters,
       matchups: matchups,
@@ -133,10 +131,11 @@ class SleeperFantasyRepository {
         _clock().difference(lastCheck) >= weekRefreshInterval) {
       final nflState = await _apiClient.fetchNflState();
       _weekCheckedAt[normalizedId] = _clock();
-      if (nflState.week != cached.week) {
+      final fantasyWeek = nflState.fantasyWeek;
+      if (fantasyWeek != cached.week) {
         cached = SleeperLeagueSnapshot(
           league: cached.league,
-          week: nflState.week,
+          week: fantasyWeek,
           users: cached.users,
           rosters: cached.rosters,
           matchups: const [],
