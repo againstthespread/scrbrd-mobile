@@ -12,6 +12,8 @@ import 'sleeper_fantasy_config.dart';
 import 'sleeper_player_repository.dart';
 import 'favorites_screen.dart';
 import 'favorites_store.dart';
+import 'device_content_preferences_store.dart';
+import 'device_content_screen.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({
@@ -30,6 +32,7 @@ class SettingsScreen extends StatelessWidget {
     required this.fantasyPlayerRepository,
     required this.fantasyConfigStore,
     required this.favoritesStore,
+    required this.contentPreferencesStore,
   });
 
   final SportsRepository repository;
@@ -46,6 +49,7 @@ class SettingsScreen extends StatelessWidget {
   final SleeperPlayerRepository fantasyPlayerRepository;
   final SleeperFantasyConfigStore fantasyConfigStore;
   final FavoritesStore favoritesStore;
+  final DeviceContentPreferencesStore contentPreferencesStore;
 
   @override
   Widget build(BuildContext context) {
@@ -78,6 +82,33 @@ class SettingsScreen extends StatelessWidget {
                 ),
               ),
             ),
+          ),
+          AnimatedBuilder(
+            animation: contentPreferencesStore,
+            builder: (context, _) {
+              final enabled = contentPreferencesStore
+                  .read()
+                  .enabledCategories
+                  .length;
+              return Card(
+                child: ListTile(
+                  leading: const Icon(Icons.view_carousel_outlined),
+                  title: const Text('SCRBRD Content'),
+                  subtitle: Text(
+                    enabled == 0
+                        ? 'No content selected'
+                        : '$enabled categories enabled',
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) =>
+                          DeviceContentScreen(store: contentPreferencesStore),
+                    ),
+                  ),
+                ),
+              );
+            },
           ),
           Card(
             child: ListTile(

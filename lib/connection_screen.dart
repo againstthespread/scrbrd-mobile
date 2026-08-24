@@ -24,17 +24,21 @@ import 'sleeper_fantasy_repository.dart';
 import 'sleeper_player_repository.dart';
 import 'tracked_device_session.dart';
 import 'favorites_store.dart';
+import 'device_content_preferences.dart';
+import 'device_content_preferences_store.dart';
 
 class ConnectionScreen extends StatefulWidget {
   const ConnectionScreen({
     super.key,
     required this.repository,
     this.favoritesStore,
+    this.contentPreferencesStore,
     this.pushNotificationService = const PushNotificationService(),
   });
 
   final SportsRepository repository;
   final FavoritesStore? favoritesStore;
+  final DeviceContentPreferencesStore? contentPreferencesStore;
   final PushNotificationService pushNotificationService;
 
   @override
@@ -55,6 +59,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   late final SleeperFantasyConfigStore _fantasyConfigStore;
   late final FantasyLiveObservationCoordinator _fantasyCoordinator;
   late final FavoritesStore _favoritesStore;
+  late final DeviceContentPreferencesStore _contentPreferencesStore;
+  late DeviceContentPreferences _activeContentPreferences;
   StreamSubscription<BleDeviceSnapshot>? _snapshotSubscription;
   StreamSubscription<List<int>>? _wakeNotificationSubscription;
   StreamSubscription<BackgroundScoreRefreshRequest>? _scoreRefreshSubscription;
@@ -81,6 +87,9 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _favoritesStore = widget.favoritesStore ?? MemoryFavoritesStore();
+    _contentPreferencesStore =
+        widget.contentPreferencesStore ?? MemoryDeviceContentPreferencesStore();
+    _activeContentPreferences = _contentPreferencesStore.read();
     _transport = BluetoothDeviceTransport();
     _trackedSession = TrackedDeviceSession()
       ..addListener(_handleTrackedSessionChanged);
@@ -125,8 +134,10 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       operationGate: _sportsOperationGate,
       onStatusChanged: _recordInitialSyncStatus,
       onDiagnostic: (message) => debugPrint('INITIAL DEVICE SYNC: $message'),
-      onInitialSyncComplete: _fantasyCoordinator.establishStartupBaseline,
       readFavorites: _favoritesStore.readFavorites,
+      readContentPreferences: () => _activeContentPreferences,
+      syncFantasyCategory: _fantasyCoordinator.syncStartupCategory,
+      onAuthoritativeSyncStarted: _trackedSession.clear,
     );
     _deviceSnapshot = _transport.currentSnapshot;
     _wakeNotificationSubscription = _transport.wakeNotifications.listen(
@@ -139,7 +150,12 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       final isConnected = snapshot.state.isPhysicallyConnected;
       if (!wasConnected && isConnected) {
         debugPrint('physical BLE connection established');
-        _fantasyCoordinator.beginConnectionSession();
+        _activeContentPreferences = _contentPreferencesStore.read();
+        _fantasyCoordinator.beginConnectionSession(
+          fantasyEnabled: _activeContentPreferences.isEnabled(
+            DeviceContentCategory.fantasy,
+          ),
+        );
       } else if (wasConnected && !isConnected) {
         debugPrint('physical BLE connection ended');
         _fantasyCoordinator.endConnectionSession();
@@ -279,6 +295,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           fantasyPlayerRepository: _sleeperPlayerRepository,
           fantasyConfigStore: _fantasyConfigStore,
           favoritesStore: _favoritesStore,
+          contentPreferencesStore: _contentPreferencesStore,
         ),
       ),
     );

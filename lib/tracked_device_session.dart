@@ -82,4 +82,10 @@ class TrackedDeviceSession extends ChangeNotifier {
   void remove(SportsLeague league) {
     if (_entries.remove(league) != null) notifyListeners();
   }
+
+  void clear() {
+    if (_entries.isEmpty) return;
+    _entries.clear();
+    notifyListeners();
+  }
 }

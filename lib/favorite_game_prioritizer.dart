@@ -27,13 +27,3 @@ class FavoriteGamePrioritizer {
     return [...preferred, ...remaining];
   }
 }
-
-List<SportsLeague> initialLeagueOrder(Iterable<FavoriteTeam> favorites) {
-  const canonical = [SportsLeague.nfl, SportsLeague.nba, SportsLeague.mlb];
-  final favoriteLeagues = favorites.map((team) => team.league).toSet();
-  return [
-    ...canonical.where(favoriteLeagues.contains),
-    ...canonical.where((league) => !favoriteLeagues.contains(league)),
-    SportsLeague.pga,
-  ];
-}

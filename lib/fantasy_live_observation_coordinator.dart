@@ -117,10 +117,12 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   String? _observationContext;
   SleeperFantasyMatchup? _latestMatchup;
   bool _alertsEnabled = true;
+  bool _deviceContentEnabled = true;
 
   FantasyRuntimeStatus get status => _status;
 
-  void beginConnectionSession() {
+  void beginConnectionSession({bool fantasyEnabled = true}) {
+    _deviceContentEnabled = fantasyEnabled;
     _sessionBaselineEstablished = false;
     // Device RAM may belong to a restarted or different SCRBRD after reconnect.
     deviceSession.reset();
@@ -265,6 +267,12 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     }
   }
 
+  Future<bool> syncStartupCategory() async {
+    if (!_deviceContentEnabled) return false;
+    await establishStartupBaseline();
+    return deviceSession.baseline != null;
+  }
+
   Future<void> removeConfiguration() async {
     await configStore.clear();
     _resetProductionState('configuration removed');
@@ -274,6 +282,15 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   }
 
   Future<FantasyObservationResult> observe({bool sendOneAlert = true}) async {
+    if (!_deviceContentEnabled) {
+      pendingStore.clear();
+      return FantasyObservationResult(
+        configured: _status.configured,
+        baselineReset: false,
+        alerts: const [],
+        summary: 'Fantasy content is disabled for this device session.',
+      );
+    }
     if (_observing) {
       return FantasyObservationResult(
         configured: _status.configured,

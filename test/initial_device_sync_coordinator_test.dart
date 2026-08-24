@@ -13,6 +13,7 @@ import 'package:sports_hub_mobile/sports_game.dart';
 import 'package:sports_hub_mobile/sports_league.dart';
 import 'package:sports_hub_mobile/sports_repository.dart';
 import 'package:sports_hub_mobile/tracked_device_session.dart';
+import 'package:sports_hub_mobile/device_content_preferences.dart';
 
 void main() {
   test(
@@ -155,6 +156,68 @@ void main() {
     expect(harness.source.dates, everyElement(DateTime(2026, 8, 21)));
     expect(harness.golfSource.requestedDate, DateTime(2026, 8, 21));
   });
+
+  test(
+    'explicit category order controls sends and disabled leagues are not fetched',
+    () async {
+      final preferences = DeviceContentPreferences([
+        const DeviceContentPreference(
+          category: DeviceContentCategory.mlb,
+          enabled: true,
+        ),
+        const DeviceContentPreference(
+          category: DeviceContentCategory.nfl,
+          enabled: true,
+        ),
+        const DeviceContentPreference(
+          category: DeviceContentCategory.pga,
+          enabled: true,
+        ),
+        const DeviceContentPreference(
+          category: DeviceContentCategory.fantasy,
+          enabled: true,
+        ),
+        const DeviceContentPreference(
+          category: DeviceContentCategory.nba,
+          enabled: false,
+        ),
+      ]);
+      final harness = _Harness(
+        preferences: preferences,
+        games: {
+          SportsLeague.nfl: [_game('NFL')],
+          SportsLeague.nba: [_game('NBA')],
+          SportsLeague.mlb: [_game('MLB')],
+        },
+        golf: _golf,
+        fantasyAvailable: true,
+      );
+      await harness.coordinator.startForConnectionForTest();
+      expect(harness.transport.sent, ['MLB', 'NFL', 'PGA', 'FANTASY']);
+      expect(harness.source.requested, [SportsLeague.mlb, SportsLeague.nfl]);
+      expect(harness.session[SportsLeague.nba], isNull);
+    },
+  );
+
+  test(
+    'all disabled clears tracked baseline and sends clean empty startup',
+    () async {
+      var preferences = DeviceContentPreferences.defaults();
+      for (final category in DeviceContentCategory.values) {
+        preferences = preferences.withEnabled(category, false);
+      }
+      final harness = _Harness(preferences: preferences);
+      harness.session.recordTeamSlate(
+        league: SportsLeague.nfl,
+        selectedDate: DateTime(2026, 8, 21),
+        games: [_game('NFL')],
+      );
+      await harness.coordinator.startForConnectionForTest();
+      expect(harness.source.requested, isEmpty);
+      expect(harness.transport.controls, ['SYNC_START', 'SYNC_EMPTY']);
+      expect(harness.session.snapshot(), isEmpty);
+    },
+  );
 }
 
 class _Harness {
@@ -165,6 +228,8 @@ class _Harness {
     Set<String> sendFailures = const {},
     Completer<List<SportsGame>>? pendingFirstFetch,
     List<String>? events,
+    DeviceContentPreferences? preferences,
+    bool fantasyAvailable = false,
   }) : source = _Source(games, fetchFailures, pendingFirstFetch, events),
        golfSource = _GolfSource(golf, events),
        transport = _Transport(sendFailures, events) {
@@ -174,6 +239,13 @@ class _Harness {
       sender: sender,
       isBleConnected: () => connected,
       clock: () => DateTime(2026, 8, 21, 16, 30),
+      readContentPreferences: () =>
+          preferences ?? DeviceContentPreferences.defaults(),
+      syncFantasyCategory: () async {
+        if (fantasyAvailable) transport.sent.add('FANTASY');
+        return fantasyAvailable;
+      },
+      onAuthoritativeSyncStarted: session.clear,
     );
   }
 

@@ -106,33 +106,6 @@ void main() {
       expect(games.map((game) => game.eventId), ['A', 'B', 'C', 'D', 'E']);
     });
   });
-
-  test(
-    'initial league order prioritizes configured favorite leagues stably',
-    () {
-      final nfl = TeamCatalog.forLeague(SportsLeague.nfl).first;
-      final nba = TeamCatalog.forLeague(SportsLeague.nba).first;
-      final mlb = TeamCatalog.forLeague(SportsLeague.mlb).first;
-      expect(initialLeagueOrder([mlb]), [
-        SportsLeague.mlb,
-        SportsLeague.nfl,
-        SportsLeague.nba,
-        SportsLeague.pga,
-      ]);
-      expect(initialLeagueOrder([nba, mlb]), [
-        SportsLeague.nba,
-        SportsLeague.mlb,
-        SportsLeague.nfl,
-        SportsLeague.pga,
-      ]);
-      expect(initialLeagueOrder([nfl, mlb]), [
-        SportsLeague.nfl,
-        SportsLeague.mlb,
-        SportsLeague.nba,
-        SportsLeague.pga,
-      ]);
-    },
-  );
 }
 
 GameData _game(String id, {String? away, String? home}) => GameData(
