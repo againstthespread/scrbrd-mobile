@@ -5,6 +5,8 @@ import 'session_aware_device_sender.dart';
 import 'sports_operation_gate.dart';
 import 'sports_league.dart';
 import 'sports_repository.dart';
+import 'favorite_game_prioritizer.dart';
+import 'favorite_team.dart';
 
 enum InitialSyncStatus { idle, syncing, complete, empty, partialFailure }
 
@@ -30,6 +32,7 @@ class InitialDeviceSyncCoordinator {
     this.onStatusChanged,
     this.onDiagnostic,
     this.onInitialSyncComplete,
+    this.readFavorites,
   }) : clock = clock ?? DateTime.now,
        operationGate = operationGate ?? SportsOperationGate();
 
@@ -45,6 +48,7 @@ class InitialDeviceSyncCoordinator {
   final void Function(InitialSyncSnapshot snapshot)? onStatusChanged;
   final void Function(String message)? onDiagnostic;
   final Future<void> Function()? onInitialSyncComplete;
+  final Set<FavoriteTeam> Function()? readFavorites;
 
   InitialSyncSnapshot _snapshot = const InitialSyncSnapshot(
     status: InitialSyncStatus.idle,
@@ -85,6 +89,7 @@ class InitialDeviceSyncCoordinator {
   Future<void> _runOwned(int generation) async {
     final now = clock();
     final today = DateTime(now.year, now.month, now.day);
+    final favorites = readFavorites?.call() ?? const <FavoriteTeam>{};
     _setSnapshot(const InitialSyncSnapshot(status: InitialSyncStatus.syncing));
     _diagnose('Initial sync started; date=${_dateText(today)}');
 
@@ -105,15 +110,18 @@ class InitialDeviceSyncCoordinator {
 
     var sentCount = 0;
     final failures = <String>[];
-    for (final league in [
-      SportsLeague.nfl,
-      SportsLeague.nba,
-      SportsLeague.mlb,
-    ]) {
+    for (final league in initialLeagueOrder(
+      favorites,
+    ).where((league) => league != SportsLeague.pga)) {
       if (!_isCurrent(generation)) return;
       try {
         _diagnose('${league.label} fetch started');
-        final games = await repository.fetchGamesForDate(league, today);
+        final fetched = await repository.fetchGamesForDate(league, today);
+        final games = const FavoriteGamePrioritizer().prioritize(
+          league,
+          fetched,
+          favorites,
+        );
         _diagnose('${league.label} games=${games.length}');
         if (games.isEmpty) {
           _diagnose('${league.label} games=0; skipped');

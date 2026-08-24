@@ -13,6 +13,8 @@ class GameData {
     this.statusDetail,
     this.scheduledStartTime,
     this.eventId,
+    this.awayTeamKey,
+    this.homeTeamKey,
     this.baseballState,
     this.footballState,
   });
@@ -28,6 +30,8 @@ class GameData {
   final String? statusDetail;
   final DateTime? scheduledStartTime;
   final String? eventId;
+  final String? awayTeamKey;
+  final String? homeTeamKey;
   final BaseballGameState? baseballState;
   final FootballGameState? footballState;
 

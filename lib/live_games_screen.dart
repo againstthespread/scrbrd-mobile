@@ -9,6 +9,8 @@ import 'sports_league.dart';
 import 'sports_repository.dart';
 import 'session_aware_device_sender.dart';
 import 'tracked_device_session.dart';
+import 'favorite_game_prioritizer.dart';
+import 'favorites_store.dart';
 
 class LiveGamesScreen extends StatefulWidget {
   const LiveGamesScreen({
@@ -17,12 +19,14 @@ class LiveGamesScreen extends StatefulWidget {
     required this.transport,
     required this.trackedSession,
     this.developerMode = false,
+    this.favoritesStore,
   });
 
   final SportsRepository repository;
   final DeviceTransport transport;
   final TrackedDeviceSession trackedSession;
   final bool developerMode;
+  final FavoritesStore? favoritesStore;
 
   @override
   State<LiveGamesScreen> createState() => _LiveGamesScreenState();
@@ -80,9 +84,14 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
         });
         return;
       }
-      final games = await widget.repository.fetchGamesForDate(
+      final fetched = await widget.repository.fetchGamesForDate(
         _selectedLeague,
         _selectedDate,
+      );
+      final games = const FavoriteGamePrioritizer().prioritize(
+        _selectedLeague,
+        fetched,
+        widget.favoritesStore?.readFavorites() ?? const {},
       );
       if (!mounted) {
         return;

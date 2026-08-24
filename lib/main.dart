@@ -7,6 +7,7 @@ import 'connection_screen.dart';
 import 'firebase_options.dart';
 import 'push_notification_service.dart';
 import 'sports_data_provider.dart';
+import 'favorites_store.dart';
 
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -35,11 +36,13 @@ Future<void> main() async {
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
   await const PushNotificationService().initializeForDevelopment();
-  runApp(const SportsHubApp());
+  final favoritesStore = await SharedPreferencesFavoritesStore.create();
+  runApp(SportsHubApp(favoritesStore: favoritesStore));
 }
 
 class SportsHubApp extends StatelessWidget {
-  const SportsHubApp({super.key});
+  const SportsHubApp({super.key, this.favoritesStore});
+  final FavoritesStore? favoritesStore;
 
   @override
   Widget build(BuildContext context) {
@@ -67,7 +70,10 @@ class SportsHubApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: ConnectionScreen(repository: sportsRepository),
+      home: ConnectionScreen(
+        repository: sportsRepository,
+        favoritesStore: favoritesStore,
+      ),
     );
   }
 }

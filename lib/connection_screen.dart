@@ -23,15 +23,18 @@ import 'sleeper_fantasy_config.dart';
 import 'sleeper_fantasy_repository.dart';
 import 'sleeper_player_repository.dart';
 import 'tracked_device_session.dart';
+import 'favorites_store.dart';
 
 class ConnectionScreen extends StatefulWidget {
   const ConnectionScreen({
     super.key,
     required this.repository,
+    this.favoritesStore,
     this.pushNotificationService = const PushNotificationService(),
   });
 
   final SportsRepository repository;
+  final FavoritesStore? favoritesStore;
   final PushNotificationService pushNotificationService;
 
   @override
@@ -51,6 +54,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   late final SleeperPlayerRepository _sleeperPlayerRepository;
   late final SleeperFantasyConfigStore _fantasyConfigStore;
   late final FantasyLiveObservationCoordinator _fantasyCoordinator;
+  late final FavoritesStore _favoritesStore;
   StreamSubscription<BleDeviceSnapshot>? _snapshotSubscription;
   StreamSubscription<List<int>>? _wakeNotificationSubscription;
   StreamSubscription<BackgroundScoreRefreshRequest>? _scoreRefreshSubscription;
@@ -76,6 +80,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _favoritesStore = widget.favoritesStore ?? MemoryFavoritesStore();
     _transport = BluetoothDeviceTransport();
     _trackedSession = TrackedDeviceSession()
       ..addListener(_handleTrackedSessionChanged);
@@ -110,6 +115,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       isBleConnected: () =>
           _transport.currentSnapshot.state.isPhysicallyConnected,
       onDiagnostic: _recordBackgroundUpdaterDiagnostic,
+      readFavorites: _favoritesStore.readFavorites,
     );
     _initialSyncCoordinator = InitialDeviceSyncCoordinator(
       repository: widget.repository,
@@ -120,6 +126,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       onStatusChanged: _recordInitialSyncStatus,
       onDiagnostic: (message) => debugPrint('INITIAL DEVICE SYNC: $message'),
       onInitialSyncComplete: _fantasyCoordinator.establishStartupBaseline,
+      readFavorites: _favoritesStore.readFavorites,
     );
     _deviceSnapshot = _transport.currentSnapshot;
     _wakeNotificationSubscription = _transport.wakeNotifications.listen(
@@ -248,6 +255,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           repository: widget.repository,
           transport: _deviceSender,
           trackedSession: _trackedSession,
+          favoritesStore: _favoritesStore,
         ),
       ),
     );
@@ -270,6 +278,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           fantasyCoordinator: _fantasyCoordinator,
           fantasyPlayerRepository: _sleeperPlayerRepository,
           fantasyConfigStore: _fantasyConfigStore,
+          favoritesStore: _favoritesStore,
         ),
       ),
     );

@@ -54,6 +54,8 @@ class SportsRepository {
       statusDetail: game.statusDetail,
       scheduledStartTime: game.scheduledStartTime,
       eventId: game.eventId,
+      awayTeamKey: game.awayTeamKey,
+      homeTeamKey: game.homeTeamKey,
       baseballState: game.baseballState,
       footballState: game.footballState,
     );

@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import 'sports_game.dart';
 import 'sports_league.dart';
+import 'team_catalog.dart';
 
 class SportsDataIOGame {
   const SportsDataIOGame({
@@ -60,6 +61,8 @@ class SportsDataIOGame {
       league: league.label,
       awayTeam: awayTeam,
       homeTeam: homeTeam,
+      awayTeamKey: TeamCatalog.canonicalKey(league, awayTeam),
+      homeTeamKey: TeamCatalog.canonicalKey(league, homeTeam),
       awayScore: awayScore,
       homeScore: homeScore,
       status: status,

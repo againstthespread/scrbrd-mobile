@@ -10,6 +10,8 @@ import 'sports_repository.dart';
 import 'tracked_device_session.dart';
 import 'sleeper_fantasy_config.dart';
 import 'sleeper_player_repository.dart';
+import 'favorites_screen.dart';
+import 'favorites_store.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({
@@ -27,6 +29,7 @@ class SettingsScreen extends StatelessWidget {
     required this.fantasyCoordinator,
     required this.fantasyPlayerRepository,
     required this.fantasyConfigStore,
+    required this.favoritesStore,
   });
 
   final SportsRepository repository;
@@ -42,6 +45,7 @@ class SettingsScreen extends StatelessWidget {
   final FantasyLiveObservationCoordinator fantasyCoordinator;
   final SleeperPlayerRepository fantasyPlayerRepository;
   final SleeperFantasyConfigStore fantasyConfigStore;
+  final FavoritesStore favoritesStore;
 
   @override
   Widget build(BuildContext context) {
@@ -99,13 +103,28 @@ class SettingsScreen extends StatelessWidget {
               ),
             ),
           ),
-          const Card(
-            child: ListTile(
-              leading: Icon(Icons.favorite_border),
-              title: Text('Favorites'),
-              subtitle: Text('Coming soon'),
-              enabled: false,
-            ),
+          AnimatedBuilder(
+            animation: favoritesStore,
+            builder: (context, _) {
+              final count = favoritesStore.readFavorites().length;
+              return Card(
+                child: ListTile(
+                  leading: const Icon(Icons.star_outline),
+                  title: const Text('Favorites'),
+                  subtitle: Text(
+                    count == 0
+                        ? 'No favorites'
+                        : '$count favorite ${count == 1 ? 'team' : 'teams'}',
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => FavoritesScreen(store: favoritesStore),
+                    ),
+                  ),
+                ),
+              );
+            },
           ),
         ],
       ),

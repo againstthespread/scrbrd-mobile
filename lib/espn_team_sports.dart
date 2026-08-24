@@ -1,5 +1,6 @@
 import 'sports_game.dart';
 import 'sports_league.dart';
+import 'team_catalog.dart';
 
 List<SportsGame> parseEspnTeamScoreboard(
   SportsLeague league,
@@ -59,10 +60,14 @@ SportsGame _parseEvent(SportsLeague league, Map<String, dynamic> event) {
     _nonEmpty(competition['date']) ?? _nonEmpty(event['date']) ?? '',
   )?.toLocal();
   final detail = _statusDetail(type);
+  final awayName = _teamName(away);
+  final homeName = _teamName(home);
   return SportsGame(
     league: league.label,
-    awayTeam: _teamName(away),
-    homeTeam: _teamName(home),
+    awayTeam: awayName,
+    homeTeam: homeName,
+    awayTeamKey: _teamKey(league, away),
+    homeTeamKey: _teamKey(league, home),
     awayScore: _score(away['score']),
     homeScore: _score(home['score']),
     status: status,
@@ -77,6 +82,21 @@ SportsGame _parseEvent(SportsLeague league, Map<String, dynamic> event) {
         ? _footballState(competition, away, home)
         : null,
   );
+}
+
+String? _teamKey(SportsLeague league, Map<String, dynamic> competitor) {
+  final team = _map(competitor['team']);
+  for (final value in [
+    team?['abbreviation'],
+    team?['displayName'],
+    team?['shortDisplayName'],
+  ]) {
+    final text = _nonEmpty(value);
+    if (text == null) continue;
+    final key = TeamCatalog.canonicalKey(league, text);
+    if (key != null) return key;
+  }
+  return null;
 }
 
 FootballGameState? _footballState(
