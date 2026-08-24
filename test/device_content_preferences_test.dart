@@ -53,6 +53,7 @@ void main() {
       expect(store.read().entries.map((entry) => entry.category), [
         DeviceContentCategory.mlb,
         DeviceContentCategory.nfl,
+        DeviceContentCategory.ncaaf,
         DeviceContentCategory.nba,
         DeviceContentCategory.pga,
         DeviceContentCategory.fantasy,

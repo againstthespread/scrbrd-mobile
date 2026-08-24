@@ -105,7 +105,7 @@ Chunked slate transfer (preferred):
 
 Chunked-transfer rules:
 
-- A logical slate contains 1 through 20 games from one league.
+- A logical slate contains 1 through 72 games from one league.
 - Every start, chunk, and end message is compact UTF-8 JSON no larger than 512 bytes.
 - The sender chooses chunk boundaries conservatively based on encoded byte size and sends packets sequentially.
 - `slateId` is required, non-empty, and at most 48 UTF-8 bytes. It identifies one transfer, not a sporting event.
@@ -120,7 +120,7 @@ Received-league storage and navigation:
 - A completed transfer replaces the stored games for that league only, or appends a new league when capacity permits.
 - Live refresh replaces only a changed league; team leagues and PGA coexist in the mobile tracked device session.
 - Replacing the currently displayed team league preserves the selected stable event ID when possible, otherwise it clamps the previous game index.
-- The ESP32 stores up to 8 received leagues, each with up to 20 games. Other stored leagues remain unchanged by replacement or failed transfers.
+- The ESP32 stores up to 8 received leagues, each with up to 72 games. Other stored leagues remain unchanged by replacement or failed transfers.
 - Received leagues retain insertion order. The app sends loaded leagues in `NFL`, `NBA`, `MLB` order.
 - `NEXT_GAME` and BOOT single-click cycle within the active received league.
 - `NEXT_LEAGUE` and BOOT double-click cycle received leagues and reset the newly active league to game 1.

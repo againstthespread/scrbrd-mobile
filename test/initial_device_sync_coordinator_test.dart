@@ -75,6 +75,7 @@ void main() {
       final harness = _Harness(
         games: {
           SportsLeague.nfl: [_game('NFL')],
+          SportsLeague.ncaaf: [_game('NCAAF')],
           SportsLeague.nba: [_game('NBA')],
           SportsLeague.mlb: [_game('MLB')],
         },
@@ -83,10 +84,11 @@ void main() {
       await harness.coordinator.startForConnectionForTest();
       expect(harness.source.requested, [
         SportsLeague.nfl,
+        SportsLeague.ncaaf,
         SportsLeague.nba,
         SportsLeague.mlb,
       ]);
-      expect(harness.transport.sent, ['NFL', 'NBA', 'MLB', 'PGA']);
+      expect(harness.transport.sent, ['NFL', 'NCAAF', 'NBA', 'MLB', 'PGA']);
       expect(harness.transport.controls, ['SYNC_START', 'SYNC_COMPLETE']);
       expect(harness.session.snapshot().keys, SportsLeague.values);
       for (final league in SportsLeague.values) {
@@ -106,6 +108,7 @@ void main() {
       await harness.coordinator.startForConnectionForTest();
       expect(harness.source.requested, [
         SportsLeague.nfl,
+        SportsLeague.ncaaf,
         SportsLeague.nba,
         SportsLeague.mlb,
       ]);
@@ -168,6 +171,10 @@ void main() {
         const DeviceContentPreference(
           category: DeviceContentCategory.nfl,
           enabled: true,
+        ),
+        const DeviceContentPreference(
+          category: DeviceContentCategory.ncaaf,
+          enabled: false,
         ),
         const DeviceContentPreference(
           category: DeviceContentCategory.pga,
@@ -351,6 +358,7 @@ SportsGame _sportsGame(String league) => SportsGame(
   league: league,
   awayTeam: 'A',
   homeTeam: 'H',
+  awayTeamKey: league == 'NCAAF' ? 'SC' : null,
   awayScore: 0,
   homeScore: 0,
   status: 'UPCOMING',

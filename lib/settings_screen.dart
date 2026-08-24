@@ -14,6 +14,8 @@ import 'favorites_screen.dart';
 import 'favorites_store.dart';
 import 'device_content_preferences_store.dart';
 import 'device_content_screen.dart';
+import 'college_football_preferences_store.dart';
+import 'college_football_screen.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({
@@ -33,6 +35,7 @@ class SettingsScreen extends StatelessWidget {
     required this.fantasyConfigStore,
     required this.favoritesStore,
     required this.contentPreferencesStore,
+    required this.collegeFootballPreferencesStore,
   });
 
   final SportsRepository repository;
@@ -50,6 +53,7 @@ class SettingsScreen extends StatelessWidget {
   final SleeperFantasyConfigStore fantasyConfigStore;
   final FavoritesStore favoritesStore;
   final DeviceContentPreferencesStore contentPreferencesStore;
+  final CollegeFootballPreferencesStore collegeFootballPreferencesStore;
 
   @override
   Widget build(BuildContext context) {
@@ -104,6 +108,32 @@ class SettingsScreen extends StatelessWidget {
                     MaterialPageRoute<void>(
                       builder: (_) =>
                           DeviceContentScreen(store: contentPreferencesStore),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+          AnimatedBuilder(
+            animation: collegeFootballPreferencesStore,
+            builder: (context, _) {
+              final selected = collegeFootballPreferencesStore
+                  .read()
+                  .conferences;
+              final subtitle = selected.length == 4
+                  ? 'All Power 4'
+                  : selected.map((value) => value.displayName).join(', ');
+              return Card(
+                child: ListTile(
+                  leading: const Icon(Icons.sports_football),
+                  title: const Text('College Football'),
+                  subtitle: Text(subtitle),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => CollegeFootballScreen(
+                        store: collegeFootballPreferencesStore,
+                      ),
                     ),
                   ),
                 ),

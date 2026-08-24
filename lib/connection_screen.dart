@@ -26,6 +26,8 @@ import 'tracked_device_session.dart';
 import 'favorites_store.dart';
 import 'device_content_preferences.dart';
 import 'device_content_preferences_store.dart';
+import 'college_football.dart';
+import 'college_football_preferences_store.dart';
 
 class ConnectionScreen extends StatefulWidget {
   const ConnectionScreen({
@@ -33,12 +35,14 @@ class ConnectionScreen extends StatefulWidget {
     required this.repository,
     this.favoritesStore,
     this.contentPreferencesStore,
+    this.collegeFootballPreferencesStore,
     this.pushNotificationService = const PushNotificationService(),
   });
 
   final SportsRepository repository;
   final FavoritesStore? favoritesStore;
   final DeviceContentPreferencesStore? contentPreferencesStore;
+  final CollegeFootballPreferencesStore? collegeFootballPreferencesStore;
   final PushNotificationService pushNotificationService;
 
   @override
@@ -61,6 +65,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   late final FavoritesStore _favoritesStore;
   late final DeviceContentPreferencesStore _contentPreferencesStore;
   late DeviceContentPreferences _activeContentPreferences;
+  late final CollegeFootballPreferencesStore _collegeFootballPreferencesStore;
+  late CollegeFootballPreferences _activeCollegeFootballPreferences;
   StreamSubscription<BleDeviceSnapshot>? _snapshotSubscription;
   StreamSubscription<List<int>>? _wakeNotificationSubscription;
   StreamSubscription<BackgroundScoreRefreshRequest>? _scoreRefreshSubscription;
@@ -90,6 +96,10 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     _contentPreferencesStore =
         widget.contentPreferencesStore ?? MemoryDeviceContentPreferencesStore();
     _activeContentPreferences = _contentPreferencesStore.read();
+    _collegeFootballPreferencesStore =
+        widget.collegeFootballPreferencesStore ??
+        MemoryCollegeFootballPreferencesStore();
+    _activeCollegeFootballPreferences = _collegeFootballPreferencesStore.read();
     _transport = BluetoothDeviceTransport();
     _trackedSession = TrackedDeviceSession()
       ..addListener(_handleTrackedSessionChanged);
@@ -125,6 +135,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           _transport.currentSnapshot.state.isPhysicallyConnected,
       onDiagnostic: _recordBackgroundUpdaterDiagnostic,
       readFavorites: _favoritesStore.readFavorites,
+      readCollegeFootballPreferences: () => _activeCollegeFootballPreferences,
     );
     _initialSyncCoordinator = InitialDeviceSyncCoordinator(
       repository: widget.repository,
@@ -136,6 +147,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       onDiagnostic: (message) => debugPrint('INITIAL DEVICE SYNC: $message'),
       readFavorites: _favoritesStore.readFavorites,
       readContentPreferences: () => _activeContentPreferences,
+      readCollegeFootballPreferences: () => _activeCollegeFootballPreferences,
       syncFantasyCategory: _fantasyCoordinator.syncStartupCategory,
       onAuthoritativeSyncStarted: _trackedSession.clear,
     );
@@ -151,6 +163,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       if (!wasConnected && isConnected) {
         debugPrint('physical BLE connection established');
         _activeContentPreferences = _contentPreferencesStore.read();
+        _activeCollegeFootballPreferences = _collegeFootballPreferencesStore
+            .read();
         _fantasyCoordinator.beginConnectionSession(
           fantasyEnabled: _activeContentPreferences.isEnabled(
             DeviceContentCategory.fantasy,
@@ -272,6 +286,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           transport: _deviceSender,
           trackedSession: _trackedSession,
           favoritesStore: _favoritesStore,
+          collegeFootballPreferencesStore: _collegeFootballPreferencesStore,
         ),
       ),
     );
@@ -296,6 +311,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           fantasyConfigStore: _fantasyConfigStore,
           favoritesStore: _favoritesStore,
           contentPreferencesStore: _contentPreferencesStore,
+          collegeFootballPreferencesStore: _collegeFootballPreferencesStore,
         ),
       ),
     );

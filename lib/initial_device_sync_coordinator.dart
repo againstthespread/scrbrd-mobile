@@ -8,6 +8,8 @@ import 'sports_repository.dart';
 import 'favorite_game_prioritizer.dart';
 import 'favorite_team.dart';
 import 'device_content_preferences.dart';
+import 'college_football.dart';
+import 'power_four_game_filter.dart';
 
 enum InitialSyncStatus { idle, syncing, complete, empty, partialFailure }
 
@@ -37,6 +39,7 @@ class InitialDeviceSyncCoordinator {
     this.readContentPreferences,
     this.syncFantasyCategory,
     this.onAuthoritativeSyncStarted,
+    this.readCollegeFootballPreferences,
   }) : clock = clock ?? DateTime.now,
        operationGate = operationGate ?? SportsOperationGate();
 
@@ -56,6 +59,7 @@ class InitialDeviceSyncCoordinator {
   final DeviceContentPreferences Function()? readContentPreferences;
   final Future<bool> Function()? syncFantasyCategory;
   final void Function()? onAuthoritativeSyncStarted;
+  final CollegeFootballPreferences Function()? readCollegeFootballPreferences;
 
   InitialSyncSnapshot _snapshot = const InitialSyncSnapshot(
     status: InitialSyncStatus.idle,
@@ -99,6 +103,9 @@ class InitialDeviceSyncCoordinator {
     final favorites = readFavorites?.call() ?? const <FavoriteTeam>{};
     final preferences =
         readContentPreferences?.call() ?? DeviceContentPreferences.defaults();
+    final collegePreferences =
+        readCollegeFootballPreferences?.call() ??
+        CollegeFootballPreferences.defaults();
     _setSnapshot(const InitialSyncSnapshot(status: InitialSyncStatus.syncing));
     _diagnose('Initial sync started; date=${_dateText(today)}');
 
@@ -160,7 +167,12 @@ class InitialDeviceSyncCoordinator {
       }
       try {
         _diagnose('${league.label} fetch started');
-        final fetched = await repository.fetchGamesForDate(league, today);
+        final providerGames = await repository.fetchGamesForDate(league, today);
+        final fetched = applyCollegeFootballFilter(
+          league,
+          providerGames,
+          collegePreferences,
+        );
         final games = const FavoriteGamePrioritizer().prioritize(
           league,
           fetched,

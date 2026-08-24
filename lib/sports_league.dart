@@ -1,5 +1,6 @@
 enum SportsLeague {
   nfl('NFL', 'nfl'),
+  ncaaf('NCAAF', 'cfb'),
   nba('NBA', 'nba'),
   mlb('MLB', 'mlb'),
   pga('PGA', 'golf');
@@ -8,4 +9,6 @@ enum SportsLeague {
 
   final String label;
   final String pathSegment;
+
+  bool get isFootball => this == nfl || this == ncaaf;
 }

@@ -2,6 +2,7 @@ import 'sports_league.dart';
 
 enum DeviceContentCategory {
   nfl('NFL'),
+  ncaaf('NCAAF'),
   nba('NBA'),
   mlb('MLB'),
   pga('PGA Golf'),
@@ -12,6 +13,7 @@ enum DeviceContentCategory {
 
   SportsLeague? get sportsLeague => switch (this) {
     nfl => SportsLeague.nfl,
+    ncaaf => SportsLeague.ncaaf,
     nba => SportsLeague.nba,
     mlb => SportsLeague.mlb,
     pga => SportsLeague.pga,
@@ -79,12 +81,14 @@ DeviceContentPreferences preferencesForPreset(DeviceContentPreset preset) {
     DeviceContentPreset.fantasyFocus => const [
       DeviceContentCategory.fantasy,
       DeviceContentCategory.nfl,
+      DeviceContentCategory.ncaaf,
       DeviceContentCategory.nba,
       DeviceContentCategory.mlb,
       DeviceContentCategory.pga,
     ],
     DeviceContentPreset.sportsOnly => const [
       DeviceContentCategory.nfl,
+      DeviceContentCategory.ncaaf,
       DeviceContentCategory.nba,
       DeviceContentCategory.mlb,
       DeviceContentCategory.pga,

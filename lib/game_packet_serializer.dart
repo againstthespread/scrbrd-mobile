@@ -37,7 +37,7 @@ class GamePacketSerializer {
   static const slateChunkPacketType = 'slate_chunk';
   static const slateEndPacketType = 'slate_end';
   static const maxLegacySlateGames = 4;
-  static const maxSlateGames = 20;
+  static const maxSlateGames = 72;
   static const maxSlatePacketBytes = 512;
   static const maxSlateIdBytes = 48;
   static const maxEventIdBytes = 48;
@@ -313,7 +313,7 @@ class GamePacketSerializer {
     }
     final footballState = gameData.footballState;
     if (footballState != null &&
-        (gameData.league.trim().toUpperCase() != 'NFL' ||
+        (!{'NFL', 'NCAAF'}.contains(gameData.league.trim().toUpperCase()) ||
             footballState.down < 1 ||
             footballState.down > 4 ||
             footballState.distance < 0 ||

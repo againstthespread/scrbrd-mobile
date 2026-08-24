@@ -31,16 +31,20 @@ class SportsDataException implements Exception {
 }
 
 class SportsDataIODataSource implements SportsDataSource, GolfDataSource {
-  SportsDataIODataSource({http.Client? client})
-    : _client = client ?? http.Client();
+  SportsDataIODataSource({http.Client? client, String? apiKey})
+    : _client = client ?? http.Client(),
+      _apiKey = apiKey ?? _configuredApiKey;
 
-  static const _apiKey = String.fromEnvironment('SPORTSDATAIO_API_KEY');
+  static const _configuredApiKey = String.fromEnvironment(
+    'SPORTSDATAIO_API_KEY',
+  );
   static const _apiHost = 'api.sportsdata.io';
   static const _apiProduct = 'standard SportsDataIO API';
   static const _apiKeyHeader = 'Ocp-Apim-Subscription-Key';
   static const _timeout = Duration(seconds: 10);
 
   final http.Client _client;
+  final String _apiKey;
 
   @override
   Future<List<SportsGame>> fetchGamesForDate(
@@ -73,6 +77,13 @@ class SportsDataIODataSource implements SportsDataSource, GolfDataSource {
     debugPrint('SportsDataIO HTTP status: ${response.statusCode}');
 
     if (response.statusCode != 200) {
+      if (league == SportsLeague.ncaaf &&
+          (response.statusCode == 401 || response.statusCode == 403)) {
+        throw SportsDataException(
+          'SportsDataIO College Football provider access is unavailable '
+          '(HTTP ${response.statusCode}).',
+        );
+      }
       throw SportsDataException(
         'SportsDataIO returned HTTP ${response.statusCode}.',
       );
@@ -284,9 +295,13 @@ class SportsDataIODataSource implements SportsDataSource, GolfDataSource {
     return switch (league) {
       SportsLeague.nfl =>
         '/v3/${league.pathSegment}/scores/json/ScoresByDate/$datePath',
-      SportsLeague.nba || SportsLeague.mlb =>
+      SportsLeague.nba || SportsLeague.mlb || SportsLeague.ncaaf =>
         '/v3/${league.pathSegment}/scores/json/GamesByDate/$datePath',
       SportsLeague.pga => throw UnsupportedError('PGA uses the Golf API.'),
     };
   }
+
+  @visibleForTesting
+  String endpointPathForTesting(SportsLeague league, DateTime selectedDate) =>
+      _endpointPath(league, selectedDate);
 }

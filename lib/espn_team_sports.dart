@@ -1,6 +1,7 @@
 import 'sports_game.dart';
 import 'sports_league.dart';
 import 'team_catalog.dart';
+import 'power_four_team_catalog.dart';
 
 List<SportsGame> parseEspnTeamScoreboard(
   SportsLeague league,
@@ -78,7 +79,7 @@ SportsGame _parseEvent(SportsLeague league, Map<String, dynamic> event) {
     baseballState: league == SportsLeague.mlb && status == 'LIVE'
         ? _baseballState(competition)
         : null,
-    footballState: league == SportsLeague.nfl && status == 'LIVE'
+    footballState: league.isFootball && status == 'LIVE'
         ? _footballState(competition, away, home)
         : null,
   );
@@ -93,7 +94,9 @@ String? _teamKey(SportsLeague league, Map<String, dynamic> competitor) {
   ]) {
     final text = _nonEmpty(value);
     if (text == null) continue;
-    final key = TeamCatalog.canonicalKey(league, text);
+    final key = league == SportsLeague.ncaaf
+        ? PowerFourTeamCatalog.canonicalKey(text)
+        : TeamCatalog.canonicalKey(league, text);
     if (key != null) return key;
   }
   return null;

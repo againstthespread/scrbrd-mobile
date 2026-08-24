@@ -9,6 +9,8 @@ import 'sports_repository.dart';
 import 'tracked_device_session.dart';
 import 'favorite_game_prioritizer.dart';
 import 'favorite_team.dart';
+import 'college_football.dart';
+import 'power_four_game_filter.dart';
 
 class LiveRefreshCoordinator {
   LiveRefreshCoordinator({
@@ -18,6 +20,7 @@ class LiveRefreshCoordinator {
     required this.isBleConnected,
     this.onDiagnostic,
     this.readFavorites,
+    this.readCollegeFootballPreferences,
   });
 
   final SportsRepository repository;
@@ -26,6 +29,7 @@ class LiveRefreshCoordinator {
   final bool Function() isBleConnected;
   final void Function(String message)? onDiagnostic;
   final Set<FavoriteTeam> Function()? readFavorites;
+  final CollegeFootballPreferences Function()? readCollegeFootballPreferences;
   final GamePacketSerializer _gameSerializer = const GamePacketSerializer();
   final GolfPacketSerializer _golfSerializer = const GolfPacketSerializer();
 
@@ -47,6 +51,9 @@ class LiveRefreshCoordinator {
       if (!_canContinue()) return;
       final snapshot = session.snapshot();
       final favorites = readFavorites?.call() ?? const <FavoriteTeam>{};
+      final collegePreferences =
+          readCollegeFootballPreferences?.call() ??
+          CollegeFootballPreferences.defaults();
       final tracked = SportsLeague.values
           .map((league) => snapshot[league])
           .nonNulls
@@ -57,7 +64,8 @@ class LiveRefreshCoordinator {
       );
 
       final results = await Future.wait([
-        for (final content in tracked) _fetch(wakeNumber, content, favorites),
+        for (final content in tracked)
+          _fetch(wakeNumber, content, favorites, collegePreferences),
       ]);
       _diagnose('WAKE REFRESH #$wakeNumber fetch phase complete');
       if (!_canContinue()) return;
@@ -77,6 +85,7 @@ class LiveRefreshCoordinator {
     int wakeNumber,
     TrackedLeagueContent tracked,
     Set<FavoriteTeam> favorites,
+    CollegeFootballPreferences collegePreferences,
   ) async {
     final label = tracked.league.label;
     _diagnose('WAKE #$wakeNumber $label fetch started');
@@ -87,9 +96,14 @@ class LiveRefreshCoordinator {
           tracked.league,
           tracked.selectedDate,
         );
-        fresh = const FavoriteGamePrioritizer().prioritize(
+        final filtered = applyCollegeFootballFilter(
           tracked.league,
           games,
+          collegePreferences,
+        );
+        fresh = const FavoriteGamePrioritizer().prioritize(
+          tracked.league,
+          filtered,
           favorites,
         );
       } else if (tracked is TrackedGolfLeaderboard) {

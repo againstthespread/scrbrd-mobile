@@ -64,6 +64,24 @@ void main() {
     expect(requests[1].url.queryParameters['_scrbrd_ts'], '1700000000001');
   });
 
+  test('NCAAF uses one dated FBS scoreboard request', () async {
+    final requests = <http.Request>[];
+    final source = EspnDataSource(
+      client: MockClient((request) async {
+        requests.add(request);
+        return http.Response(jsonEncode({'events': []}), 200);
+      }),
+    );
+    await source.fetchGamesForDate(SportsLeague.ncaaf, DateTime(2026, 9, 12));
+    expect(requests, hasLength(1));
+    expect(
+      requests.single.url.path,
+      contains('/football/college-football/scoreboard'),
+    );
+    expect(requests.single.url.queryParameters['dates'], '20260912');
+    expect(requests.single.url.queryParameters['groups'], '80');
+  });
+
   test('automatic PGA discovery primes date cache for WAKE refresh', () async {
     final requests = <http.Request>[];
     final source = EspnDataSource(

@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'sports_game.dart';
 import 'sports_league.dart';
 import 'team_catalog.dart';
+import 'power_four_team_catalog.dart';
 
 class SportsDataIOGame {
   const SportsDataIOGame({
@@ -15,6 +16,7 @@ class SportsDataIOGame {
     this.statusDetail,
     this.scheduledStartTime,
     this.eventId,
+    this.footballState,
   });
 
   final String awayTeam;
@@ -26,6 +28,7 @@ class SportsDataIOGame {
   final String? statusDetail;
   final DateTime? scheduledStartTime;
   final String? eventId;
+  final FootballGameState? footballState;
 
   factory SportsDataIOGame.fromJson(
     SportsLeague league,
@@ -50,6 +53,9 @@ class SportsDataIOGame {
       statusDetail: statusDetail,
       scheduledStartTime: scheduledStartTime,
       eventId: eventId,
+      footballState: league.isFootball && status == 'LIVE'
+          ? _footballStateFromJson(json, awayTeam, homeTeam)
+          : null,
     );
 
     _logScoreMapping(league, json, game);
@@ -61,8 +67,12 @@ class SportsDataIOGame {
       league: league.label,
       awayTeam: awayTeam,
       homeTeam: homeTeam,
-      awayTeamKey: TeamCatalog.canonicalKey(league, awayTeam),
-      homeTeamKey: TeamCatalog.canonicalKey(league, homeTeam),
+      awayTeamKey: league == SportsLeague.ncaaf
+          ? PowerFourTeamCatalog.canonicalKey(awayTeam)
+          : TeamCatalog.canonicalKey(league, awayTeam),
+      homeTeamKey: league == SportsLeague.ncaaf
+          ? PowerFourTeamCatalog.canonicalKey(homeTeam)
+          : TeamCatalog.canonicalKey(league, homeTeam),
       awayScore: awayScore,
       homeScore: homeScore,
       status: status,
@@ -70,6 +80,7 @@ class SportsDataIOGame {
       statusDetail: statusDetail,
       scheduledStartTime: scheduledStartTime,
       eventId: eventId,
+      footballState: footballState,
     );
   }
 
@@ -88,6 +99,7 @@ class SportsDataIOGame {
   ) {
     final fields = switch (league) {
       SportsLeague.nfl => ('AwayScore', 'HomeScore'),
+      SportsLeague.ncaaf => ('AwayTeamScore', 'HomeTeamScore'),
       SportsLeague.nba => ('AwayTeamScore', 'HomeTeamScore'),
       SportsLeague.mlb => ('AwayTeamRuns', 'HomeTeamRuns'),
       SportsLeague.pga => throw UnsupportedError('PGA is not a team sport.'),
@@ -96,6 +108,36 @@ class SportsDataIOGame {
     return _MappedScores(
       awayScore: _scoreOrZero(json[fields.$1]),
       homeScore: _scoreOrZero(json[fields.$2]),
+    );
+  }
+
+  static FootballGameState? _footballStateFromJson(
+    Map<String, dynamic> json,
+    String awayTeam,
+    String homeTeam,
+  ) {
+    final down = int.tryParse(json['Down']?.toString() ?? '');
+    final distance = int.tryParse(json['Distance']?.toString() ?? '');
+    final possession = _optionalString(json, 'Possession');
+    if (down == null ||
+        down < 1 ||
+        down > 4 ||
+        distance == null ||
+        distance < 0 ||
+        possession == null) {
+      return null;
+    }
+    final side = possession.toUpperCase() == awayTeam.toUpperCase()
+        ? FootballPossession.away
+        : possession.toUpperCase() == homeTeam.toUpperCase()
+        ? FootballPossession.home
+        : null;
+    if (side == null) return null;
+    return FootballGameState(
+      possession: side,
+      down: down,
+      distance: distance,
+      isGoalToGo: json['IsGoalToGo'] == true || distance == 0,
     );
   }
 
@@ -317,6 +359,7 @@ class SportsDataIOGame {
   ) {
     final primaryScoreFields = switch (league) {
       SportsLeague.nfl => ('AwayScore', 'HomeScore'),
+      SportsLeague.ncaaf => ('AwayTeamScore', 'HomeTeamScore'),
       SportsLeague.nba => ('AwayTeamScore', 'HomeTeamScore'),
       SportsLeague.mlb => ('AwayTeamRuns', 'HomeTeamRuns'),
       SportsLeague.pga => throw UnsupportedError('PGA is not a team sport.'),

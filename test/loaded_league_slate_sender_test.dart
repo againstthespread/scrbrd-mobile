@@ -34,6 +34,7 @@ void main() {
     await expectLater(
       sender.send({
         SportsLeague.nfl: [_game('NFL')],
+        SportsLeague.ncaaf: [_game('NCAAF')],
         SportsLeague.nba: [_game('NBA')],
         SportsLeague.mlb: [_game('MLB')],
       }, selectedDates: _dates),
@@ -45,7 +46,7 @@ void main() {
         ),
       ),
     );
-    expect(transport.sentLeagues, ['NFL', 'NBA']);
+    expect(transport.sentLeagues, ['NFL', 'NCAAF', 'NBA']);
   });
 
   test('send all records every successful league including PGA', () async {
@@ -57,6 +58,7 @@ void main() {
     await sender.send(
       {
         SportsLeague.nfl: [_game('NFL')],
+        SportsLeague.ncaaf: [_game('NCAAF')],
         SportsLeague.nba: [_game('NBA')],
         SportsLeague.mlb: [_game('MLB')],
       },

@@ -11,6 +11,9 @@ import 'session_aware_device_sender.dart';
 import 'tracked_device_session.dart';
 import 'favorite_game_prioritizer.dart';
 import 'favorites_store.dart';
+import 'college_football_preferences_store.dart';
+import 'college_football.dart';
+import 'power_four_game_filter.dart';
 
 class LiveGamesScreen extends StatefulWidget {
   const LiveGamesScreen({
@@ -20,6 +23,7 @@ class LiveGamesScreen extends StatefulWidget {
     required this.trackedSession,
     this.developerMode = false,
     this.favoritesStore,
+    this.collegeFootballPreferencesStore,
   });
 
   final SportsRepository repository;
@@ -27,6 +31,7 @@ class LiveGamesScreen extends StatefulWidget {
   final TrackedDeviceSession trackedSession;
   final bool developerMode;
   final FavoritesStore? favoritesStore;
+  final CollegeFootballPreferencesStore? collegeFootballPreferencesStore;
 
   @override
   State<LiveGamesScreen> createState() => _LiveGamesScreenState();
@@ -88,9 +93,15 @@ class _LiveGamesScreenState extends State<LiveGamesScreen> {
         _selectedLeague,
         _selectedDate,
       );
-      final games = const FavoriteGamePrioritizer().prioritize(
+      final filtered = applyCollegeFootballFilter(
         _selectedLeague,
         fetched,
+        widget.collegeFootballPreferencesStore?.read() ??
+            CollegeFootballPreferences.defaults(),
+      );
+      final games = const FavoriteGamePrioritizer().prioritize(
+        _selectedLeague,
+        filtered,
         widget.favoritesStore?.readFavorites() ?? const {},
       );
       if (!mounted) {

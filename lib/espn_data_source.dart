@@ -40,10 +40,12 @@ class EspnDataSource implements SportsDataSource, GolfDataSource {
     if (league == SportsLeague.pga) {
       throw UnsupportedError('PGA uses fetchGolfLeaderboardForDate.');
     }
-    final uri = Uri.https(_host, _teamPath(league), {
+    final query = <String, String>{
       'dates': _compactDate(selectedDate),
       '_scrbrd_ts': _nextCacheBuster().toString(),
-    });
+    };
+    if (league == SportsLeague.ncaaf) query['groups'] = '80';
+    final uri = Uri.https(_host, _teamPath(league), query);
     debugPrint('ESPN endpoint requested: $uri');
     debugPrint('ESPN selected date: ${_compactDate(selectedDate)}');
     final json = await _getJson(uri, logCacheDiagnostics: true);
@@ -252,6 +254,8 @@ class EspnDataSource implements SportsDataSource, GolfDataSource {
   String _teamPath(SportsLeague league) => switch (league) {
     SportsLeague.mlb => '/apis/site/v2/sports/baseball/mlb/scoreboard',
     SportsLeague.nfl => '/apis/site/v2/sports/football/nfl/scoreboard',
+    SportsLeague.ncaaf =>
+      '/apis/site/v2/sports/football/college-football/scoreboard',
     SportsLeague.nba => '/apis/site/v2/sports/basketball/nba/scoreboard',
     SportsLeague.pga => throw UnsupportedError('PGA is not a team sport.'),
   };

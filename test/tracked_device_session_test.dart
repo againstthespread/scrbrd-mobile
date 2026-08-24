@@ -10,6 +10,7 @@ void main() {
     final date = DateTime(2026, 8, 21, 18);
     for (final league in [
       SportsLeague.nfl,
+      SportsLeague.ncaaf,
       SportsLeague.nba,
       SportsLeague.mlb,
     ]) {
