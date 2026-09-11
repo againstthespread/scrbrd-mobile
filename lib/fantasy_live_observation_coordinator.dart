@@ -259,7 +259,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
 
   Future<void> establishStartupBaseline() async {
     if (_sessionBaselineEstablished) return;
-    final result = await observe(sendOneAlert: false);
+    final result = await observe(sendAlerts: false);
     if (result.configured && result.matchup != null) {
       _sessionBaselineEstablished = true;
     } else if (!result.configured) {
@@ -281,7 +281,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<FantasyObservationResult> observe({bool sendOneAlert = true}) async {
+  Future<FantasyObservationResult> observe({bool sendAlerts = true}) async {
     if (!_deviceContentEnabled) {
       pendingStore.clear();
       return FantasyObservationResult(
@@ -367,7 +367,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
           ),
         );
       }
-      if (sendOneAlert) await _sendNext();
+      if (sendAlerts) await _drainPendingAlerts();
       return _finish(
         FantasyObservationResult(
           configured: true,
@@ -396,15 +396,19 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     }
   }
 
-  Future<void> _sendNext() async {
-    final pending = pendingStore.next;
-    if (pending == null || !isBleConnected()) return;
-    try {
-      await transport.sendFantasyAlert(pending.alert);
-      pendingStore.markDelivered(pending.id);
-      _diagnose('Fantasy alert delivered: ${pending.id}');
-    } on Object catch (error) {
-      _diagnose('Fantasy alert retained after BLE failure: $error');
+  Future<void> _drainPendingAlerts() async {
+    // observe() owns the drain, so concurrent observations cannot resend its head.
+    while (isBleConnected()) {
+      final pending = pendingStore.next;
+      if (pending == null) return;
+      try {
+        await transport.sendFantasyAlert(pending.alert);
+        pendingStore.markDelivered(pending.id);
+        _diagnose('Fantasy alert delivered: ${pending.id}');
+      } on Object catch (error) {
+        _diagnose('Fantasy alert retained after BLE failure: $error');
+        return;
+      }
     }
   }
 

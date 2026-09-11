@@ -10,9 +10,7 @@ class PendingFantasyAlert {
 }
 
 class PendingFantasyAlertStore {
-  PendingFantasyAlertStore({this.capacity = 8});
-
-  final int capacity;
+  // Pending transitions must survive a burst or a disconnected observation.
   final List<PendingFantasyAlert> _pending = [];
   final Set<String> _seen = {};
 
@@ -24,7 +22,6 @@ class PendingFantasyAlertStore {
     _seen.add(alert.id);
     _pending.add(alert);
     _pending.sort(_compare);
-    if (_pending.length > capacity) _pending.removeLast();
     return true;
   }
 

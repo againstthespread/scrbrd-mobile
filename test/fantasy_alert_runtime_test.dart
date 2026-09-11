@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -171,7 +172,7 @@ void main() {
     });
 
     test(
-      'one alert maximum per wake with deterministic user priority',
+      'both simultaneous alerts drain in one observation with user priority',
       () async {
         snapshots = [
           _snapshot(),
@@ -180,10 +181,76 @@ void main() {
         ];
         await coordinator.observe();
         await coordinator.observe();
-        expect(transport.alerts.single.delta.side, FantasyMatchupSide.user);
+        expect(transport.alerts, hasLength(2));
+        expect(transport.alerts.first.delta.side, FantasyMatchupSide.user);
+        expect(coordinator.pendingStore.length, 0);
         await coordinator.observe();
         expect(transport.alerts, hasLength(2));
         expect(transport.alerts.last.delta.side, FantasyMatchupSide.opponent);
+      },
+    );
+
+    for (final interruption in ['none', 'failure', 'disconnect']) {
+      test(
+        'three simultaneous alerts: $interruption preserves order',
+        () async {
+          snapshots = [
+            _snapshot(),
+            _snapshot(
+              userPoints: 10.4,
+              secondUserPoints: 1,
+              opponentPoints: 20,
+            ),
+          ];
+          await coordinator.observe();
+          if (interruption == 'failure') transport.failAt = 2;
+          if (interruption == 'disconnect') transport.disconnectAfter = 1;
+          final result = await coordinator.observe();
+          expect(result.alerts, hasLength(3));
+          if (interruption != 'none') {
+            expect(transport.alerts.map((a) => a.delta.playerId), [
+              'user-player',
+            ]);
+            expect(coordinator.pendingStore.length, 2);
+            expect(
+              coordinator.pendingStore.next!.alert.delta.playerId,
+              'second-user',
+            );
+            expect(transport.attempts, interruption == 'failure' ? 2 : 1);
+            transport.failAt = null;
+            transport.disconnectAfter = null;
+            transport.connected = true;
+            await coordinator.observe();
+          }
+          expect(transport.alerts.map((a) => a.delta.playerId), [
+            'user-player',
+            'second-user',
+            'opponent-player',
+          ]);
+          expect(coordinator.pendingStore.length, 0);
+          await coordinator.observe();
+          expect(transport.alerts, hasLength(3));
+        },
+      );
+    }
+
+    test(
+      'drain awaits each send and excludes overlapping observations',
+      () async {
+        snapshots = [_snapshot(), _snapshot(userPoints: 10, opponentPoints: 6)];
+        await coordinator.observe();
+        final gate = Completer<void>();
+        transport.gate = gate.future;
+        final observation = coordinator.observe();
+        await transport.sendStarted.future;
+        expect(transport.attempts, 1);
+        expect(coordinator.pendingStore.length, 2);
+        await coordinator.observe();
+        expect(transport.attempts, 1);
+        gate.complete();
+        await observation;
+        expect(transport.alerts, hasLength(2));
+        expect(coordinator.pendingStore.length, 0);
       },
     );
 
@@ -332,17 +399,21 @@ void main() {
     expect((await store.read())!.rosterId, isNull);
   });
 
-  test('pending store is bounded and transition-deduplicated', () {
-    final store = PendingFantasyAlertStore(capacity: 2);
-    for (var index = 0; index < 4; index++) {
-      store.add(PendingFantasyAlert(id: '$index', alert: _alert('$index')));
-    }
-    expect(store.length, 2);
-    expect(
-      store.add(PendingFantasyAlert(id: '0', alert: _alert('0'))),
-      isFalse,
-    );
-  });
+  test(
+    'pending store retains bursts and deduplicates delivered transitions',
+    () {
+      final store = PendingFantasyAlertStore();
+      for (var index = 0; index < 20; index++) {
+        store.add(PendingFantasyAlert(id: '$index', alert: _alert('$index')));
+      }
+      expect(store.length, 20);
+      store.markDelivered('0');
+      expect(
+        store.add(PendingFantasyAlert(id: '0', alert: _alert('0'))),
+        isFalse,
+      );
+    },
+  );
 
   test(
     'firmware-compatible packet uses empty fallback fields and <=512 bytes',
@@ -409,11 +480,20 @@ class _Transport implements FantasyAlertTransport, FantasyMatchupTransport {
   bool fail = false;
   bool failMatchup = false;
   int clears = 0;
+  int attempts = 0;
+  int? failAt;
+  int? disconnectAfter;
+  Future<void>? gate;
+  final sendStarted = Completer<void>();
 
   @override
   Future<void> sendFantasyAlert(FantasyPointAlert alert) async {
-    if (fail) throw StateError('BLE failed');
+    attempts++;
+    if (!sendStarted.isCompleted) sendStarted.complete();
+    if (gate != null) await gate;
+    if (fail || attempts == failAt) throw StateError('BLE failed');
     alerts.add(alert);
+    if (alerts.length == disconnectAfter) connected = false;
   }
 
   @override
@@ -432,6 +512,7 @@ SleeperLeagueSnapshot _snapshot({
   int week = 8,
   int opponentRosterId = 2,
   double userPoints = 8.4,
+  double secondUserPoints = 0,
   double opponentPoints = 5,
   double userTotal = 89.7,
   double opponentTotal = 88.2,
@@ -456,8 +537,8 @@ SleeperLeagueSnapshot _snapshot({
     const SleeperRoster(
       rosterId: 1,
       ownerId: 'u1',
-      players: ['user-player'],
-      starters: ['user-player'],
+      players: ['user-player', 'second-user'],
+      starters: ['user-player', 'second-user'],
     ),
     SleeperRoster(
       rosterId: opponentRosterId,
@@ -471,8 +552,11 @@ SleeperLeagueSnapshot _snapshot({
       rosterId: 1,
       matchupId: 7,
       points: userTotal,
-      starters: const ['user-player'],
-      playerPoints: {'user-player': userPoints},
+      starters: const ['user-player', 'second-user'],
+      playerPoints: {
+        'user-player': userPoints,
+        'second-user': secondUserPoints,
+      },
     ),
     SleeperMatchup(
       rosterId: opponentRosterId,
