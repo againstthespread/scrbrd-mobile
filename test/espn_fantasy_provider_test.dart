@@ -203,6 +203,10 @@ void main() {
         client.loadLeague(season: 2030, leagueId: '../12345'),
         EspnFantasyFailure.invalidRequest,
       );
+      await _expectFailure(
+        client.loadLeague(season: 2030, leagueId: '-12345'),
+        EspnFantasyFailure.invalidRequest,
+      );
       expect(calls, 0);
     });
   });
@@ -290,6 +294,101 @@ void main() {
     });
 
     test(
+      'active negative D/ST ID remains signed with name and decimal points',
+      () async {
+        final entries = _homeEntries(box);
+        entries.add(_entry(-16001, 16, 8.375, name: 'Synthetic Defense'));
+        final result = await repository.loadCurrentMatchup(
+          season: 2030,
+          leagueId: '12345',
+          teamId: '7',
+        );
+        expect(result.team.starters.map((p) => p.id), ['101', '104', '-16001']);
+        final defense = result.team.starters.last;
+        expect(defense.id, '-16001');
+        expect(defense.name, 'Synthetic Defense');
+        expect(defense.points, 8.375);
+      },
+    );
+
+    test('bench negative D/ST ID is excluded by slot', () async {
+      _homeEntries(box).add(_entry(-16001, 20, 8.375, name: 'Benched Defense'));
+      final result = await repository.loadCurrentMatchup(
+        season: 2030,
+        leagueId: '12345',
+        teamId: '7',
+      );
+      expect(result.team.starters.map((p) => p.id), isNot(contains('-16001')));
+    });
+
+    test(
+      'duplicate negative starter IDs are rejected as one identity',
+      () async {
+        _homeEntries(box)
+          ..add(_entry(-16001, 16, 8.375))
+          ..add(_entry(-16001, 17, 8.375));
+        try {
+          await repository.loadCurrentMatchup(
+            season: 2030,
+            leagueId: '12345',
+            teamId: '7',
+          );
+          fail('Expected a duplicate ID failure');
+        } on EspnFantasyException catch (error) {
+          expect(error.failure, EspnFantasyFailure.invalidResponse);
+          expect(error.diagnostic, contains('duplicatePlayerId'));
+          expect(error.diagnostic, contains('playerId=negative'));
+        }
+      },
+    );
+
+    for (final invalid in <(String, Object?)>[
+      ('zero', 0),
+      ('non-numeric', 'not-an-id'),
+      ('malformed', '12.3'),
+      ('null', null),
+    ]) {
+      test('${invalid.$1} ESPN player ID is rejected', () async {
+        final entry = _homeEntries(box).first as Map<String, dynamic>;
+        entry['playerId'] = invalid.$2;
+        await _expectFailure(
+          repository.loadCurrentMatchup(
+            season: 2030,
+            leagueId: '12345',
+            teamId: '7',
+          ),
+          EspnFantasyFailure.invalidResponse,
+        );
+      });
+    }
+
+    test('missing ESPN player ID is rejected', () async {
+      (_homeEntries(box).first as Map).remove('playerId');
+      await _expectFailure(
+        repository.loadCurrentMatchup(
+          season: 2030,
+          leagueId: '12345',
+          teamId: '7',
+        ),
+        EspnFantasyFailure.invalidResponse,
+      );
+    });
+
+    test('league and fantasy-team IDs remain positive-only', () async {
+      league['id'] = -12345;
+      await _expectFailure(
+        repository.loadLeague(season: 2030, leagueId: '12345'),
+        EspnFantasyFailure.invalidResponse,
+      );
+      league = _leagueFixture();
+      (league['teams'] as List).first['id'] = -7;
+      await _expectFailure(
+        repository.loadLeague(season: 2030, leagueId: '12345'),
+        EspnFantasyFailure.invalidResponse,
+      );
+    });
+
+    test(
       'opponent side can be selected and bye can have no opponent',
       () async {
         final away = await repository.loadCurrentMatchup(
@@ -356,6 +455,90 @@ void main() {
         EspnFantasyFailure.invalidResponse,
       );
     });
+
+    test('league schema failure reports only structural diagnostics', () async {
+      league
+        ..remove('scoringPeriodId')
+        ..remove('name')
+        ..['settings'] = {'name': 'Private League Name'};
+      try {
+        await repository.loadLeague(season: 2030, leagueId: '12345');
+        fail('Expected an invalid response');
+      } on EspnFantasyException catch (error) {
+        expect(error.failure, EspnFantasyFailure.invalidResponse);
+        expect(error.diagnostic, contains('league.scoringPeriodId'));
+        expect(error.diagnostic, contains('settings.name=string'));
+        expect(error.diagnostic, contains('teams=list(3)'));
+        expect(error.diagnostic, isNot(contains('Private League Name')));
+        expect(error.diagnostic, isNot(contains(_credentials.swid)));
+        expect(error.diagnostic, isNot(contains(_credentials.espnS2)));
+        expect(error.toString(), isNot(contains(error.diagnostic!)));
+      }
+    });
+
+    test(
+      'matchup roster failure identifies the section without private data',
+      () async {
+        final current = (box['schedule'] as List)[1] as Map<String, dynamic>;
+        final home = current['home'] as Map<String, dynamic>;
+        home.remove('rosterForCurrentScoringPeriod');
+        try {
+          await repository.loadCurrentMatchup(
+            season: 2030,
+            leagueId: '12345',
+            teamId: '7',
+          );
+          fail('Expected an invalid response');
+        } on EspnFantasyException catch (error) {
+          expect(error.failure, EspnFantasyFailure.invalidResponse);
+          expect(
+            error.diagnostic,
+            contains('matchup.side.rosterForCurrentScoringPeriod.entries'),
+          );
+          expect(error.diagnostic, contains('roster=null'));
+          expect(error.diagnostic, isNot(contains(_credentials.swid)));
+          expect(error.diagnostic, isNot(contains(_credentials.espnS2)));
+          expect(error.toString(), isNot(contains(error.diagnostic!)));
+        }
+      },
+    );
+
+    test(
+      'entry and nested player IDs must match exactly, including sign',
+      () async {
+        final entry = _homeEntries(box)[3] as Map<String, dynamic>;
+        entry['playerId'] = -104;
+        await _expectFailure(
+          repository.loadCurrentMatchup(
+            season: 2030,
+            leagueId: '12345',
+            teamId: '7',
+          ),
+          EspnFantasyFailure.invalidResponse,
+        );
+      },
+    );
+
+    test(
+      'matchup schedule failure reports period and selected-team counts',
+      () async {
+        box['schedule'] = [
+          {'matchupPeriodId': 3, 'home': _side(9, 0, [])},
+        ];
+        try {
+          await repository.loadCurrentMatchup(
+            season: 2030,
+            leagueId: '12345',
+            teamId: '7',
+          );
+          fail('Expected a missing matchup');
+        } on EspnFantasyException catch (error) {
+          expect(error.failure, EspnFantasyFailure.matchupUnavailable);
+          expect(error.diagnostic, contains('currentPeriodEntries=1'));
+          expect(error.diagnostic, contains('selectedTeamEntries=0'));
+        }
+      },
+    );
 
     test('missing optional names use useful fallbacks', () async {
       league.remove('name');
@@ -506,6 +689,12 @@ Map<String, dynamic> _boxFixture() => {
     },
   ],
 };
+
+List<dynamic> _homeEntries(Map<String, dynamic> box) {
+  final current = (box['schedule'] as List)[1] as Map<String, dynamic>;
+  final home = current['home'] as Map<String, dynamic>;
+  return (home['rosterForCurrentScoringPeriod'] as Map)['entries'] as List;
+}
 
 Map<String, dynamic> _side(
   int teamId,

@@ -1,6 +1,7 @@
 import 'fantasy_point_alert.dart';
 import 'fantasy_league_config.dart';
 import 'fantasy_point_delta_tracker.dart';
+import 'fantasy_provider_models.dart';
 import 'sleeper_models.dart';
 
 class PendingFantasyAlert {
@@ -46,6 +47,16 @@ String fantasyTransitionId({
     '${matchup.opponent.roster.rosterId}|${matchup.team.matchup.matchupId}|'
     '${delta.side.name}|${delta.playerId}|'
     '${delta.previousPoints}|${delta.currentPoints}';
+
+String fantasyNormalizedTransitionId({
+  required FantasyProvider provider,
+  required FantasyMatchupSnapshot matchup,
+  required FantasyPointDelta delta,
+}) =>
+    '${provider.name}:${matchup.league.leagueId}|${matchup.scoringPeriod}|'
+    '${matchup.matchupPeriod}|${matchup.team.team.id}|'
+    '${matchup.opponent?.team.id ?? 'bye'}|${delta.side.name}|'
+    '${delta.playerId}|${delta.previousPoints}|${delta.currentPoints}';
 
 int _compare(PendingFantasyAlert left, PendingFantasyAlert right) {
   final leftUser = left.alert.delta.side == FantasyMatchupSide.user;

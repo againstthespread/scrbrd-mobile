@@ -213,12 +213,12 @@ void main() {
     expect(source.toLowerCase(), isNot(contains('device_transport')));
   });
 
-  test('delta engine makes no ESPN request', () {
+  test('delta engine makes no provider network request', () {
     final source = File(
       'lib/fantasy_point_delta_tracker.dart',
     ).readAsStringSync();
-    expect(source.toLowerCase(), isNot(contains('espn')));
     expect(source.toLowerCase(), isNot(contains('http')));
+    expect(source, isNot(contains('EspnFantasyClient')));
   });
 
   test('fantasy delta diagnostics introduce no periodic timer', () {

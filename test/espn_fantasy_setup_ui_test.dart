@@ -53,6 +53,59 @@ void main() {
     expect(await h.store.readAll(), isEmpty);
   });
 
+  testWidgets('league schema diagnostics show safe structure only', (
+    tester,
+  ) async {
+    final h = _Harness();
+    h.gateway.failure = EspnFantasyFailure.invalidResponse;
+    h.gateway.diagnostic =
+        'league.status; id=number, status=null, teams=list(12)';
+    await h.pump(tester);
+    await _openEspn(tester);
+    await _enterCredentials(tester);
+    await tester.enterText(
+      find.byKey(const ValueKey('espn-league-id')),
+      '12345',
+    );
+    await tester.tap(find.text('Connect and Load League'));
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('Safe ESPN diagnostic: league.status'),
+      findsOneWidget,
+    );
+    expect(await h.store.readAll(), isEmpty);
+    expect(h.credentials.value, isNull);
+  });
+
+  testWidgets(
+    'matchup validation shows sanitized details without saving league',
+    (tester) async {
+      final h = _Harness();
+      await h.credentials.save(
+        const EspnFantasyCredentials(swid: '{FAKE}', espnS2: 'fake-espn-s2'),
+      );
+      h.gateway.matchupFailure = EspnFantasyFailure.invalidResponse;
+      h.gateway.diagnostic =
+          'matchup.side.rosterForCurrentScoringPeriod.entries; roster=null';
+      await h.pump(tester);
+      await _openEspn(tester);
+      await tester.enterText(
+        find.byKey(const ValueKey('espn-league-id')),
+        '12345',
+      );
+      await tester.tap(find.text('Load League'));
+      await tester.pumpAndSettle();
+      await _selectTeam(tester, 'Home 12345');
+      await tester.tap(find.text('Add League'));
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('Safe ESPN diagnostic: matchup.side'),
+        findsOneWidget,
+      );
+      expect(await h.store.readAll(), isEmpty);
+    },
+  );
+
   testWidgets(
     'add three ESPN leagues with one secure account and a Sleeper peer',
     (tester) async {
@@ -117,7 +170,7 @@ void main() {
   );
 
   testWidgets(
-    'ESPN primary sends normalized matchup without alerts or observation',
+    'ESPN primary sends normalized matchup and later enters observation',
     (tester) async {
       final h = _Harness();
       await h.credentials.save(
@@ -139,7 +192,7 @@ void main() {
       final displayLoads = h.gateway.matchupLoads;
       final observation = await h.coordinator.observe();
       expect(observation.alerts, isEmpty);
-      expect(h.gateway.matchupLoads, displayLoads);
+      expect(h.gateway.matchupLoads, displayLoads + 2);
       expect(h.transport.alerts, isEmpty);
       expect(h.transport.matchups, isNotEmpty);
       await tester.tap(find.byKey(const ValueKey('view-espn:12345')));
@@ -348,11 +401,15 @@ class _Credentials implements EspnFantasyCredentialsStore {
 class _Gateway implements EspnFantasySetupGateway {
   late _Credentials credentials;
   EspnFantasyFailure? failure;
+  EspnFantasyFailure? matchupFailure;
+  String? diagnostic;
   int validations = 0;
   int matchupLoads = 0;
 
   void _check() {
-    if (failure case final value?) throw EspnFantasyException(value);
+    if (failure case final value?) {
+      throw EspnFantasyException(value, diagnostic: diagnostic);
+    }
   }
 
   @override
@@ -385,6 +442,9 @@ class _Gateway implements EspnFantasySetupGateway {
     String teamId,
   ) async {
     matchupLoads++;
+    if (matchupFailure case final value?) {
+      throw EspnFantasyException(value, diagnostic: diagnostic);
+    }
     _check();
     if (credentials.value == null) {
       throw const EspnFantasyException(EspnFantasyFailure.missingCredentials);

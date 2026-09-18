@@ -10,6 +10,7 @@ import 'package:sports_hub_mobile/fantasy_matchup_display_data.dart';
 import 'package:sports_hub_mobile/fantasy_matchup_transport.dart';
 import 'package:sports_hub_mobile/fantasy_point_alert.dart';
 import 'package:sports_hub_mobile/fantasy_point_delta_tracker.dart';
+import 'package:sports_hub_mobile/fantasy_provider_models.dart';
 import 'package:sports_hub_mobile/pending_fantasy_alert_store.dart';
 import 'package:sports_hub_mobile/sleeper_api_client.dart';
 import 'package:sports_hub_mobile/sleeper_fantasy_repository.dart';
@@ -22,6 +23,7 @@ void main() {
   late _Transport transport;
   late Map<String, double> points;
   late Set<String> failures;
+  late Set<String> espnFailures;
   late List<String> loads;
   Completer<void>? loadGate;
   Completer<void>? loadStarted;
@@ -45,6 +47,7 @@ void main() {
     store = SharedPreferencesFantasyLeagueConfigStore();
     points = {'a': 10, 'b': 20, 'c': 30};
     failures = {};
+    espnFailures = {};
     loads = [];
     loadGate = null;
     loadStarted = null;
@@ -71,6 +74,12 @@ void main() {
         return _snapshot(id, points[id]!);
       },
       metadataResolver: (_) async => {},
+      espnMatchupLoader: (_, leagueId, teamId) async {
+        if (espnFailures.contains(leagueId)) {
+          throw StateError('ESPN unavailable $leagueId');
+        }
+        return _espnMatchup(leagueId, points[leagueId] ?? 10);
+      },
     );
     await save('a');
     await save('b');
@@ -482,13 +491,81 @@ void main() {
     },
   );
 
-  test('ESPN and unselected Sleeper leagues never invoke loader', () async {
+  test('ESPN and unselected Sleeper leagues observe independently', () async {
     await save('c', provider: FantasyProvider.espn);
     await save('unselected', team: null);
     final result = await coordinator.observe();
     expect(loads, ['a', 'b']);
     expect(result.leagues['sleeper:unselected']!.configured, isFalse);
-    expect(result.leagues.containsKey('espn:c'), isFalse);
+    expect(result.leagues['espn:c']!.baselineReset, isTrue);
+  });
+
+  test('ESPN scoring alerts do not affect Sleeper baselines', () async {
+    await save('c', provider: FantasyProvider.espn);
+    await coordinator.observe();
+    points['c'] = 32.5;
+    final result = await coordinator.observe();
+    final espn = result.leagues['espn:c']!;
+    expect(espn.alerts.single.delta.delta, 2.5);
+    expect(espn.alerts.single.playerName, 'ESPN D/ST');
+    expect(result.leagues['sleeper:a']!.baselineReset, isFalse);
+    expect(transport.alerts.last.delta.playerId, '-16001');
+  });
+
+  test('ESPN and Sleeper pending transitions remain isolated', () async {
+    await save('c', provider: FantasyProvider.espn);
+    await coordinator.observe();
+    transport.connected = false;
+    points['a'] = 11;
+    points['c'] = 12;
+    await coordinator.observe();
+    expect(coordinator.pendingAlertsByLeague, {
+      'sleeper:a': 1,
+      'sleeper:b': 0,
+      'espn:c': 1,
+    });
+  });
+
+  test(
+    'two ESPN leagues retain independent baselines and alert state',
+    () async {
+      await save('c', provider: FantasyProvider.espn);
+      await save('d', provider: FantasyProvider.espn);
+      await coordinator.observe();
+      points['c'] = 31;
+      final result = await coordinator.observe();
+      expect(result.leagues['espn:c']!.alertCount, 1);
+      expect(result.leagues['espn:d']!.alerts, isEmpty);
+      points['d'] = 32;
+      expect((await coordinator.observe()).leagues['espn:d']!.alertCount, 1);
+    },
+  );
+
+  test(
+    'an ESPN failure does not block Sleeper or another ESPN league',
+    () async {
+      await save('c', provider: FantasyProvider.espn);
+      await save('d', provider: FantasyProvider.espn);
+      await coordinator.observe();
+      espnFailures.add('c');
+      points['a'] = 11;
+      points['d'] = 31;
+      final result = await coordinator.observe();
+      expect(result.leagues['espn:c']!.error, isStateError);
+      expect(result.leagues['sleeper:a']!.alertCount, 1);
+      expect(result.leagues['espn:d']!.alertCount, 1);
+    },
+  );
+
+  test('ESPN primary display does not reset its alert baseline', () async {
+    await save('c', provider: FantasyProvider.espn);
+    await coordinator.observe();
+    await coordinator.setPrimaryLeague('espn:c');
+    points['c'] = 31;
+    final result = await coordinator.observe();
+    expect(result.leagues['espn:c']!.baselineReset, isFalse);
+    expect(result.leagues['espn:c']!.alertCount, 1);
+    expect(transport.matchups.last.leagueName, 'ESPN League');
   });
 
   test(
@@ -646,3 +723,31 @@ SleeperLeagueSnapshot _snapshot(String id, double points) =>
         ),
       ],
     );
+
+FantasyMatchupSnapshot _espnMatchup(String id, double points) {
+  const home = FantasyTeamDetails(id: '1', name: 'ESPN Home');
+  const away = FantasyTeamDetails(id: '2', name: 'ESPN Away');
+  return FantasyMatchupSnapshot(
+    league: FantasyLeagueDetails(
+      provider: FantasyProvider.espn,
+      leagueId: id,
+      season: 2026,
+      name: 'ESPN League',
+      scoringPeriod: 1,
+      matchupPeriod: 1,
+      teams: [home, away],
+    ),
+    team: FantasyScoringTeam(
+      team: home,
+      totalPoints: points,
+      starters: [
+        FantasyScoringPlayer(id: '-16001', name: 'ESPN D/ST', points: points),
+      ],
+    ),
+    opponent: const FantasyScoringTeam(
+      team: away,
+      totalPoints: 0,
+      starters: [],
+    ),
+  );
+}

@@ -17,8 +17,11 @@ enum EspnFantasyFailure {
 }
 
 class EspnFantasyException implements Exception {
-  const EspnFantasyException(this.failure);
+  const EspnFantasyException(this.failure, {this.diagnostic});
   final EspnFantasyFailure failure;
+
+  /// Sanitized structural information only; never response values or headers.
+  final String? diagnostic;
 
   @override
   String toString() => switch (failure) {
@@ -143,13 +146,19 @@ class EspnFantasyClient {
       }
       final decoded = jsonDecode(response.body);
       if (decoded is! Map<String, dynamic>) {
-        throw const EspnFantasyException(EspnFantasyFailure.invalidResponse);
+        throw EspnFantasyException(
+          EspnFantasyFailure.invalidResponse,
+          diagnostic: 'http=200 payload=${_shape(decoded)}',
+        );
       }
       return decoded;
     } on EspnFantasyException {
       rethrow;
     } on FormatException {
-      throw const EspnFantasyException(EspnFantasyFailure.invalidResponse);
+      throw const EspnFantasyException(
+        EspnFantasyFailure.invalidResponse,
+        diagnostic: 'http=200 json=invalid',
+      );
     } on TimeoutException {
       throw const EspnFantasyException(EspnFantasyFailure.network);
     } on Object {
@@ -158,3 +167,13 @@ class EspnFantasyClient {
     }
   }
 }
+
+String _shape(Object? value) => switch (value) {
+  null => 'null',
+  Map() => 'map',
+  List() => 'list',
+  String() => 'string',
+  num() => 'number',
+  bool() => 'boolean',
+  _ => 'other',
+};

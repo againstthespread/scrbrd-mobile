@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'espn_fantasy_credentials.dart';
+import 'espn_league_observation_session.dart';
 import 'espn_fantasy_setup.dart';
 import 'fantasy_alert_transport.dart';
 import 'fantasy_config_compatibility.dart';
@@ -164,14 +165,19 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   final PendingFantasyAlertStore? _initialPending;
   bool _initialStateUsed = false;
   final Map<String, SleeperLeagueObservationSession> _sessions = {};
+  final Map<String, EspnLeagueObservationSession> _espnSessions = {};
   final PendingFantasyAlertStore _emptyPending = PendingFantasyAlertStore();
   String? _primaryId;
 
   /// Temporary single-league queue view. Status reports the combined count.
   PendingFantasyAlertStore get pendingStore =>
-      _sessions[_primaryId]?.pendingStore ?? _emptyPending;
+      _sessions[_primaryId]?.pendingStore ??
+      _espnSessions[_primaryId]?.pendingStore ??
+      _emptyPending;
   Map<String, int> get pendingAlertsByLeague => Map.unmodifiable({
     for (final entry in _sessions.entries)
+      entry.key: entry.value.pendingStore.length,
+    for (final entry in _espnSessions.entries)
       entry.key: entry.value.pendingStore.length,
   });
   final FantasyMatchupLoader _setupLoader;
@@ -257,6 +263,9 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     for (final session in _sessions.values) {
       session.reset();
     }
+    for (final session in _espnSessions.values) {
+      session.reset();
+    }
     // Device RAM may belong to a restarted or different SCRBRD after reconnect.
     deviceSession.reset();
   }
@@ -264,6 +273,9 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   void endConnectionSession() {
     _generation++;
     for (final session in _sessions.values) {
+      session.reset();
+    }
+    for (final session in _espnSessions.values) {
       session.reset();
     }
   }
@@ -287,6 +299,18 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       });
       session.updateConfiguration(config);
     }
+    final espnConfigs = allConfigs
+        .where((config) => config.provider == FantasyProvider.espn)
+        .toList();
+    final espnIds = espnConfigs.map((config) => config.id).toSet();
+    _espnSessions.removeWhere((id, _) => !espnIds.contains(id));
+    for (final config in espnConfigs) {
+      final session = _espnSessions.putIfAbsent(
+        config.id,
+        () => EspnLeagueObservationSession(config),
+      );
+      session.updateConfiguration(config);
+    }
     final primary = await primaryStore.resolve(
       allConfigs.where(isEligiblePrimary).map((config) => config.id),
     );
@@ -294,7 +318,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       _primaryId = primary;
       deviceSession.reset();
     }
-    return configs;
+    return allConfigs;
   }
 
   Future<SleeperLeagueSnapshot> configureLeague(String leagueId) async {
@@ -421,6 +445,9 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       for (final session in _sessions.values) {
         session.pendingStore.clear();
       }
+      for (final session in _espnSessions.values) {
+        session.pendingStore.clear();
+      }
       return FantasyObservationResult(
         configured: _status.configured,
         baselineReset: false,
@@ -443,53 +470,38 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       final results = <String, FantasyObservationResult>{};
       for (final config in configs) {
         if (generation != _generation) break;
-        final session = _sessions[config.id];
-        // A UI configuration edit may reconcile sessions while a loader awaits.
-        if (session == null) continue;
-        if (session.config.teamId == null) {
+        if (config.teamId == null) {
           results[config.id] = const FantasyObservationResult(
             configured: false,
             baselineReset: false,
             alerts: [],
-            summary: 'Select a Sleeper roster.',
+            summary: 'Select a fantasy team.',
           );
           continue;
         }
-        if (startupOnly && session.baselineEstablished) {
-          final matchup = session.latestMatchup;
-          final context = session.observationContext;
-          final revision = session.revision;
-          // Selecting a different primary changes device state, not scoring
-          // baselines. Startup sync can publish its already-observed matchup.
-          if (config.id == _primaryId && matchup != null && context != null) {
-            await _syncPersistentMatchup(
-              matchup,
-              context,
-              () =>
-                  generation == _generation &&
-                  revision == session.revision &&
-                  identical(_sessions[config.id], session) &&
-                  config.id == _primaryId,
-            );
-          }
-          results[config.id] = FantasyObservationResult(
-            configured: true,
-            baselineReset: false,
-            alerts: const [],
-            matchup: session.latestMatchup,
-            summary: 'Baseline already established.',
+        if (config.provider == FantasyProvider.sleeper) {
+          final session = _sessions[config.id];
+          if (session == null) continue;
+          results[config.id] = await _observeSleeperSession(
+            session,
+            sendAlerts,
+            generation,
+            startupOnly,
           );
-          continue;
+        } else if (config.provider == FantasyProvider.espn) {
+          final session = _espnSessions[config.id];
+          if (session == null) continue;
+          results[config.id] = await _observeEspnSession(
+            session,
+            sendAlerts,
+            generation,
+            startupOnly,
+          );
         }
-        results[config.id] = await _observeLeague(
-          session,
-          sendAlerts,
-          generation,
-        );
       }
       if (_primaryId == null ||
-          (_primaryId!.startsWith('sleeper:') &&
-              _sessions[_primaryId]?.config.teamId == null)) {
+          (_sessions[_primaryId]?.config.teamId == null &&
+              _espnSessions[_primaryId]?.config.teamId == null)) {
         await _clearPersistentFantasy();
       }
       final alerts = [for (final result in results.values) ...result.alerts];
@@ -498,7 +510,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
           .length;
       final summary = results.length == 1
           ? results.values.single.summary
-          : 'Observed ${results.length} Sleeper leagues; '
+          : 'Observed ${results.length} fantasy leagues; '
                 '${alerts.length} alerts; $failures failures.';
       _updateStatus(summary);
       return FantasyObservationResult(
@@ -526,10 +538,11 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     }
   }
 
-  Future<FantasyObservationResult> _observeLeague(
+  Future<FantasyObservationResult> _observeSleeperSession(
     SleeperLeagueObservationSession session,
     bool sendAlerts,
     int generation,
+    bool startupOnly,
   ) async {
     final config = session.config;
     final pendingStore = session.pendingStore;
@@ -540,6 +553,24 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         identical(_sessions[config.id], session) &&
         revision == session.revision;
     try {
+      if (startupOnly && session.baselineEstablished) {
+        final matchup = session.latestMatchup;
+        final context = session.observationContext;
+        if (config.id == _primaryId && matchup != null && context != null) {
+          await _syncPersistentMatchup(
+            matchup,
+            context,
+            () => isCurrent() && config.id == _primaryId,
+          );
+        }
+        return FantasyObservationResult(
+          configured: true,
+          baselineReset: false,
+          alerts: const [],
+          matchup: matchup,
+          summary: 'Baseline already established.',
+        );
+      }
       final snapshot = await _matchupLoader(config.leagueId);
       final matchup = snapshot.matchupForRoster(int.parse(config.teamId!));
       if (!isCurrent()) return _connectionChangedResult();
@@ -608,7 +639,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         );
       }
       final deliveryError = sendAlerts
-          ? await _drainPendingAlerts(session, isCurrent)
+          ? await _drainPendingAlerts(pendingStore, config.id, isCurrent)
           : null;
       return FantasyObservationResult(
         configured: true,
@@ -639,6 +670,133 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     }
   }
 
+  Future<FantasyObservationResult> _observeEspnSession(
+    EspnLeagueObservationSession session,
+    bool sendAlerts,
+    int generation,
+    bool startupOnly,
+  ) async {
+    final config = session.config;
+    final revision = session.revision;
+    bool isCurrent() =>
+        generation == _generation &&
+        identical(_espnSessions[config.id], session) &&
+        revision == session.revision;
+    try {
+      if (startupOnly && session.baselineEstablished) {
+        final matchup = session.latestMatchup;
+        if (config.id == _primaryId && matchup != null) {
+          await _syncPersistentNormalizedMatchup(
+            matchup,
+            session.observationContext!,
+            () => isCurrent() && config.id == _primaryId,
+          );
+        }
+        return FantasyObservationResult(
+          configured: true,
+          baselineReset: false,
+          alerts: const [],
+          summary: 'Baseline already established.',
+        );
+      }
+      final matchup = await _espnMatchupLoader(
+        currentFantasySeason(),
+        config.leagueId,
+        config.teamId!,
+      );
+      if (!isCurrent()) return _connectionChangedResult();
+      session.latestMatchup = matchup;
+      final context =
+          '${config.id}|${matchup.scoringPeriod}|${matchup.matchupPeriod}|'
+          '${matchup.team.team.id}|${matchup.opponent?.team.id ?? 'bye'}';
+      if (config.id == _primaryId) {
+        await _syncPersistentNormalizedMatchup(
+          matchup,
+          context,
+          () => isCurrent() && config.id == _primaryId,
+        );
+      }
+      if (!isCurrent()) return _connectionChangedResult();
+      if (session.observationContext != context) {
+        session.pendingStore.clear();
+        session.observationContext = context;
+      }
+      final deltaResult = session.deltaTracker.observe(matchup);
+      session.baselineEstablished = true;
+      if (!config.alertsEnabled) {
+        session.pendingStore.clear();
+        return FantasyObservationResult(
+          configured: true,
+          baselineReset: deltaResult.baselineReset,
+          alerts: const [],
+          summary: 'Alerts are off.',
+          pendingAlerts: 0,
+        );
+      }
+      final players = {
+        for (final player in matchup.team.starters) player.id: player,
+        for (final player
+            in matchup.opponent?.starters ?? const <FantasyScoringPlayer>[])
+          player.id: player,
+      };
+      final alerts = [
+        for (final delta in deltaResult.events)
+          FantasyPointAlert(
+            delta: delta,
+            player: null,
+            playerName: players[delta.playerId]?.name,
+            userName: matchup.team.team.name,
+            userScore: matchup.team.totalPoints,
+            opponentName: matchup.opponent?.team.name ?? 'BYE',
+            opponentScore: matchup.opponent?.totalPoints ?? 0,
+          ),
+      ];
+      for (final alert in alerts) {
+        session.pendingStore.add(
+          PendingFantasyAlert(
+            id: fantasyNormalizedTransitionId(
+              provider: FantasyProvider.espn,
+              matchup: matchup,
+              delta: alert.delta,
+            ),
+            alert: alert,
+          ),
+        );
+      }
+      final deliveryError = sendAlerts
+          ? await _drainPendingAlerts(
+              session.pendingStore,
+              config.id,
+              isCurrent,
+            )
+          : null;
+      return FantasyObservationResult(
+        configured: true,
+        baselineReset: deltaResult.baselineReset,
+        alerts: List.unmodifiable(alerts),
+        summary: deliveryError != null
+            ? 'Observed ${alerts.length} point changes; delivery failed; ${session.pendingStore.length} alerts retained.'
+            : deltaResult.baselineReset
+            ? 'Baseline established; no historical alerts.'
+            : alerts.isEmpty
+            ? 'No fantasy point changes.'
+            : 'Observed ${alerts.length} fantasy point change(s).',
+        deliveryError: deliveryError,
+        pendingAlerts: session.pendingStore.length,
+      );
+    } on Object catch (error) {
+      _diagnose('Fantasy observation failed for ${config.id}: $error');
+      return FantasyObservationResult(
+        configured: true,
+        baselineReset: false,
+        alerts: const [],
+        summary: 'Fantasy observation failed for ${config.id}: $error',
+        error: error,
+        matchup: null,
+      );
+    }
+  }
+
   FantasyObservationResult _connectionChangedResult() =>
       const FantasyObservationResult(
         configured: true,
@@ -648,10 +806,10 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       );
 
   Future<Object?> _drainPendingAlerts(
-    SleeperLeagueObservationSession session,
+    PendingFantasyAlertStore pendingStore,
+    String configurationId,
     bool Function() isCurrent,
   ) async {
-    final pendingStore = session.pendingStore;
     // observe() owns the drain, so concurrent observations cannot resend its head.
     while (isBleConnected() && isCurrent()) {
       final pending = pendingStore.next;
@@ -662,7 +820,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         _diagnose('Fantasy alert delivered: ${pending.id}');
       } on Object catch (error) {
         _diagnose(
-          'Fantasy alert ${session.config.id} retained after BLE failure: $error',
+          'Fantasy alert $configurationId retained after BLE failure: $error',
         );
         return error;
       }
@@ -693,6 +851,26 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     }
   }
 
+  Future<void> _syncPersistentNormalizedMatchup(
+    FantasyMatchupSnapshot matchup,
+    String context,
+    bool Function() isCurrent,
+  ) async {
+    final persistentTransport = matchupTransport;
+    if (persistentTransport == null || !isBleConnected()) return;
+    final display = FantasyMatchupDisplayData.fromNormalized(matchup);
+    if (deviceSession.matches(display, context)) return;
+    try {
+      await persistentTransport.sendFantasyMatchup(display);
+      if (isCurrent()) deviceSession.record(display, context);
+      _diagnose('Fantasy matchup sent; persistent baseline advanced.');
+    } on Object catch (error) {
+      _diagnose(
+        'FANTASY: persistent matchup send failed; baseline retained: $error',
+      );
+    }
+  }
+
   Future<void> _clearPersistentFantasy() async {
     final persistentTransport = matchupTransport;
     if (persistentTransport == null || !isBleConnected()) return;
@@ -706,21 +884,34 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   }
 
   void _updateStatus(String summary) {
-    final eligible = _sessions.values.where(
-      (session) => session.config.teamId != null,
-    );
+    final sleeperEligible = _sessions.values
+        .where((session) => session.config.teamId != null)
+        .toList();
+    final espnEligible = _espnSessions.values
+        .where((session) => session.config.teamId != null)
+        .toList();
+    final eligibleCount = sleeperEligible.length + espnEligible.length;
     _status = FantasyRuntimeStatus(
-      configured: eligible.isNotEmpty,
+      configured: eligibleCount != 0,
       baselineReady:
-          eligible.isNotEmpty && eligible.every((s) => s.baselineEstablished),
-      pendingAlerts: _sessions.values.fold(
-        0,
-        (total, s) => total + s.pendingStore.length,
-      ),
+          eligibleCount != 0 &&
+          sleeperEligible.every((s) => s.baselineEstablished) &&
+          espnEligible.every((s) => s.baselineEstablished),
+      pendingAlerts:
+          _sessions.values.fold(
+            0,
+            (total, s) => total + s.pendingStore.length,
+          ) +
+          _espnSessions.values.fold(
+            0,
+            (total, s) => total + s.pendingStore.length,
+          ),
       lastResult: summary,
       // Summary only, never a global alert gate. Each session owns its setting.
       alertsEnabled:
-          eligible.isEmpty || eligible.any((s) => s.config.alertsEnabled),
+          eligibleCount == 0 ||
+          sleeperEligible.any((s) => s.config.alertsEnabled) ||
+          espnEligible.any((s) => s.config.alertsEnabled),
     );
     notifyListeners();
   }

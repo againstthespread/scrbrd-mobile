@@ -57,6 +57,7 @@ class _EspnFantasySetupScreenState extends State<EspnFantasySetupScreen> {
   FantasyLeagueDetails? _league;
   String? _teamId;
   String? _error;
+  String? _diagnostic;
   bool _loading = true;
   bool _busy = false;
   bool _needsCredentials = false;
@@ -104,6 +105,7 @@ class _EspnFantasySetupScreenState extends State<EspnFantasySetupScreen> {
     setState(() {
       _busy = true;
       _error = null;
+      _diagnostic = null;
     });
     try {
       FantasyLeagueDetails league;
@@ -140,6 +142,11 @@ class _EspnFantasySetupScreenState extends State<EspnFantasySetupScreen> {
             _needsCredentials = true;
           }
           _error = espnSetupError(error);
+          _diagnostic =
+              error is EspnFantasyException &&
+                  error.failure == EspnFantasyFailure.invalidResponse
+              ? error.diagnostic
+              : null;
         });
       }
     } finally {
@@ -154,6 +161,7 @@ class _EspnFantasySetupScreenState extends State<EspnFantasySetupScreen> {
     setState(() {
       _busy = true;
       _error = null;
+      _diagnostic = null;
     });
     try {
       // Confirm that the chosen team has a current matchup before persisting.
@@ -185,7 +193,12 @@ class _EspnFantasySetupScreenState extends State<EspnFantasySetupScreen> {
       }
       if (mounted) Navigator.of(context).pop(true);
     } on Object catch (error) {
-      if (mounted) setState(() => _error = espnSetupError(error));
+      if (mounted) {
+        setState(() {
+          _error = espnSetupError(error);
+          _diagnostic = error is EspnFantasyException ? error.diagnostic : null;
+        });
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -288,6 +301,11 @@ class _EspnFantasySetupScreenState extends State<EspnFantasySetupScreen> {
                 _error!,
                 style: TextStyle(color: Theme.of(context).colorScheme.error),
               ),
+            ),
+          if (_diagnostic != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: SelectableText('Safe ESPN diagnostic: $_diagnostic'),
             ),
         ],
       ],

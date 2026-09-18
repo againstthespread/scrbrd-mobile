@@ -17,7 +17,7 @@ class FantasyAlertPacketSerializer {
         'version': 1,
         'type': 'fantasy_alert',
         'player': truncateUtf8DisplayText(
-          alert.player?.fullName ?? alert.delta.playerId,
+          alert.playerName ?? alert.player?.fullName ?? alert.delta.playerId,
           maximumPlayerBytes,
         ),
         'headline': '',

@@ -9,6 +9,7 @@ class FantasyPointAlert {
     required this.userScore,
     required this.opponentName,
     required this.opponentScore,
+    this.playerName,
   });
 
   final FantasyPointDelta delta;
@@ -17,4 +18,5 @@ class FantasyPointAlert {
   final double userScore;
   final String opponentName;
   final double opponentScore;
+  final String? playerName;
 }
