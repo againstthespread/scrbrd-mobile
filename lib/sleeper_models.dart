@@ -6,6 +6,7 @@ class SleeperLeague {
     required this.status,
     required this.scoringSettings,
     required this.rosterPositions,
+    this.sport,
   });
 
   factory SleeperLeague.fromJson(Map<String, dynamic> json) {
@@ -16,6 +17,7 @@ class SleeperLeague {
       status: _string(json['status']),
       scoringSettings: _numberMap(json['scoring_settings']),
       rosterPositions: _stringList(json['roster_positions']),
+      sport: _nullableString(json['sport']),
     );
   }
 
@@ -25,6 +27,7 @@ class SleeperLeague {
   final String status;
   final Map<String, double> scoringSettings;
   final List<String> rosterPositions;
+  final String? sport;
 }
 
 class SleeperUser {

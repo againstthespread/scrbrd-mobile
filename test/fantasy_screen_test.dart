@@ -198,6 +198,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('provider-sleeper')));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('Add by League ID instead'));
+      await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), 'bad');
       await tester.tap(find.text('Load League'));
       await tester.pumpAndSettle();
@@ -213,6 +215,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Choose your team'), findsOneWidget);
       expect((await h.store.readAll()).single.toJson(), before);
+      await tester.pageBack();
+      await tester.pumpAndSettle();
       await tester.pageBack();
       await tester.pumpAndSettle();
       expect(find.text('League a'), findsOneWidget);
@@ -349,6 +353,8 @@ Future<void> _add(WidgetTester tester, String id) async {
   await tester.tap(find.text('Add Fantasy League'));
   await tester.pumpAndSettle();
   await tester.tap(find.byKey(const ValueKey('provider-sleeper')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('Add by League ID instead'));
   await tester.pumpAndSettle();
   await tester.enterText(find.byType(TextField), id);
   await tester.tap(find.text('Load League'));

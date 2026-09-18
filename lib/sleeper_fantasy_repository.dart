@@ -1,4 +1,5 @@
 import 'sleeper_api_client.dart';
+import 'sleeper_discovery.dart';
 import 'sleeper_models.dart';
 
 class SleeperFantasyException implements Exception {
@@ -158,6 +159,66 @@ class SleeperFantasyRepository {
   void invalidate(String leagueId) {
     _snapshots.remove(leagueId.trim());
     _weekCheckedAt.remove(leagueId.trim());
+  }
+
+  Future<(SleeperAccount, List<SleeperDiscoveredLeague>)> discoverLeagues(
+    String username,
+    int season,
+  ) async {
+    final account = await _apiClient.fetchUser(username);
+    if (account == null) {
+      throw const SleeperFantasyException('Sleeper username was not found.');
+    }
+    final leagues = await _apiClient.fetchUserNflLeagues(
+      account.userId,
+      season,
+    );
+    final discovered = <SleeperDiscoveredLeague>[];
+    for (final league in leagues) {
+      try {
+        final (users, rosters) = await (
+          _apiClient.fetchLeagueUsers(league.leagueId),
+          _apiClient.fetchLeagueRosters(league.leagueId),
+        ).wait;
+        final owned = rosters
+            .where((roster) => roster.ownerId == account.userId)
+            .toList();
+        final roster = owned.length == 1 ? owned.single : null;
+        final owner = roster == null
+            ? null
+            : users.where((user) => user.userId == roster.ownerId).firstOrNull;
+        discovered.add(
+          SleeperDiscoveredLeague(
+            league: league,
+            rosterId: roster?.rosterId,
+            teamDisplayName: owner?.label,
+            rosters: [
+              for (final candidate in rosters)
+                SleeperDiscoveryRoster(
+                  rosterId: candidate.rosterId,
+                  name:
+                      users
+                          .where((user) => user.userId == candidate.ownerId)
+                          .firstOrNull
+                          ?.label ??
+                      'Roster ${candidate.rosterId}',
+                ),
+            ],
+          ),
+        );
+      } on Object {
+        discovered.add(
+          SleeperDiscoveredLeague(
+            league: league,
+            rosterId: null,
+            teamDisplayName: null,
+            rosters: const [],
+          ),
+        );
+      }
+    }
+    discovered.sort((a, b) => a.league.name.compareTo(b.league.name));
+    return (account, List<SleeperDiscoveredLeague>.unmodifiable(discovered));
   }
 }
 

@@ -8,6 +8,7 @@ import 'fantasy_league_config.dart';
 import 'fantasy_live_observation_coordinator.dart';
 import 'fantasy_provider_models.dart';
 import 'sleeper_fantasy_repository.dart';
+import 'sleeper_discovery_screen.dart';
 import 'sleeper_models.dart';
 import 'sleeper_player_repository.dart';
 
@@ -161,10 +162,21 @@ class _FantasyScreenState extends State<FantasyScreen> {
     final changed = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => provider == FantasyProvider.sleeper
-            ? _SleeperLeagueEditor(
-                coordinator: widget.coordinator,
-                config: config,
-              )
+            ? config == null
+                  ? SleeperDiscoveryScreen(
+                      coordinator: widget.coordinator,
+                      manualFallback: () => Navigator.of(context).push<bool>(
+                        MaterialPageRoute(
+                          builder: (_) => _SleeperLeagueEditor(
+                            coordinator: widget.coordinator,
+                          ),
+                        ),
+                      ),
+                    )
+                  : _SleeperLeagueEditor(
+                      coordinator: widget.coordinator,
+                      config: config,
+                    )
             : EspnFantasySetupScreen(
                 coordinator: widget.coordinator,
                 credentialsStore: _credentials,

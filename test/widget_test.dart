@@ -33,7 +33,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('provider-sleeper')));
     await tester.pumpAndSettle();
-    expect(find.text('Sleeper League ID'), findsOneWidget);
+    expect(find.text('Sleeper username'), findsOneWidget);
   });
 
   testWidgets('Settings retains its secondary Fantasy Football route', (

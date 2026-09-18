@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import 'sleeper_models.dart';
+import 'sleeper_discovery.dart';
 
 class SleeperApiException implements Exception {
   const SleeperApiException(this.message);
@@ -27,6 +28,27 @@ class SleeperApiClient {
 
   Future<SleeperLeague> fetchLeague(String leagueId) async =>
       SleeperLeague.fromJson(await _getMap('/league/$leagueId'));
+
+  Future<SleeperAccount?> fetchUser(String username) async {
+    final normalized = username.trim();
+    if (normalized.isEmpty) {
+      throw const SleeperApiException('Enter a Sleeper username.');
+    }
+    try {
+      return SleeperAccount.fromJson(await _getMap('/user/$normalized'));
+    } on SleeperApiException catch (error) {
+      if (error.message.contains('HTTP 404')) return null;
+      rethrow;
+    }
+  }
+
+  Future<List<SleeperLeague>> fetchUserNflLeagues(
+    String userId,
+    int season,
+  ) async => (await _getList('/user/$userId/leagues/nfl/$season'))
+      .map(SleeperLeague.fromJson)
+      .where((league) => league.sport == null || league.sport == 'nfl')
+      .toList(growable: false);
 
   Future<List<SleeperUser>> fetchLeagueUsers(String leagueId) async =>
       (await _getList(
