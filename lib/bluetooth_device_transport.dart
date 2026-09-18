@@ -71,7 +71,7 @@ class BluetoothDeviceTransport
   FlutterReactiveBle? _ble;
 
   final _snapshotController = StreamController<BleDeviceSnapshot>.broadcast();
-  // TEMPORARY BLE WAKE-NOTIFICATION EXPERIMENT: Remove after iOS testing.
+  // BLE WAKE notifications trigger the connected app's refresh path.
   final _wakeNotificationController = StreamController<List<int>>.broadcast();
   final _devicesById = <String, DiscoveredDevice>{};
 
@@ -89,7 +89,6 @@ class BluetoothDeviceTransport
 
   Stream<BleDeviceSnapshot> get snapshots => _snapshotController.stream;
 
-  // TEMPORARY BLE WAKE-NOTIFICATION EXPERIMENT: Remove after iOS testing.
   Stream<List<int>> get wakeNotifications => _wakeNotificationController.stream;
 
   BleDeviceSnapshot get currentSnapshot => _snapshot;
@@ -517,7 +516,6 @@ class BluetoothDeviceTransport
     }
   }
 
-  // TEMPORARY BLE WAKE-NOTIFICATION EXPERIMENT: Remove after iOS testing.
   Uuid? _tryReadWakeCharacteristicUuid() {
     try {
       return protocol.wakeCharacteristicUuid;
@@ -527,7 +525,6 @@ class BluetoothDeviceTransport
     }
   }
 
-  // TEMPORARY BLE WAKE-NOTIFICATION EXPERIMENT: Remove after iOS testing.
   void _startWakeNotificationSubscription(
     QualifiedCharacteristic characteristic,
   ) {
@@ -537,30 +534,23 @@ class BluetoothDeviceTransport
                 _bleClient.subscribeToCharacteristic(characteristic))
             .listen(
               (value) {
-                debugPrint(
-                  'TEMP BLE WAKE EXPERIMENT: wake notification received; '
-                  'bytes=$value',
-                );
                 if (!_wakeNotificationController.isClosed) {
                   _wakeNotificationController.add(value);
                 }
               },
               onError: (Object error) {
                 debugPrint(
-                  'TEMP BLE WAKE EXPERIMENT: wake notification subscription '
+                  'BLE WAKE: wake notification subscription '
                   'failed: $error',
                 );
               },
               onDone: () {
-                debugPrint(
-                  'TEMP BLE WAKE EXPERIMENT: wake subscription cancelled',
-                );
+                debugPrint('BLE WAKE: wake subscription cancelled');
               },
             );
-    debugPrint('TEMP BLE WAKE EXPERIMENT: wake subscription started');
+    debugPrint('BLE WAKE: wake subscription started');
   }
 
-  // TEMPORARY BLE WAKE-NOTIFICATION EXPERIMENT: Remove after iOS testing.
   Future<void> _cancelWakeNotificationSubscription() async {
     final subscription = _wakeNotificationSubscription;
     _wakeNotificationSubscription = null;
@@ -569,7 +559,7 @@ class BluetoothDeviceTransport
     }
 
     await subscription.cancel();
-    debugPrint('TEMP BLE WAKE EXPERIMENT: wake subscription cancelled');
+    debugPrint('BLE WAKE: wake subscription cancelled');
   }
 
   void _emitError(String message) {

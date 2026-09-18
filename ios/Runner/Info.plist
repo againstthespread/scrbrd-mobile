@@ -30,9 +30,6 @@
 	<string>Sports Hub uses Bluetooth to connect to your handheld scoreboard and send game updates.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>Sports Hub uses Bluetooth to connect to your handheld scoreboard and send game updates.</string>
-	<!-- TEMPORARY LIVE ACTIVITY/BACKGROUND BLE DIAGNOSTICS: Remove after iOS testing. -->
-	<key>NSSupportsLiveActivities</key>
-	<true/>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

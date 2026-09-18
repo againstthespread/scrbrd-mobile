@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sports_hub_mobile/background_score_refresh_dispatcher.dart';
 import 'package:sports_hub_mobile/device_transport.dart';
 import 'package:sports_hub_mobile/fantasy_alert_transport.dart';
 import 'package:sports_hub_mobile/fantasy_league_config.dart';
@@ -488,6 +489,7 @@ void main() {
     await save('espn', provider: FantasyProvider.espn);
     points['espn'] = 25.5;
     await coordinator.setPrimaryLeague('sleeper:a');
+    transport.slates.clear();
 
     await coordinator.observe();
 
@@ -838,8 +840,207 @@ void main() {
     final result = await coordinator.observe();
     expect(result.leagues['espn:c']!.baselineReset, isFalse);
     expect(result.leagues['espn:c']!.alertCount, 1);
-    expect(transport.matchups.last.leagueName, 'ESPN League');
+    expect(transport.slates.last.first.matchup.leagueName, 'ESPN League');
+    expect(transport.matchups, isEmpty);
   });
+
+  for (final primary in ['espn:c', 'sleeper:b']) {
+    test(
+      'selecting $primary preserves the full mixed-provider slate',
+      () async {
+        await save('c', provider: FantasyProvider.espn);
+        await coordinator.syncStartupCategory();
+        transport.slates.clear();
+        loads.clear();
+
+        await coordinator.setPrimaryLeague(primary);
+
+        final slate = transport.slates.single;
+        expect(slate.first.identity, primary);
+        expect(
+          slate.map((e) => e.identity),
+          unorderedEquals(['espn:c', 'sleeper:a', 'sleeper:b']),
+        );
+        expect(transport.matchups, isEmpty);
+        expect(transport.clearCount, 0);
+        expect(loads, isEmpty);
+      },
+    );
+  }
+
+  test(
+    'ESPN Primary preview loads missing peers without observing scores',
+    () async {
+      await save('c', provider: FantasyProvider.espn);
+      await coordinator.loadConfigurationStatus();
+      expect(coordinator.primaryLeagueId, 'espn:c');
+
+      final matchup = await coordinator.syncPrimaryEspnMatchup();
+
+      expect(matchup, isNotNull);
+      expect(transport.slates.single.map((e) => e.identity), [
+        'espn:c',
+        'sleeper:a',
+        'sleeper:b',
+      ]);
+      expect(coordinator.status.baselineReady, isFalse);
+      expect(transport.alerts, isEmpty);
+      expect(transport.matchups, isEmpty);
+    },
+  );
+
+  test(
+    'Primary display changes preserve pending alerts and scoring baselines',
+    () async {
+      await save('c', provider: FantasyProvider.espn);
+      await coordinator.observe();
+      points['a'] = 11;
+      await coordinator.observe(sendAlerts: false);
+      final pending = coordinator.pendingAlertsByLeague;
+
+      await coordinator.setPrimaryLeague('espn:c');
+      points['c'] = 32;
+      await coordinator.syncPrimaryEspnMatchup();
+
+      expect(coordinator.pendingAlertsByLeague, pending);
+      expect(transport.alerts, isEmpty);
+      final result = await coordinator.observe();
+      expect(result.baselineReset, isFalse);
+      expect(result.alerts.single.delta.delta, 2);
+      expect(transport.alerts, hasLength(2));
+    },
+  );
+
+  test('ESPN disconnect display clear preserves Sleeper peers', () async {
+    await save('c', provider: FantasyProvider.espn);
+    await coordinator.observe();
+    transport.slates.clear();
+
+    await coordinator.clearPrimaryEspnDisplay();
+
+    expect(transport.slates.single.map((e) => e.identity), [
+      'sleeper:a',
+      'sleeper:b',
+    ]);
+    expect(transport.clearCount, 0);
+    expect(transport.matchups, isEmpty);
+    expect(coordinator.status.baselineReady, isTrue);
+  });
+
+  test(
+    'removing a league through the legacy editor preserves its peers',
+    () async {
+      await save('c', provider: FantasyProvider.espn);
+      await coordinator.observe();
+      transport.slates.clear();
+
+      await coordinator.removeConfiguration();
+
+      expect(transport.slates.single.map((e) => e.identity), [
+        'espn:c',
+        'sleeper:b',
+      ]);
+      expect(transport.clearCount, 0);
+    },
+  );
+
+  test('clearing a selected roster preserves other device matchups', () async {
+    await coordinator.observe();
+    transport.slates.clear();
+
+    await coordinator.clearRosterSelection();
+
+    expect(transport.slates.single.single.identity, 'sleeper:b');
+    expect(transport.clearCount, 0);
+  });
+
+  test('disabling Fantasy prevents display-only UI slate sends', () async {
+    await save('c', provider: FantasyProvider.espn);
+    coordinator.beginConnectionSession(fantasyEnabled: false);
+    await coordinator.setPrimaryLeague('espn:c');
+    await coordinator.syncPrimaryEspnMatchup();
+    await coordinator.clearPrimaryEspnDisplay();
+    expect(transport.slates, isEmpty);
+    expect(transport.matchups, isEmpty);
+    expect(transport.clearCount, 0);
+  });
+
+  test(
+    'connection becoming available mid-observation still sends only a slate',
+    () async {
+      transport.connected = false;
+      loadGate = Completer<void>();
+      loadStarted = Completer<void>();
+      final observation = coordinator.observe();
+      await loadStarted!.future;
+      transport.connected = true;
+      loadGate!.complete();
+      await observation;
+      expect(transport.slates.single, hasLength(2));
+      expect(transport.matchups, isEmpty);
+    },
+  );
+
+  test(
+    'old observation cannot send a slate into a replacement connection',
+    () async {
+      loadGate = Completer<void>();
+      loadStarted = Completer<void>();
+      final observation = coordinator.observe();
+      await loadStarted!.future;
+      coordinator.endConnectionSession();
+      coordinator.beginConnectionSession();
+      loadGate!.complete();
+      await observation;
+      expect(transport.slates, isEmpty);
+      expect(transport.matchups, isEmpty);
+    },
+  );
+
+  for (final background in [false, true]) {
+    test(
+      '${background ? 'FCM' : 'BLE WAKE'} preserves the complete startup slate',
+      () async {
+        await save('c', provider: FantasyProvider.espn);
+        await coordinator.syncStartupCategory();
+        loads.clear();
+        var sportsRuns = 0;
+        var fantasyRuns = 0;
+        var completions = 0;
+        Future<void> refresh() => runIsolatedWakeDomains(
+          refreshSports: () async {
+            sportsRuns++;
+          },
+          observeFantasy: () async {
+            fantasyRuns++;
+            await coordinator.observe();
+          },
+        );
+        if (background) {
+          await runBackgroundScoreRefresh(
+            refresh: refresh,
+            complete: () {
+              completions++;
+            },
+          );
+        } else {
+          await refresh();
+        }
+        expect(sportsRuns, 1);
+        expect(fantasyRuns, 1);
+        expect(completions, background ? 1 : 0);
+        expect(loads, ['a', 'b']);
+        expect(transport.slates, hasLength(2));
+        expect(
+          transport.slates.last.map((e) => e.identity),
+          transport.slates.first.map((e) => e.identity),
+        );
+        expect(transport.slates.last, hasLength(3));
+        expect(transport.matchups, isEmpty);
+        expect(transport.alerts, isEmpty);
+      },
+    );
+  }
 
   test(
     'invalid Sleeper team reports per-league failure without blocking peers',
@@ -938,6 +1139,7 @@ class _Transport
         FantasySlateTransport {
   bool connected = true;
   bool failSlate = false;
+  int clearCount = 0;
   final failTeams = <String>{};
   final alerts = <FantasyPointAlert>[];
   final matchups = <FantasyMatchupDisplayData>[];
@@ -972,7 +1174,9 @@ class _Transport
   }
 
   @override
-  Future<void> clearFantasyMatchup() async {}
+  Future<void> clearFantasyMatchup() async {
+    clearCount++;
+  }
 }
 
 class _LegacyMatchupTransport implements FantasyMatchupTransport {

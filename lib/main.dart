@@ -14,20 +14,20 @@ import 'college_football_preferences_store.dart';
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-  debugPrint('Background message ID: ${message.messageId}');
-  debugPrint('Background message data: ${message.data}');
+  debugPrint(
+    'Background notification received; '
+    'scoreRefresh=${message.data['type'] == 'score_refresh'}',
+  );
 
   if (message.data['type'] != 'score_refresh') {
     return;
   }
 
-  debugPrint(
-    'TEMP BACKGROUND SCORE UPDATER: background FCM score_refresh received',
-  );
+  debugPrint('BACKGROUND SCORE REFRESH: background FCM score_refresh received');
   final completed =
       await BackgroundScoreRefreshDispatcher.dispatchScoreRefreshToMainIsolate();
   debugPrint(
-    'TEMP BACKGROUND SCORE UPDATER: score_refresh completed by connected '
+    'BACKGROUND SCORE REFRESH: score_refresh completed by connected '
     'app isolate=$completed',
   );
 }

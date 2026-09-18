@@ -175,7 +175,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   final PendingFantasyAlertStore _emptyPending = PendingFantasyAlertStore();
   String? _primaryId;
 
-  /// Temporary single-league queue view. Status reports the combined count.
+  /// Legacy single-league queue view. Status reports the combined count.
   PendingFantasyAlertStore get pendingStore =>
       _sessions[_primaryId]?.pendingStore ??
       _espnSessions[_primaryId]?.pendingStore ??
@@ -216,6 +216,10 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     }
     await primaryStore.save(id);
     await loadConfigurationStatus();
+    if (matchupTransport is FantasySlateTransport) {
+      await _syncConfiguredFantasySlate();
+      return;
+    }
     if (id.startsWith('espn:')) {
       try {
         await syncPrimaryEspnMatchup();
@@ -226,7 +230,8 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     }
   }
 
-  /// Explicit display sync only. ESPN is excluded from observation and alerts.
+  /// Explicit ESPN preview/display refresh; scoring stays in observe().
+  /// Slate-capable devices retain peers when the Primary preview is opened.
   Future<FantasyMatchupSnapshot?> syncPrimaryEspnMatchup() async {
     await _reconcile();
     final id = _primaryId;
@@ -243,6 +248,10 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     );
     if (_primaryId != id) return matchup;
     final transport = matchupTransport;
+    if (transport is FantasySlateTransport) {
+      await _syncConfiguredFantasySlate(primaryEspnMatchup: matchup);
+      return matchup;
+    }
     if (transport != null && isBleConnected() && _deviceContentEnabled) {
       final context =
           '${config.id}|${matchup.scoringPeriod}|'
@@ -259,6 +268,16 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
 
   Future<void> clearPrimaryEspnDisplay() async {
     if (_primaryId?.startsWith('espn:') ?? false) {
+      final transport = matchupTransport;
+      if (transport is FantasySlateTransport) {
+        if (!_deviceContentEnabled || !isBleConnected()) return;
+        final configs = await _reconcile();
+        await _syncObservedFantasySlate(
+          transport as FantasySlateTransport,
+          configs.where((c) => c.provider != FantasyProvider.espn).toList(),
+        );
+        return;
+      }
       await _clearPersistentFantasy();
     }
   }
@@ -500,7 +519,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       final configs = await _reconcile();
       final slateTransport = matchupTransport;
       FantasySlateTransport? activeSlateTransport;
-      if (slateTransport is FantasySlateTransport && isBleConnected()) {
+      if (slateTransport is FantasySlateTransport) {
         // The runtime check narrows the independent transport interface.
         activeSlateTransport = slateTransport as FantasySlateTransport;
       }
@@ -546,7 +565,10 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
               _espnSessions[_primaryId]?.config.teamId == null)) {
         if (!useSlateTransport) await _clearPersistentFantasy();
       }
-      if (useSlateTransport && !startupOnly) {
+      if (useSlateTransport &&
+          !startupOnly &&
+          generation == _generation &&
+          isBleConnected()) {
         await _syncObservedFantasySlate(activeSlateTransport, configs);
       }
       final alerts = [for (final result in results.values) ...result.alerts];
@@ -952,6 +974,50 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     }
   }
 
+  /// Display-only UI updates reuse known matchups and load only missing peers.
+  /// This does not observe scores, advance baselines, or drain pending alerts.
+  Future<void> _syncConfiguredFantasySlate({
+    FantasyMatchupSnapshot? primaryEspnMatchup,
+  }) async {
+    final transport = matchupTransport;
+    if (transport is! FantasySlateTransport ||
+        !_deviceContentEnabled ||
+        !isBleConnected()) {
+      return;
+    }
+    final generation = _generation;
+    await _reconcile();
+    final primary = _primaryId;
+    final builder = FantasyMatchupSlateBuilder(
+      configStore: leagueConfigStore,
+      primaryStore: primaryStore,
+      loadSleeper: (config) async {
+        final known = _sessions[config.id]?.latestMatchup;
+        if (known != null) return known;
+        final snapshot = await _matchupLoader(config.leagueId);
+        return snapshot.matchupForRoster(int.parse(config.teamId!));
+      },
+      loadEspn: (config) async {
+        if (config.id == primary && primaryEspnMatchup != null) {
+          return primaryEspnMatchup;
+        }
+        return _espnSessions[config.id]?.latestMatchup ??
+            await _espnMatchupLoader(
+              currentFantasySeason(),
+              config.leagueId,
+              config.teamId!,
+            );
+      },
+    );
+    final slate = await builder.build();
+    if (generation != _generation || !isBleConnected()) return;
+    try {
+      await (transport as FantasySlateTransport).sendFantasySlate(slate);
+    } on Object catch (error) {
+      _diagnose('Fantasy display slate send failed: ${error.runtimeType}');
+    }
+  }
+
   Future<void> _syncPersistentMatchup(
     SleeperFantasyMatchup matchup,
     String context,
@@ -997,6 +1063,10 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
 
   Future<void> _clearPersistentFantasy() async {
     final persistentTransport = matchupTransport;
+    if (persistentTransport is FantasySlateTransport) {
+      await _syncConfiguredFantasySlate();
+      return;
+    }
     if (persistentTransport == null || !isBleConnected()) return;
     try {
       await persistentTransport.clearFantasyMatchup();

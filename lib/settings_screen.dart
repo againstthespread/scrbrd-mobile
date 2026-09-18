@@ -26,9 +26,6 @@ class SettingsScreen extends StatelessWidget {
     required this.providerLabel,
     required this.pushDiagnostics,
     required this.onRefreshPushDiagnostics,
-    required this.liveActivityStatus,
-    required this.onStartLiveActivity,
-    required this.onEndLiveActivity,
     required this.backgroundRefreshDiagnostics,
     required this.fantasyCoordinator,
     required this.fantasyPlayerRepository,
@@ -43,9 +40,6 @@ class SettingsScreen extends StatelessWidget {
   final String providerLabel;
   final PushNotificationDiagnostics? pushDiagnostics;
   final Future<PushNotificationDiagnostics> Function() onRefreshPushDiagnostics;
-  final String liveActivityStatus;
-  final Future<void> Function() onStartLiveActivity;
-  final Future<void> Function() onEndLiveActivity;
   final RefreshDiagnosticHistory backgroundRefreshDiagnostics;
   final FantasyLiveObservationCoordinator fantasyCoordinator;
   final SleeperPlayerRepository fantasyPlayerRepository;
@@ -152,9 +146,6 @@ class SettingsScreen extends StatelessWidget {
                     providerLabel: providerLabel,
                     pushDiagnostics: pushDiagnostics,
                     onRefreshPushDiagnostics: onRefreshPushDiagnostics,
-                    liveActivityStatus: liveActivityStatus,
-                    onStartLiveActivity: onStartLiveActivity,
-                    onEndLiveActivity: onEndLiveActivity,
                     backgroundRefreshDiagnostics: backgroundRefreshDiagnostics,
                   ),
                 ),
@@ -199,9 +190,6 @@ class DeveloperToolsScreen extends StatefulWidget {
     required this.providerLabel,
     required this.pushDiagnostics,
     required this.onRefreshPushDiagnostics,
-    required this.liveActivityStatus,
-    required this.onStartLiveActivity,
-    required this.onEndLiveActivity,
     required this.backgroundRefreshDiagnostics,
   });
 
@@ -211,9 +199,6 @@ class DeveloperToolsScreen extends StatefulWidget {
   final String providerLabel;
   final PushNotificationDiagnostics? pushDiagnostics;
   final Future<PushNotificationDiagnostics> Function() onRefreshPushDiagnostics;
-  final String liveActivityStatus;
-  final Future<void> Function() onStartLiveActivity;
-  final Future<void> Function() onEndLiveActivity;
   final RefreshDiagnosticHistory backgroundRefreshDiagnostics;
 
   @override
@@ -281,26 +266,6 @@ class _DeveloperToolsScreenState extends State<DeveloperToolsScreen> {
                     ),
                   ),
                 ),
-              ),
-            ],
-          ),
-          _SectionCard(
-            title: 'Live Activity diagnostics',
-            children: [
-              Text(widget.liveActivityStatus),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                children: [
-                  OutlinedButton(
-                    onPressed: widget.onStartLiveActivity,
-                    child: const Text('Start Live Activity'),
-                  ),
-                  OutlinedButton(
-                    onPressed: widget.onEndLiveActivity,
-                    child: const Text('End Live Activity'),
-                  ),
-                ],
               ),
             ],
           ),

@@ -14,7 +14,7 @@ class LeagueSlateSendException implements Exception {
   String toString() => '${league.label} slate failed: $cause';
 }
 
-/// TEMPORARY MULTI-LEAGUE DIAGNOSTIC: sends independently loaded league
+/// Sends independently loaded league
 /// slates in stable SportsLeague order through the existing transport.
 class LoadedLeagueSlateSender {
   const LoadedLeagueSlateSender({required this.transport});

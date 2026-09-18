@@ -308,7 +308,7 @@ class _FantasyScreenState extends State<FantasyScreen> {
         ),
         const SizedBox(height: 8),
         const Text(
-          'Primary is the matchup shown on SCRBRD. Alerts are monitored for every league with alerts on.',
+          'Primary appears first on SCRBRD. Browse other matchups within Fantasy. Alerts are monitored for every league with alerts on.',
         ),
         const SizedBox(height: 16),
         if (_loading)

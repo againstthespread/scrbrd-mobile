@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:isolate';
 import 'dart:ui';
 
-// TEMPORARY EVENT-DRIVEN BACKGROUND SCORE PROTOTYPE: Remove or refactor later.
+/// Routes background FCM refresh requests to the resident main isolate.
 class BackgroundScoreRefreshDispatcher {
   BackgroundScoreRefreshDispatcher._();
 
@@ -52,7 +52,7 @@ class BackgroundScoreRefreshDispatcher {
   }
 }
 
-// TEMPORARY EVENT-DRIVEN BACKGROUND SCORE PROTOTYPE: Remove or refactor later.
+/// Acknowledges completion of the combined sports and fantasy refresh.
 class BackgroundScoreRefreshRequest {
   BackgroundScoreRefreshRequest._(this._completionPort);
 

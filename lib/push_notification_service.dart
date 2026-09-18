@@ -31,7 +31,7 @@ class PushNotificationService {
           return;
         }
 
-        debugPrint('APNs token: $apnsToken');
+        debugPrint('APNs token available=true; length=${apnsToken.length}');
       }
 
       final token = await messaging.getToken();
@@ -40,9 +40,11 @@ class PushNotificationService {
         return;
       }
 
-      debugPrint('FCM registration token: $token');
+      debugPrint(
+        'FCM registration token available=true; length=${token.length}',
+      );
     } on Object catch (error) {
-      debugPrint('FCM development setup failed: $error');
+      debugPrint('FCM setup failed: ${error.runtimeType}');
     }
   }
 

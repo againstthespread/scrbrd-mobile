@@ -7,7 +7,7 @@ class SportsHubBleProtocol {
   static const serviceUuidText = 'd8f6a9b0-7a5e-4e8c-9f2a-2b2f5b6c1001';
   static const writableCharacteristicUuidText =
       'd8f6a9b1-7a5e-4e8c-9f2a-2b2f5b6c1001';
-  // TEMPORARY BLE WAKE-NOTIFICATION EXPERIMENT: Remove after iOS testing.
+  // BLE WAKE notifications trigger the connected app's refresh path.
   static const wakeCharacteristicUuidText =
       'd8f6a9b2-7a5e-4e8c-9f2a-2b2f5b6c1001';
 
@@ -18,7 +18,7 @@ class SportsHubBleProtocol {
     writableCharacteristicUuidText,
   );
 
-  // TEMPORARY BLE WAKE-NOTIFICATION EXPERIMENT: Remove after iOS testing.
+  // BLE WAKE notifications trigger the connected app's refresh path.
   Uuid get wakeCharacteristicUuid =>
       _parseUuid('wake characteristic UUID', wakeCharacteristicUuidText);
 

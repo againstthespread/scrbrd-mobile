@@ -10,7 +10,6 @@ import 'fantasy_live_observation_coordinator.dart';
 import 'refresh_diagnostic_history.dart';
 import 'fantasy_league_config.dart';
 import 'fantasy_screen.dart';
-import 'live_activity_diagnostics.dart';
 import 'live_games_screen.dart';
 import 'live_refresh_coordinator.dart';
 import 'push_notification_service.dart';
@@ -72,12 +71,10 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   StreamSubscription<BackgroundScoreRefreshRequest>? _scoreRefreshSubscription;
   late BleDeviceSnapshot _deviceSnapshot;
   PushNotificationDiagnostics? _pushDiagnostics;
-  final _liveActivityDiagnostics = LiveActivityDiagnostics();
 
   // Existing background-refresh diagnostics remain available in Developer Tools.
   var _lifecycleState = AppLifecycleState.resumed;
   final _backgroundRefreshDiagnostics = RefreshDiagnosticHistory();
-  String _liveActivityDiagnosticStatus = 'Live Activity not started.';
   bool _isDisposing = false;
   InitialSyncSnapshot _initialSyncSnapshot = const InitialSyncSnapshot(
     status: InitialSyncStatus.idle,
@@ -251,7 +248,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _lifecycleState = state;
-    debugPrint('TEMP BACKGROUND SCORE UPDATER: lifecycle=${state.name}');
+    debugPrint('BACKGROUND SCORE REFRESH: lifecycle=${state.name}');
   }
 
   void _handleBleWakeNotification(List<int> payload) {
@@ -272,22 +269,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     );
   }
 
-  Future<void> _startLiveActivityDiagnostic() async {
-    final status = await _liveActivityDiagnostics.start();
-    _setLiveActivityDiagnosticStatus(status);
-  }
-
-  Future<void> _endLiveActivityDiagnostic() async {
-    final status = await _liveActivityDiagnostics.end();
-    _setLiveActivityDiagnosticStatus(status);
-  }
-
-  void _setLiveActivityDiagnosticStatus(String status) {
-    if (mounted) setState(() => _liveActivityDiagnosticStatus = status);
-  }
-
   void _recordBackgroundUpdaterDiagnostic(String message) {
-    debugPrint('TEMP BACKGROUND SCORE UPDATER: $message');
+    debugPrint('REFRESH: $message');
     _backgroundRefreshDiagnostics.add(message);
   }
 
@@ -328,9 +311,6 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           providerLabel: selectSportsDataProvider().label,
           pushDiagnostics: _pushDiagnostics,
           onRefreshPushDiagnostics: _loadPushDiagnostics,
-          liveActivityStatus: _liveActivityDiagnosticStatus,
-          onStartLiveActivity: _startLiveActivityDiagnostic,
-          onEndLiveActivity: _endLiveActivityDiagnostic,
           backgroundRefreshDiagnostics: _backgroundRefreshDiagnostics,
           fantasyCoordinator: _fantasyCoordinator,
           fantasyPlayerRepository: _sleeperPlayerRepository,

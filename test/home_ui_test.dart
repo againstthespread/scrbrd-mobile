@@ -206,9 +206,6 @@ void main() {
                 isApplePlatform: true,
                 token: 'fcm-token',
               ),
-          liveActivityStatus: 'Inactive',
-          onStartLiveActivity: () async {},
-          onEndLiveActivity: () async {},
           backgroundRefreshDiagnostics: RefreshDiagnosticHistory(),
         ),
       ),
@@ -216,7 +213,8 @@ void main() {
 
     expect(find.text('Games and slate tools'), findsOneWidget);
     expect(find.text('Manual game packet'), findsOneWidget);
-    expect(find.text('Start Live Activity'), findsOneWidget);
+    expect(find.text('Start Live Activity'), findsNothing);
+    expect(find.text('Refresh diagnostics'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('Push notification diagnostics'),
       250,

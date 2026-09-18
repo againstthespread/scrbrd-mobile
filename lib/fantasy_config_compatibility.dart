@@ -16,7 +16,7 @@ FantasyLeagueConfig leagueConfig(SleeperFantasyConfig config) =>
       alertsEnabled: config.alertsEnabled,
     );
 
-/// Temporary view for legacy coordinator methods/tests, not the production UI.
+/// Compatibility view for legacy coordinator methods and tests.
 /// Its edit selection is independent of the persisted device primary.
 class SleeperFantasyConfigCollectionAdapter
     implements SleeperFantasyConfigStore {
