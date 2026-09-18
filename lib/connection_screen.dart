@@ -7,6 +7,7 @@ import 'ble_device_state.dart';
 import 'bluetooth_device_transport.dart';
 import 'initial_device_sync_coordinator.dart';
 import 'fantasy_live_observation_coordinator.dart';
+import 'refresh_diagnostic_history.dart';
 import 'fantasy_league_config.dart';
 import 'fantasy_screen.dart';
 import 'live_activity_diagnostics.dart';
@@ -75,7 +76,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
 
   // Existing background-refresh diagnostics remain available in Developer Tools.
   var _lifecycleState = AppLifecycleState.resumed;
-  String _backgroundUpdaterStatus = 'Waiting for a BLE WAKE notification.';
+  final _backgroundRefreshDiagnostics = RefreshDiagnosticHistory();
   String _liveActivityDiagnosticStatus = 'Live Activity not started.';
   bool _isDisposing = false;
   InitialSyncSnapshot _initialSyncSnapshot = const InitialSyncSnapshot(
@@ -190,10 +191,39 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   Future<void> _handleBackgroundScoreRefresh(
     BackgroundScoreRefreshRequest request,
   ) async {
-    await _sportsOperationGate.requestLiveRefresh(
-      _liveRefreshCoordinator.refreshTrackedSessionOnce,
+    final connected = _transport.currentSnapshot.state.isPhysicallyConnected;
+    _recordBackgroundUpdaterDiagnostic(
+      'FCM BACKGROUND SCORE REFRESH: received; '
+      'lifecycle=${_lifecycleState.name}; BLE connected=$connected',
     );
-    request.complete();
+    await runBackgroundScoreRefresh(
+      refresh: () => _sportsOperationGate.requestLiveRefresh(
+        () => runIsolatedWakeDomains(
+          refreshSports: () async {
+            _recordBackgroundUpdaterDiagnostic(
+              'FCM BACKGROUND SCORE REFRESH: sports refresh started',
+            );
+            await _liveRefreshCoordinator.refreshTrackedSessionOnce();
+            _recordBackgroundUpdaterDiagnostic(
+              'FCM BACKGROUND SCORE REFRESH: sports refresh completed',
+            );
+          },
+          observeFantasy: () async {
+            _recordBackgroundUpdaterDiagnostic(
+              'FCM BACKGROUND SCORE REFRESH: fantasy observation started',
+            );
+            final result = await _fantasyCoordinator.observe();
+            _recordBackgroundUpdaterDiagnostic(
+              'FCM BACKGROUND SCORE REFRESH: fantasy observation completed; '
+              'alerts=${result.alertCount}; pending=${result.pendingAlerts}',
+            );
+          },
+          onDiagnostic: _recordBackgroundUpdaterDiagnostic,
+          triggerLabel: 'FCM BACKGROUND SCORE REFRESH',
+        ),
+      ),
+      complete: request.complete,
+    );
   }
 
   @override
@@ -258,9 +288,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
 
   void _recordBackgroundUpdaterDiagnostic(String message) {
     debugPrint('TEMP BACKGROUND SCORE UPDATER: $message');
-    if (mounted && !_isDisposing) {
-      setState(() => _backgroundUpdaterStatus = message);
-    }
+    _backgroundRefreshDiagnostics.add(message);
   }
 
   void _recordInitialSyncStatus(InitialSyncSnapshot snapshot) {
@@ -303,7 +331,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           liveActivityStatus: _liveActivityDiagnosticStatus,
           onStartLiveActivity: _startLiveActivityDiagnostic,
           onEndLiveActivity: _endLiveActivityDiagnostic,
-          backgroundRefreshStatus: _backgroundUpdaterStatus,
+          backgroundRefreshDiagnostics: _backgroundRefreshDiagnostics,
           fantasyCoordinator: _fantasyCoordinator,
           fantasyPlayerRepository: _sleeperPlayerRepository,
           favoritesStore: _favoritesStore,

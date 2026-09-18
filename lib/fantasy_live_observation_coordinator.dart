@@ -43,16 +43,21 @@ Future<void> runIsolatedWakeDomains({
   required Future<void> Function() refreshSports,
   required Future<void> Function() observeFantasy,
   void Function(String message)? onDiagnostic,
+  String triggerLabel = 'BLE WAKE',
 }) async {
   try {
     await refreshSports();
   } on Object catch (error) {
-    onDiagnostic?.call('SPORTS WAKE failed; fantasy continues: $error');
+    onDiagnostic?.call(
+      '$triggerLabel: sports failed; fantasy continues: ${error.runtimeType}',
+    );
   }
   try {
     await observeFantasy();
   } on Object catch (error) {
-    onDiagnostic?.call('FANTASY WAKE failed; sports unaffected: $error');
+    onDiagnostic?.call(
+      '$triggerLabel: fantasy failed; sports unaffected: ${error.runtimeType}',
+    );
   }
 }
 

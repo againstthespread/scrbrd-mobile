@@ -62,3 +62,14 @@ class BackgroundScoreRefreshRequest {
     _completionPort.send(true);
   }
 }
+
+Future<void> runBackgroundScoreRefresh({
+  required Future<void> Function() refresh,
+  required void Function() complete,
+}) async {
+  try {
+    await refresh();
+  } finally {
+    complete();
+  }
+}

@@ -7,6 +7,7 @@ import 'package:sports_hub_mobile/game_data.dart';
 import 'package:sports_hub_mobile/golf_leaderboard.dart';
 import 'package:sports_hub_mobile/initial_device_sync_coordinator.dart';
 import 'package:sports_hub_mobile/push_notification_service.dart';
+import 'package:sports_hub_mobile/refresh_diagnostic_history.dart';
 import 'package:sports_hub_mobile/settings_screen.dart';
 import 'package:sports_hub_mobile/sports_data_source.dart';
 import 'package:sports_hub_mobile/sports_game.dart';
@@ -208,7 +209,7 @@ void main() {
           liveActivityStatus: 'Inactive',
           onStartLiveActivity: () async {},
           onEndLiveActivity: () async {},
-          backgroundRefreshStatus: 'Waiting',
+          backgroundRefreshDiagnostics: RefreshDiagnosticHistory(),
         ),
       ),
     );

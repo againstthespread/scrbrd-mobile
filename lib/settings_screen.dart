@@ -15,6 +15,7 @@ import 'device_content_preferences_store.dart';
 import 'device_content_screen.dart';
 import 'college_football_preferences_store.dart';
 import 'college_football_screen.dart';
+import 'refresh_diagnostic_history.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({
@@ -28,7 +29,7 @@ class SettingsScreen extends StatelessWidget {
     required this.liveActivityStatus,
     required this.onStartLiveActivity,
     required this.onEndLiveActivity,
-    required this.backgroundRefreshStatus,
+    required this.backgroundRefreshDiagnostics,
     required this.fantasyCoordinator,
     required this.fantasyPlayerRepository,
     required this.favoritesStore,
@@ -45,7 +46,7 @@ class SettingsScreen extends StatelessWidget {
   final String liveActivityStatus;
   final Future<void> Function() onStartLiveActivity;
   final Future<void> Function() onEndLiveActivity;
-  final String backgroundRefreshStatus;
+  final RefreshDiagnosticHistory backgroundRefreshDiagnostics;
   final FantasyLiveObservationCoordinator fantasyCoordinator;
   final SleeperPlayerRepository fantasyPlayerRepository;
   final FavoritesStore favoritesStore;
@@ -154,7 +155,7 @@ class SettingsScreen extends StatelessWidget {
                     liveActivityStatus: liveActivityStatus,
                     onStartLiveActivity: onStartLiveActivity,
                     onEndLiveActivity: onEndLiveActivity,
-                    backgroundRefreshStatus: backgroundRefreshStatus,
+                    backgroundRefreshDiagnostics: backgroundRefreshDiagnostics,
                   ),
                 ),
               ),
@@ -201,7 +202,7 @@ class DeveloperToolsScreen extends StatefulWidget {
     required this.liveActivityStatus,
     required this.onStartLiveActivity,
     required this.onEndLiveActivity,
-    required this.backgroundRefreshStatus,
+    required this.backgroundRefreshDiagnostics,
   });
 
   final SportsRepository repository;
@@ -213,7 +214,7 @@ class DeveloperToolsScreen extends StatefulWidget {
   final String liveActivityStatus;
   final Future<void> Function() onStartLiveActivity;
   final Future<void> Function() onEndLiveActivity;
-  final String backgroundRefreshStatus;
+  final RefreshDiagnosticHistory backgroundRefreshDiagnostics;
 
   @override
   State<DeveloperToolsScreen> createState() => _DeveloperToolsScreenState();
@@ -305,7 +306,30 @@ class _DeveloperToolsScreenState extends State<DeveloperToolsScreen> {
           ),
           _SectionCard(
             title: 'Refresh diagnostics',
-            children: [SelectableText(widget.backgroundRefreshStatus)],
+            trailing: TextButton(
+              key: const ValueKey('clear-refresh-diagnostics'),
+              onPressed: widget.backgroundRefreshDiagnostics.clear,
+              child: const Text('CLEAR'),
+            ),
+            children: [
+              AnimatedBuilder(
+                animation: widget.backgroundRefreshDiagnostics,
+                builder: (context, _) {
+                  final entries = widget.backgroundRefreshDiagnostics.entries;
+                  if (entries.isEmpty) {
+                    return const SelectableText('No refresh diagnostics yet.');
+                  }
+                  return SizedBox(
+                    height: 180,
+                    child: SingleChildScrollView(
+                      child: SelectableText(
+                        entries.map((entry) => entry.displayText).join('\n'),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ],
           ),
           _SectionCard(
             title: 'Push notification diagnostics',
