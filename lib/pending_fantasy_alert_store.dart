@@ -18,6 +18,7 @@ class PendingFantasyAlertStore {
 
   int get length => _pending.length;
   PendingFantasyAlert? get next => _pending.isEmpty ? null : _pending.first;
+  List<PendingFantasyAlert> get items => List.unmodifiable(_pending);
 
   bool add(PendingFantasyAlert alert) {
     if (_seen.contains(alert.id)) return false;

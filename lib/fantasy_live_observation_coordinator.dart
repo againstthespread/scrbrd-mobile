@@ -484,7 +484,6 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
           if (session == null) continue;
           results[config.id] = await _observeSleeperSession(
             session,
-            sendAlerts,
             generation,
             startupOnly,
           );
@@ -493,7 +492,6 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
           if (session == null) continue;
           results[config.id] = await _observeEspnSession(
             session,
-            sendAlerts,
             generation,
             startupOnly,
           );
@@ -505,6 +503,9 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         await _clearPersistentFantasy();
       }
       final alerts = [for (final result in results.values) ...result.alerts];
+      if (sendAlerts && !startupOnly) {
+        await _drainPendingAlertsAcrossSessions(generation);
+      }
       final failures = results.values
           .where((result) => !result.succeeded)
           .length;
@@ -540,7 +541,6 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
 
   Future<FantasyObservationResult> _observeSleeperSession(
     SleeperLeagueObservationSession session,
-    bool sendAlerts,
     int generation,
     bool startupOnly,
   ) async {
@@ -618,6 +618,10 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
           FantasyPointAlert(
             delta: delta,
             player: metadata[delta.playerId],
+            canonicalPlayerId: _sleeperCanonicalPlayerId(
+              delta.playerId,
+              metadata[delta.playerId],
+            ),
             userName: matchup.team.name,
             userScore: matchup.team.matchup.points,
             opponentName: matchup.opponent.name,
@@ -638,23 +642,16 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
           ),
         );
       }
-      final deliveryError = sendAlerts
-          ? await _drainPendingAlerts(pendingStore, config.id, isCurrent)
-          : null;
       return FantasyObservationResult(
         configured: true,
         baselineReset: deltaResult.baselineReset,
         alerts: List.unmodifiable(alerts),
-        summary: deliveryError != null
-            ? 'Observed ${alerts.length} point changes; delivery failed; '
-                  '${pendingStore.length} alerts retained.'
-            : deltaResult.baselineReset
+        summary: deltaResult.baselineReset
             ? 'Baseline established; no historical alerts.'
             : alerts.isEmpty
             ? 'No fantasy point changes.'
             : 'Observed ${alerts.length} fantasy point change(s).',
         matchup: matchup,
-        deliveryError: deliveryError,
         pendingAlerts: pendingStore.length,
       );
     } on Object catch (error) {
@@ -672,7 +669,6 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
 
   Future<FantasyObservationResult> _observeEspnSession(
     EspnLeagueObservationSession session,
-    bool sendAlerts,
     int generation,
     bool startupOnly,
   ) async {
@@ -745,6 +741,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
             delta: delta,
             player: null,
             playerName: players[delta.playerId]?.name,
+            canonicalPlayerId: 'espn-player:${delta.playerId}',
             userName: matchup.team.team.name,
             userScore: matchup.team.totalPoints,
             opponentName: matchup.opponent?.team.name ?? 'BYE',
@@ -763,25 +760,15 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
           ),
         );
       }
-      final deliveryError = sendAlerts
-          ? await _drainPendingAlerts(
-              session.pendingStore,
-              config.id,
-              isCurrent,
-            )
-          : null;
       return FantasyObservationResult(
         configured: true,
         baselineReset: deltaResult.baselineReset,
         alerts: List.unmodifiable(alerts),
-        summary: deliveryError != null
-            ? 'Observed ${alerts.length} point changes; delivery failed; ${session.pendingStore.length} alerts retained.'
-            : deltaResult.baselineReset
+        summary: deltaResult.baselineReset
             ? 'Baseline established; no historical alerts.'
             : alerts.isEmpty
             ? 'No fantasy point changes.'
             : 'Observed ${alerts.length} fantasy point change(s).',
-        deliveryError: deliveryError,
         pendingAlerts: session.pendingStore.length,
       );
     } on Object catch (error) {
@@ -805,27 +792,66 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         summary: 'Connection or configuration changed; baseline deferred.',
       );
 
-  Future<Object?> _drainPendingAlerts(
-    PendingFantasyAlertStore pendingStore,
-    String configurationId,
-    bool Function() isCurrent,
-  ) async {
-    // observe() owns the drain, so concurrent observations cannot resend its head.
-    while (isBleConnected() && isCurrent()) {
-      final pending = pendingStore.next;
-      if (pending == null) return null;
+  String _sleeperCanonicalPlayerId(
+    String sleeperPlayerId,
+    SleeperFantasyPlayer? player,
+  ) {
+    final espnId = player?.espnPlayerId?.trim();
+    return espnId == null || espnId.isEmpty
+        ? 'sleeper-player:$sleeperPlayerId'
+        : 'espn-player:$espnId';
+  }
+
+  Future<void> _drainPendingAlertsAcrossSessions(int generation) async {
+    // Queues remain league-local. This pass only combines their presentation.
+    final pending = <_PendingAlertReference>[
+      for (final session in _sessions.values)
+        for (final alert in session.pendingStore.items)
+          _PendingAlertReference(session.pendingStore, alert),
+      for (final session in _espnSessions.values)
+        for (final alert in session.pendingStore.items)
+          _PendingAlertReference(session.pendingStore, alert),
+    ];
+    final grouped = <String, List<_PendingAlertReference>>{};
+    for (final item in pending) {
+      final key =
+          item.pending.alert.canonicalPlayerId ??
+          'transition:${item.pending.id}';
+      grouped.putIfAbsent(key, () => []).add(item);
+    }
+    for (final group in grouped.values) {
+      if (!isBleConnected() || generation != _generation) return;
+      final first = group.first.pending.alert;
+      final sameDelta = group.every(
+        (item) => item.pending.alert.delta.delta == first.delta.delta,
+      );
+      final presentation = group.length == 1
+          ? first
+          : FantasyPointAlert(
+              delta: first.delta,
+              player: first.player,
+              playerName: first.playerName,
+              canonicalPlayerId: first.canonicalPlayerId,
+              headline: 'Scored in ${group.length} leagues',
+              userName: first.userName,
+              userScore: first.userScore,
+              opponentName: first.opponentName,
+              opponentScore: first.opponentScore,
+            );
       try {
-        await transport.sendFantasyAlert(pending.alert);
-        pendingStore.markDelivered(pending.id);
-        _diagnose('Fantasy alert delivered: ${pending.id}');
-      } on Object catch (error) {
+        await transport.sendFantasyAlert(presentation);
+        for (final item in group) {
+          item.store.markDelivered(item.pending.id);
+        }
         _diagnose(
-          'Fantasy alert $configurationId retained after BLE failure: $error',
+          'Fantasy alert delivered: ${group.length} league transition(s); '
+          'sharedDelta=$sameDelta',
         );
-        return error;
+      } on Object catch (error) {
+        _diagnose('Fantasy alert group retained after BLE failure: $error');
+        return;
       }
     }
-    return null;
   }
 
   Future<void> _syncPersistentMatchup(
@@ -917,4 +943,11 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   }
 
   void _diagnose(String message) => onDiagnostic?.call(message);
+}
+
+class _PendingAlertReference {
+  const _PendingAlertReference(this.store, this.pending);
+
+  final PendingFantasyAlertStore store;
+  final PendingFantasyAlert pending;
 }

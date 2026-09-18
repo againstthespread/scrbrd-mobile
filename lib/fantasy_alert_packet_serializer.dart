@@ -20,7 +20,10 @@ class FantasyAlertPacketSerializer {
           alert.playerName ?? alert.player?.fullName ?? alert.delta.playerId,
           maximumPlayerBytes,
         ),
-        'headline': '',
+        'headline': truncateUtf8DisplayText(
+          alert.headline,
+          maximumHeadlineBytes,
+        ),
         'points': alert.delta.delta,
         'userName': truncateUtf8DisplayText(
           alert.userName,

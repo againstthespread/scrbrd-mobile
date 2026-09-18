@@ -24,6 +24,7 @@ void main() {
   late Map<String, double> points;
   late Set<String> failures;
   late Set<String> espnFailures;
+  late Map<String, SleeperFantasyPlayer> metadata;
   late List<String> loads;
   Completer<void>? loadGate;
   Completer<void>? loadStarted;
@@ -48,6 +49,7 @@ void main() {
     points = {'a': 10, 'b': 20, 'c': 30};
     failures = {};
     espnFailures = {};
+    metadata = {};
     loads = [];
     loadGate = null;
     loadStarted = null;
@@ -73,7 +75,10 @@ void main() {
         if (failures.contains(id)) throw StateError('Unavailable $id');
         return _snapshot(id, points[id]!);
       },
-      metadataResolver: (_) async => {},
+      metadataResolver: (ids) async => {
+        for (final id in ids)
+          if (metadata[id] != null) id: metadata[id]!,
+      },
       espnMatchupLoader: (_, leagueId, teamId) async {
         if (espnFailures.contains(leagueId)) {
           throw StateError('ESPN unavailable $leagueId');
@@ -136,7 +141,7 @@ void main() {
   );
 
   test(
-    'same player and exact point transition in two leagues produces two alerts',
+    'same Sleeper player in two leagues produces one aggregate delivery',
     () async {
       points['b'] = 10;
       await coordinator.observe();
@@ -144,12 +149,10 @@ void main() {
       points['b'] = 11;
       final result = await coordinator.observe();
       expect(result.alertCount, 2);
-      expect(transport.alerts.map((a) => a.delta.playerId), [
-        'shared-player',
-        'shared-player',
-      ]);
+      expect(transport.alerts.single.delta.playerId, 'shared-player');
+      expect(transport.alerts.single.headline, 'Scored in 2 leagues');
       expect((await coordinator.observe()).alerts, isEmpty);
-      expect(transport.alerts.length, 2);
+      expect(transport.alerts.length, 1);
     },
   );
 
@@ -264,30 +267,27 @@ void main() {
       expect(coordinator.status.pendingAlerts, 2);
       transport.connected = true;
       await coordinator.observe();
-      expect(transport.alerts.length, 2);
+      expect(transport.alerts.length, 1);
       expect(coordinator.status.pendingAlerts, 0);
     },
   );
 
   test(
-    'delivery failure retains only affected queue while another league delivers',
+    'failed aggregate delivery retains every included queue entry',
     () async {
       await coordinator.observe();
       transport.failTeams.add('Team a');
       points['a'] = 11;
       points['b'] = 21;
-      final result = await coordinator.observe();
-      expect(result.leagues['sleeper:a']!.deliveryError, isStateError);
-      expect(result.leagues['sleeper:a']!.pendingAlerts, 1);
-      expect(result.leagues['sleeper:b']!.succeeded, isTrue);
+      await coordinator.observe();
       expect(coordinator.pendingAlertsByLeague, {
         'sleeper:a': 1,
-        'sleeper:b': 0,
+        'sleeper:b': 1,
       });
-      expect(transport.alerts.single.userName, 'Team b');
+      expect(transport.alerts, isEmpty);
       transport.failTeams.clear();
       await coordinator.observe();
-      expect(transport.alerts.map((a) => a.userName), ['Team b', 'Team a']);
+      expect(transport.alerts.single.headline, 'Scored in 2 leagues');
       expect(coordinator.status.pendingAlerts, 0);
     },
   );
@@ -526,6 +526,41 @@ void main() {
     });
   });
 
+  test('matching Sleeper ESPN metadata aggregates across providers', () async {
+    await save('c', provider: FantasyProvider.espn);
+    metadata['shared-player'] = _player('shared-player', espnId: '-16001');
+    await coordinator.observe();
+    points['a'] = 11;
+    points['c'] = 31;
+    final result = await coordinator.observe();
+    expect(result.alertCount, 2);
+    expect(transport.alerts, hasLength(1));
+    expect(transport.alerts.single.headline, 'Scored in 2 leagues');
+  });
+
+  test('unmapped Sleeper and ESPN identities do not aggregate', () async {
+    await save('c', provider: FantasyProvider.espn);
+    await coordinator.observe();
+    points['a'] = 11;
+    points['c'] = 31;
+    await coordinator.observe();
+    expect(transport.alerts, hasLength(2));
+  });
+
+  test(
+    'aggregate retains an included delta instead of summing league scoring',
+    () async {
+      await save('c', provider: FantasyProvider.espn);
+      metadata['shared-player'] = _player('shared-player', espnId: '-16001');
+      await coordinator.observe();
+      points['a'] = 12;
+      points['c'] = 31;
+      await coordinator.observe();
+      expect(transport.alerts.single.headline, 'Scored in 2 leagues');
+      expect(transport.alerts.single.delta.delta, 2);
+    },
+  );
+
   test(
     'two ESPN leagues retain independent baselines and alert state',
     () async {
@@ -751,3 +786,14 @@ FantasyMatchupSnapshot _espnMatchup(String id, double points) {
     ),
   );
 }
+
+SleeperFantasyPlayer _player(String id, {String? espnId}) =>
+    SleeperFantasyPlayer(
+      sleeperPlayerId: id,
+      fullName: 'Shared player',
+      firstName: 'Shared',
+      lastName: 'Player',
+      position: 'WR',
+      nflTeam: 'TEAM',
+      espnPlayerId: espnId,
+    );

@@ -10,6 +10,8 @@ class FantasyPointAlert {
     required this.opponentName,
     required this.opponentScore,
     this.playerName,
+    this.canonicalPlayerId,
+    this.headline = '',
   });
 
   final FantasyPointDelta delta;
@@ -19,4 +21,8 @@ class FantasyPointAlert {
   final String opponentName;
   final double opponentScore;
   final String? playerName;
+
+  /// Stable real-world entity identity used only for delivery aggregation.
+  final String? canonicalPlayerId;
+  final String headline;
 }
