@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sports_hub_mobile/device_transport.dart';
 import 'package:sports_hub_mobile/fantasy_alert_transport.dart';
 import 'package:sports_hub_mobile/fantasy_league_config.dart';
 import 'package:sports_hub_mobile/fantasy_live_observation_coordinator.dart';
@@ -11,11 +12,15 @@ import 'package:sports_hub_mobile/fantasy_matchup_transport.dart';
 import 'package:sports_hub_mobile/fantasy_point_alert.dart';
 import 'package:sports_hub_mobile/fantasy_point_delta_tracker.dart';
 import 'package:sports_hub_mobile/fantasy_provider_models.dart';
+import 'package:sports_hub_mobile/game_data.dart';
+import 'package:sports_hub_mobile/golf_leaderboard.dart';
 import 'package:sports_hub_mobile/pending_fantasy_alert_store.dart';
+import 'package:sports_hub_mobile/session_aware_device_sender.dart';
 import 'package:sports_hub_mobile/sleeper_api_client.dart';
 import 'package:sports_hub_mobile/sleeper_fantasy_repository.dart';
 import 'package:sports_hub_mobile/sleeper_models.dart';
 import 'package:sports_hub_mobile/sleeper_player_repository.dart';
+import 'package:sports_hub_mobile/tracked_device_session.dart';
 
 void main() {
   late SharedPreferencesFantasyLeagueConfigStore store;
@@ -330,6 +335,134 @@ void main() {
   );
 
   test(
+    'startup sends a one-league slate and establishes its baseline',
+    () async {
+      await store.remove(FantasyProvider.sleeper, 'b');
+
+      expect(await coordinator.syncStartupCategory(), isTrue);
+
+      expect(transport.slates, hasLength(1));
+      expect(transport.slates.single.map((entry) => entry.identity), [
+        'sleeper:a',
+      ]);
+      expect(loads, ['a', 'a']);
+      expect(transport.alerts, isEmpty);
+      expect(coordinator.status.pendingAlerts, 0);
+    },
+  );
+
+  test(
+    'startup passes every slate entry to transport in builder order',
+    () async {
+      await save('c');
+      await coordinator.setPrimaryLeague('sleeper:b');
+      transport.slates.clear();
+      transport.matchups.clear();
+
+      expect(await coordinator.syncStartupCategory(), isTrue);
+
+      expect(transport.slates.single.map((entry) => entry.identity), [
+        'sleeper:b',
+        'sleeper:a',
+        'sleeper:c',
+      ]);
+      expect(transport.matchups, isEmpty);
+    },
+  );
+
+  test(
+    'production session-aware startup sends configured Sleeper and ESPN leagues',
+    () async {
+      await store.clear();
+      await save('sleeper');
+      await save('espn', provider: FantasyProvider.espn);
+      points['sleeper'] = 10;
+      points['espn'] = 20;
+      final api = SleeperApiClient(
+        client: MockClient(
+          (_) async => throw StateError('Tests must not use the network'),
+        ),
+      );
+      final productionCoordinator = FantasyLiveObservationCoordinator(
+        leagueConfigStore: store,
+        repository: SleeperFantasyRepository(api),
+        playerRepository: SleeperPlayerRepository(apiClient: api),
+        transport: SessionAwareDeviceSender(
+          transport: transport,
+          session: TrackedDeviceSession(),
+        ),
+        isBleConnected: () => transport.connected,
+        matchupLoader: (id) async => _snapshot(id, points[id]!),
+        espnMatchupLoader: (_, leagueId, _) async =>
+            _espnMatchup(leagueId, points[leagueId]!),
+      );
+      addTearDown(productionCoordinator.dispose);
+
+      expect(await productionCoordinator.syncStartupCategory(), isTrue);
+
+      expect(transport.slates, hasLength(1));
+      expect(
+        transport.slates.single.map((entry) => entry.identity),
+        containsAll(['sleeper:sleeper', 'espn:espn']),
+      );
+      expect(transport.matchups, isEmpty);
+    },
+  );
+
+  test(
+    'startup sends an empty slate when no configured team is selected',
+    () async {
+      await save('a', team: null);
+      await save('b', team: null);
+
+      expect(await coordinator.syncStartupCategory(), isTrue);
+
+      expect(transport.slates, [isEmpty]);
+      expect(loads, isEmpty);
+      expect(transport.matchups, isEmpty);
+    },
+  );
+
+  test(
+    'startup slate suppresses the legacy standalone primary matchup send',
+    () async {
+      await coordinator.syncStartupCategory();
+
+      expect(transport.slates, hasLength(1));
+      expect(transport.matchups, isEmpty);
+    },
+  );
+
+  test('startup slate failure still establishes no-alert baselines', () async {
+    transport.failSlate = true;
+
+    await expectLater(
+      coordinator.syncStartupCategory(),
+      throwsA(isA<StateError>()),
+    );
+
+    expect(transport.slates, isEmpty);
+    expect(loads, ['a', 'b', 'a', 'b']);
+    expect(transport.alerts, isEmpty);
+    expect(coordinator.status.pendingAlerts, 0);
+    points['a'] = 11;
+    expect((await coordinator.observe()).alerts.single.delta.delta, 1);
+  });
+
+  test(
+    'regular fantasy observation does not resend the startup slate',
+    () async {
+      await coordinator.syncStartupCategory();
+      points['a'] = 11;
+
+      final result = await coordinator.observe();
+
+      expect(transport.slates, hasLength(1));
+      expect(result.alertCount, 1);
+    },
+  );
+
+  test(
     'reconnect discards stale pending alerts and baselines every league',
     () async {
       await coordinator.establishStartupBaseline();
@@ -458,7 +591,8 @@ void main() {
       expect(transport.matchups.single.leagueName, 'League a');
       await coordinator.setPrimaryLeague('sleeper:b');
       expect(await coordinator.syncStartupCategory(), isTrue);
-      expect(transport.matchups.last.leagueName, 'League b');
+      expect(transport.slates.last.first.identity, 'sleeper:b');
+      expect(transport.matchups.last.leagueName, 'League a');
       points['a'] = 11;
       points['b'] = 21;
       final result = await coordinator.observe();
@@ -692,11 +826,18 @@ void main() {
   );
 }
 
-class _Transport implements FantasyAlertTransport, FantasyMatchupTransport {
+class _Transport
+    implements
+        DeviceTransport,
+        FantasyAlertTransport,
+        FantasyMatchupTransport,
+        FantasySlateTransport {
   bool connected = true;
+  bool failSlate = false;
   final failTeams = <String>{};
   final alerts = <FantasyPointAlert>[];
   final matchups = <FantasyMatchupDisplayData>[];
+  final slates = <List<FantasyMatchupSlateEntry>>[];
 
   @override
   Future<void> sendFantasyAlert(FantasyPointAlert alert) async {
@@ -705,8 +846,26 @@ class _Transport implements FantasyAlertTransport, FantasyMatchupTransport {
   }
 
   @override
+  Future<void> sendControlCommand(String command) async {}
+
+  @override
+  Future<void> sendGameData(GameData gameData) async {}
+
+  @override
+  Future<void> sendGameSlate(List<GameData> games) async {}
+
+  @override
+  Future<void> sendGolfLeaderboard(GolfLeaderboard leaderboard) async {}
+
+  @override
   Future<void> sendFantasyMatchup(FantasyMatchupDisplayData data) async =>
       matchups.add(data);
+
+  @override
+  Future<void> sendFantasySlate(List<FantasyMatchupSlateEntry> entries) async {
+    if (failSlate) throw StateError('Fantasy slate send failed');
+    slates.add(List.unmodifiable(entries));
+  }
 
   @override
   Future<void> clearFantasyMatchup() async {}

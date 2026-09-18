@@ -10,6 +10,7 @@ import 'fantasy_primary_league_store.dart';
 import 'sleeper_league_observation_session.dart';
 import 'fantasy_device_session.dart';
 import 'fantasy_matchup_display_data.dart';
+import 'fantasy_matchup_slate_builder.dart';
 import 'fantasy_matchup_transport.dart';
 import 'fantasy_provider_models.dart';
 import 'fantasy_point_alert.dart';
@@ -410,22 +411,46 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     return true;
   }
 
-  Future<void> establishStartupBaseline() async {
-    await _observe(startupOnly: true, sendAlerts: false);
+  Future<void> establishStartupBaseline({
+    bool syncPersistentMatchup = true,
+  }) async {
+    await _observe(
+      startupOnly: true,
+      sendAlerts: false,
+      syncPersistentMatchup: syncPersistentMatchup,
+    );
   }
 
   Future<bool> syncStartupCategory() async {
     if (!_deviceContentEnabled) return false;
     await _reconcile();
-    if (_primaryId?.startsWith('espn:') ?? false) {
-      try {
-        await syncPrimaryEspnMatchup();
-      } on Object {
-        // Sleeper startup baselines still establish independently below.
+    var slateSent = false;
+    var slateAttempted = false;
+    final slateTransport = matchupTransport;
+    try {
+      if (slateTransport is FantasySlateTransport && isBleConnected()) {
+        slateAttempted = true;
+        final transport = slateTransport as FantasySlateTransport;
+        final builder = FantasyMatchupSlateBuilder(
+          configStore: leagueConfigStore,
+          primaryStore: primaryStore,
+          loadSleeper: (config) async {
+            final snapshot = await _matchupLoader(config.leagueId);
+            return snapshot.matchupForRoster(int.parse(config.teamId!));
+          },
+          loadEspn: (config) => _espnMatchupLoader(
+            currentFantasySeason(),
+            config.leagueId,
+            config.teamId!,
+          ),
+        );
+        await transport.sendFantasySlate(await builder.build());
+        slateSent = true;
       }
+    } finally {
+      await establishStartupBaseline(syncPersistentMatchup: !slateAttempted);
     }
-    await establishStartupBaseline();
-    return deviceSession.baseline != null;
+    return slateSent || deviceSession.baseline != null;
   }
 
   Future<void> removeConfiguration() async {
@@ -440,6 +465,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   Future<FantasyObservationResult> _observe({
     bool sendAlerts = true,
     bool startupOnly = false,
+    bool syncPersistentMatchup = true,
   }) async {
     if (!_deviceContentEnabled) {
       for (final session in _sessions.values) {
@@ -486,6 +512,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
             session,
             generation,
             startupOnly,
+            syncPersistentMatchup,
           );
         } else if (config.provider == FantasyProvider.espn) {
           final session = _espnSessions[config.id];
@@ -494,6 +521,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
             session,
             generation,
             startupOnly,
+            syncPersistentMatchup,
           );
         }
       }
@@ -543,6 +571,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     SleeperLeagueObservationSession session,
     int generation,
     bool startupOnly,
+    bool syncPersistentMatchup,
   ) async {
     final config = session.config;
     final pendingStore = session.pendingStore;
@@ -556,7 +585,10 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       if (startupOnly && session.baselineEstablished) {
         final matchup = session.latestMatchup;
         final context = session.observationContext;
-        if (config.id == _primaryId && matchup != null && context != null) {
+        if (syncPersistentMatchup &&
+            config.id == _primaryId &&
+            matchup != null &&
+            context != null) {
           await _syncPersistentMatchup(
             matchup,
             context,
@@ -580,7 +612,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
           '${matchup.team.roster.rosterId}|'
           '${matchup.opponent.roster.rosterId}|'
           '${matchup.team.matchup.matchupId}';
-      if (config.id == _primaryId) {
+      if (syncPersistentMatchup && config.id == _primaryId) {
         await _syncPersistentMatchup(
           matchup,
           context,
@@ -671,6 +703,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     EspnLeagueObservationSession session,
     int generation,
     bool startupOnly,
+    bool syncPersistentMatchup,
   ) async {
     final config = session.config;
     final revision = session.revision;
@@ -681,7 +714,9 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     try {
       if (startupOnly && session.baselineEstablished) {
         final matchup = session.latestMatchup;
-        if (config.id == _primaryId && matchup != null) {
+        if (syncPersistentMatchup &&
+            config.id == _primaryId &&
+            matchup != null) {
           await _syncPersistentNormalizedMatchup(
             matchup,
             session.observationContext!,
@@ -705,7 +740,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       final context =
           '${config.id}|${matchup.scoringPeriod}|${matchup.matchupPeriod}|'
           '${matchup.team.team.id}|${matchup.opponent?.team.id ?? 'bye'}';
-      if (config.id == _primaryId) {
+      if (syncPersistentMatchup && config.id == _primaryId) {
         await _syncPersistentNormalizedMatchup(
           matchup,
           context,

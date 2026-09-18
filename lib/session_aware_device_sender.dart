@@ -9,7 +9,11 @@ import 'sports_league.dart';
 import 'tracked_device_session.dart';
 
 class SessionAwareDeviceSender
-    implements DeviceTransport, FantasyAlertTransport, FantasyMatchupTransport {
+    implements
+        DeviceTransport,
+        FantasyAlertTransport,
+        FantasyMatchupTransport,
+        FantasySlateTransport {
   const SessionAwareDeviceSender({
     required this.transport,
     required this.session,
@@ -89,6 +93,17 @@ class SessionAwareDeviceSender
     }
     return (fantasyTransport as FantasyMatchupTransport).sendFantasyMatchup(
       matchup,
+    );
+  }
+
+  @override
+  Future<void> sendFantasySlate(List<FantasyMatchupSlateEntry> entries) {
+    final fantasyTransport = transport;
+    if (fantasyTransport is! FantasySlateTransport) {
+      throw UnsupportedError('Fantasy-slate transport is unavailable.');
+    }
+    return (fantasyTransport as FantasySlateTransport).sendFantasySlate(
+      entries,
     );
   }
 
