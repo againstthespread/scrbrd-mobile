@@ -34,7 +34,11 @@ typedef BleWriteWithResponse =
     });
 
 class BluetoothDeviceTransport
-    implements DeviceTransport, FantasyAlertTransport, FantasyMatchupTransport {
+    implements
+        DeviceTransport,
+        FantasyAlertTransport,
+        FantasyMatchupTransport,
+        FantasySlateTransport {
   BluetoothDeviceTransport({
     this.protocol = const SportsHubBleProtocol(),
     this.serializer = const GamePacketSerializer(),
@@ -309,6 +313,20 @@ class BluetoothDeviceTransport
   @override
   Future<void> sendFantasyMatchup(FantasyMatchupDisplayData matchup) =>
       _sendPacket(fantasyMatchupSerializer.serialize(matchup));
+
+  @override
+  Future<void> sendFantasySlate(List<FantasyMatchupSlateEntry> entries) async {
+    await _sendPacket(fantasyMatchupSerializer.serializeSlateStart());
+    for (final entry in entries) {
+      await _sendPacket(
+        fantasyMatchupSerializer.serialize(
+          entry.matchup,
+          identity: entry.identity,
+        ),
+      );
+    }
+    await _sendPacket(fantasyMatchupSerializer.serializeSlateEnd());
+  }
 
   @override
   Future<void> clearFantasyMatchup() =>

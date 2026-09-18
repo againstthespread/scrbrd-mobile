@@ -27,6 +27,23 @@ void main() {
     expect(json, containsPair('status', 'LIVE'));
   });
 
+  test('serializes identified fantasy slate packets', () {
+    final entry =
+        jsonDecode(
+              utf8.decode(serializer.serialize(matchup, identity: 'espn:123')),
+            )
+            as Map<String, dynamic>;
+    expect(entry['identity'], 'espn:123');
+    expect(
+      jsonDecode(utf8.decode(serializer.serializeSlateStart()))['type'],
+      'fantasy_slate_start',
+    );
+    expect(
+      jsonDecode(utf8.decode(serializer.serializeSlateEnd()))['type'],
+      'fantasy_slate_end',
+    );
+  });
+
   test('long external names are safely truncated to protocol limits', () {
     final bytes = serializer.serialize(
       const FantasyMatchupDisplayData(

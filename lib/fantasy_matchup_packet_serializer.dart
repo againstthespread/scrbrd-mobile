@@ -10,7 +10,7 @@ class FantasyMatchupPacketSerializer {
   static const maxLeagueNameLength = 48;
   static const maxTeamNameLength = 20;
 
-  List<int> serialize(FantasyMatchupDisplayData data) {
+  List<int> serialize(FantasyMatchupDisplayData data, {String? identity}) {
     final leagueName = truncateUtf8DisplayText(
       data.leagueName,
       maxLeagueNameLength,
@@ -32,19 +32,19 @@ class FantasyMatchupPacketSerializer {
     if (data.week < 1 || data.week > 30) {
       throw const FormatException('Fantasy week must be between 1 and 30.');
     }
-    final bytes = utf8.encode(
-      jsonEncode({
-        'version': 1,
-        'type': 'fantasy_matchup',
-        'leagueName': leagueName,
-        'userName': userName,
-        'userScore': data.userScore,
-        'opponentName': opponentName,
-        'opponentScore': data.opponentScore,
-        'week': data.week,
-        'status': data.status.wireValue,
-      }),
-    );
+    final packet = <String, Object?>{
+      'version': 1,
+      'type': 'fantasy_matchup',
+      'leagueName': leagueName,
+      'userName': userName,
+      'userScore': data.userScore,
+      'opponentName': opponentName,
+      'opponentScore': data.opponentScore,
+      'week': data.week,
+      'status': data.status.wireValue,
+    };
+    if (identity != null) packet['identity'] = identity;
+    final bytes = utf8.encode(jsonEncode(packet));
     if (bytes.length > maxPacketBytes) {
       throw const FormatException('Fantasy matchup packet exceeds 512 bytes.');
     }
@@ -53,6 +53,12 @@ class FantasyMatchupPacketSerializer {
 
   List<int> serializeClear() =>
       utf8.encode(jsonEncode({'version': 1, 'type': 'fantasy_clear'}));
+
+  List<int> serializeSlateStart() =>
+      utf8.encode(jsonEncode({'version': 1, 'type': 'fantasy_slate_start'}));
+
+  List<int> serializeSlateEnd() =>
+      utf8.encode(jsonEncode({'version': 1, 'type': 'fantasy_slate_end'}));
 
   void _validateText(String field, String value) {
     if (value.isEmpty) {
