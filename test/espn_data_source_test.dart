@@ -8,16 +8,19 @@ import 'package:sports_hub_mobile/sports_data_provider.dart';
 import 'package:sports_hub_mobile/sports_league.dart';
 
 void main() {
-  test('provider selection defaults to SportsDataIO', () {
-    expect(selectSportsDataProvider(''), SportsDataProvider.sportsDataIO);
-    expect(
-      selectSportsDataProvider('unknown'),
-      SportsDataProvider.sportsDataIO,
-    );
+  test('provider selection defaults to ESPN without an override', () {
+    expect(selectSportsDataProvider(), SportsDataProvider.espn);
   });
 
-  test('provider selection accepts ESPN case-insensitively', () {
+  test('provider selection accepts an explicit ESPN override', () {
     expect(selectSportsDataProvider(' ESPN '), SportsDataProvider.espn);
+  });
+
+  test('provider selection accepts SportsDataIO as an explicit fallback', () {
+    expect(
+      selectSportsDataProvider('sportsdataio'),
+      SportsDataProvider.sportsDataIO,
+    );
   });
 
   test(

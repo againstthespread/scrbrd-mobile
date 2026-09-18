@@ -18,11 +18,11 @@ SportsDataProvider selectSportsDataProvider([String? configuredValue]) {
       configuredValue ??
       const String.fromEnvironment(
         'SPORTS_DATA_PROVIDER',
-        defaultValue: 'sportsdataio',
+        defaultValue: 'espn',
       );
-  return value.trim().toLowerCase() == 'espn'
-      ? SportsDataProvider.espn
-      : SportsDataProvider.sportsDataIO;
+  return value.trim().toLowerCase() == 'sportsdataio'
+      ? SportsDataProvider.sportsDataIO
+      : SportsDataProvider.espn;
 }
 
 SportsRepository createSportsRepository({SportsDataProvider? provider}) {
