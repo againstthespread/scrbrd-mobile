@@ -8,7 +8,6 @@ import 'live_games_screen.dart';
 import 'push_notification_service.dart';
 import 'sports_repository.dart';
 import 'tracked_device_session.dart';
-import 'sleeper_fantasy_config.dart';
 import 'sleeper_player_repository.dart';
 import 'favorites_screen.dart';
 import 'favorites_store.dart';
@@ -32,7 +31,6 @@ class SettingsScreen extends StatelessWidget {
     required this.backgroundRefreshStatus,
     required this.fantasyCoordinator,
     required this.fantasyPlayerRepository,
-    required this.fantasyConfigStore,
     required this.favoritesStore,
     required this.contentPreferencesStore,
     required this.collegeFootballPreferencesStore,
@@ -50,7 +48,6 @@ class SettingsScreen extends StatelessWidget {
   final String backgroundRefreshStatus;
   final FantasyLiveObservationCoordinator fantasyCoordinator;
   final SleeperPlayerRepository fantasyPlayerRepository;
-  final SleeperFantasyConfigStore fantasyConfigStore;
   final FavoritesStore favoritesStore;
   final DeviceContentPreferencesStore contentPreferencesStore;
   final CollegeFootballPreferencesStore collegeFootballPreferencesStore;
@@ -80,7 +77,6 @@ class SettingsScreen extends StatelessWidget {
                     builder: (_) => FantasyScreen(
                       coordinator: fantasyCoordinator,
                       playerRepository: fantasyPlayerRepository,
-                      configStore: fantasyConfigStore,
                     ),
                   ),
                 ),

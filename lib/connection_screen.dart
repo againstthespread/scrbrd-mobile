@@ -7,6 +7,7 @@ import 'ble_device_state.dart';
 import 'bluetooth_device_transport.dart';
 import 'initial_device_sync_coordinator.dart';
 import 'fantasy_live_observation_coordinator.dart';
+import 'fantasy_league_config.dart';
 import 'fantasy_screen.dart';
 import 'live_activity_diagnostics.dart';
 import 'live_games_screen.dart';
@@ -19,7 +20,6 @@ import 'sports_operation_gate.dart';
 import 'sports_repository.dart';
 import 'session_aware_device_sender.dart';
 import 'sleeper_api_client.dart';
-import 'sleeper_fantasy_config.dart';
 import 'sleeper_fantasy_repository.dart';
 import 'sleeper_player_repository.dart';
 import 'tracked_device_session.dart';
@@ -60,7 +60,6 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   late final SleeperApiClient _sleeperApiClient;
   late final SleeperFantasyRepository _fantasyRepository;
   late final SleeperPlayerRepository _sleeperPlayerRepository;
-  late final SleeperFantasyConfigStore _fantasyConfigStore;
   late final FantasyLiveObservationCoordinator _fantasyCoordinator;
   late final FavoritesStore _favoritesStore;
   late final DeviceContentPreferencesStore _contentPreferencesStore;
@@ -115,9 +114,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     _sleeperPlayerRepository = SleeperPlayerRepository(
       apiClient: _sleeperApiClient,
     );
-    _fantasyConfigStore = SharedPreferencesSleeperFantasyConfigStore();
     _fantasyCoordinator = FantasyLiveObservationCoordinator(
-      configStore: _fantasyConfigStore,
+      leagueConfigStore: SharedPreferencesFantasyLeagueConfigStore(),
       repository: _fantasyRepository,
       playerRepository: _sleeperPlayerRepository,
       transport: _deviceSender,
@@ -308,7 +306,6 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           backgroundRefreshStatus: _backgroundUpdaterStatus,
           fantasyCoordinator: _fantasyCoordinator,
           fantasyPlayerRepository: _sleeperPlayerRepository,
-          fantasyConfigStore: _fantasyConfigStore,
           favoritesStore: _favoritesStore,
           contentPreferencesStore: _contentPreferencesStore,
           collegeFootballPreferencesStore: _collegeFootballPreferencesStore,
@@ -323,7 +320,6 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         builder: (_) => FantasyScreen(
           coordinator: _fantasyCoordinator,
           playerRepository: _sleeperPlayerRepository,
-          configStore: _fantasyConfigStore,
         ),
       ),
     );

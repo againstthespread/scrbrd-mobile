@@ -1,4 +1,5 @@
 import 'sleeper_models.dart';
+import 'fantasy_provider_models.dart';
 import 'utf8_display_text.dart';
 
 enum FantasyMatchupDisplayStatus {
@@ -41,6 +42,25 @@ class FantasyMatchupDisplayData {
       opponentScore: matchup.opponent.matchup.points,
       week: matchup.week,
       status: status,
+    );
+  }
+
+  factory FantasyMatchupDisplayData.fromNormalized(
+    FantasyMatchupSnapshot matchup,
+  ) {
+    final opponent = matchup.opponent;
+    final hasScoring =
+        matchup.team.totalPoints != 0 || (opponent?.totalPoints ?? 0) != 0;
+    return FantasyMatchupDisplayData(
+      leagueName: truncateUtf8DisplayText(matchup.league.name, 48),
+      userName: truncateUtf8DisplayText(matchup.team.team.name, 20),
+      userScore: matchup.team.totalPoints,
+      opponentName: truncateUtf8DisplayText(opponent?.team.name ?? 'BYE', 20),
+      opponentScore: opponent?.totalPoints ?? 0,
+      week: matchup.matchupPeriod,
+      status: hasScoring
+          ? FantasyMatchupDisplayStatus.live
+          : FantasyMatchupDisplayStatus.upcoming,
     );
   }
 

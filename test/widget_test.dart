@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sports_hub_mobile/game_editor.dart';
 import 'package:sports_hub_mobile/main.dart';
 
 void main() {
+  setUp(() => SharedPreferences.setMockInitialValues({}));
+
   testWidgets('launches the SCRBRD Home screen', (tester) async {
     await tester.pumpWidget(const SportsHubApp());
+    await tester.pumpAndSettle();
 
     expect(find.text('SCRBRD'), findsOneWidget);
     expect(find.text('Disconnected'), findsOneWidget);
@@ -21,8 +25,15 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Fantasy Football'), findsWidgets);
-    expect(find.text('CONNECT LEAGUE'), findsOneWidget);
+    expect(find.text('My Leagues'), findsOneWidget);
+    expect(find.text('No fantasy leagues connected.'), findsOneWidget);
+    expect(find.text('Add Fantasy League'), findsOneWidget);
     expect(find.textContaining('Developer Tools'), findsNothing);
+    await tester.tap(find.text('Add Fantasy League'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('provider-sleeper')));
+    await tester.pumpAndSettle();
+    expect(find.text('Sleeper League ID'), findsOneWidget);
   });
 
   testWidgets('Settings retains its secondary Fantasy Football route', (
@@ -34,7 +45,8 @@ void main() {
     await tester.tap(find.text('Fantasy Football'));
     await tester.pumpAndSettle();
 
-    expect(find.text('CONNECT LEAGUE'), findsOneWidget);
+    expect(find.text('My Leagues'), findsOneWidget);
+    expect(find.text('Add Fantasy League'), findsOneWidget);
   });
 
   testWidgets('manual editor previews the protocol JSON packet', (

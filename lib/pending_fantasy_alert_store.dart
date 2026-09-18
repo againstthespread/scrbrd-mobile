@@ -1,4 +1,5 @@
 import 'fantasy_point_alert.dart';
+import 'fantasy_league_config.dart';
 import 'fantasy_point_delta_tracker.dart';
 import 'sleeper_models.dart';
 
@@ -35,13 +36,15 @@ class PendingFantasyAlertStore {
 }
 
 String fantasyTransitionId({
+  FantasyProvider provider = FantasyProvider.sleeper,
   required String leagueId,
   required int week,
   required SleeperFantasyMatchup matchup,
   required FantasyPointDelta delta,
 }) =>
-    '$leagueId|$week|${matchup.team.roster.rosterId}|'
-    '${matchup.opponent.roster.rosterId}|${delta.playerId}|'
+    '${provider.name}:$leagueId|$week|${matchup.team.roster.rosterId}|'
+    '${matchup.opponent.roster.rosterId}|${matchup.team.matchup.matchupId}|'
+    '${delta.side.name}|${delta.playerId}|'
     '${delta.previousPoints}|${delta.currentPoints}';
 
 int _compare(PendingFantasyAlert left, PendingFantasyAlert right) {
