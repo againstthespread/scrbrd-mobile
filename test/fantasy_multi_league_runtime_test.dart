@@ -201,7 +201,7 @@ void main() {
       final result = await coordinator.observe();
       expect(result.leagues.keys, ['sleeper:b']);
       expect(result.alerts.single.delta.delta, 1);
-      expect(transport.matchups.last.leagueName, 'League b');
+      expect(transport.slates.last.single.matchup.leagueName, 'League b');
       expect(coordinator.pendingAlertsByLeague.keys, ['sleeper:b']);
     },
   );
@@ -234,7 +234,7 @@ void main() {
       expect(result.leagues['sleeper:a']!.alerts, isEmpty);
       expect(result.leagues['sleeper:a']!.matchup!.team.matchup.points, 15);
       expect(result.leagues['sleeper:b']!.alertCount, 1);
-      expect(transport.matchups.last.userScore, 15);
+      expect(transport.slates.last.first.matchup.userScore, 15);
     },
   );
 
@@ -450,15 +450,119 @@ void main() {
   });
 
   test(
-    'regular fantasy observation does not resend the startup slate',
+    'regular observation refreshes the full slate without legacy sends',
     () async {
       await coordinator.syncStartupCategory();
       points['a'] = 11;
 
       final result = await coordinator.observe();
 
-      expect(transport.slates, hasLength(1));
+      expect(transport.slates, hasLength(2));
+      expect(transport.slates.last.map((entry) => entry.identity), [
+        'sleeper:a',
+        'sleeper:b',
+      ]);
+      expect(transport.slates.last.first.matchup.userScore, 11);
+      expect(transport.matchups, isEmpty);
       expect(result.alertCount, 1);
+    },
+  );
+
+  test(
+    'observation retains last-known-good league in a refreshed slate',
+    () async {
+      await coordinator.observe();
+      failures.add('b');
+      points['a'] = 11;
+
+      await coordinator.observe();
+
+      final slate = transport.slates.last;
+      expect(slate.map((entry) => entry.identity), ['sleeper:a', 'sleeper:b']);
+      expect(slate[0].matchup.userScore, 11);
+      expect(slate[1].matchup.userScore, 20);
+    },
+  );
+
+  test('Sleeper and ESPN coexist in a refreshed observation slate', () async {
+    await save('espn', provider: FantasyProvider.espn);
+    points['espn'] = 25.5;
+    await coordinator.setPrimaryLeague('sleeper:a');
+
+    await coordinator.observe();
+
+    expect(transport.slates.single.map((entry) => entry.identity), [
+      'sleeper:a',
+      'espn:espn',
+      'sleeper:b',
+    ]);
+  });
+
+  test(
+    'never-loaded failed league is omitted from the observation slate',
+    () async {
+      await save('c');
+      failures.add('c');
+
+      await coordinator.observe();
+
+      expect(transport.slates.single.map((entry) => entry.identity), [
+        'sleeper:a',
+        'sleeper:b',
+      ]);
+    },
+  );
+
+  test(
+    'observation sends an empty slate with no valid latest matchups',
+    () async {
+      await save('a', team: null);
+      await save('b', team: null);
+
+      await coordinator.observe();
+
+      expect(transport.slates, [isEmpty]);
+      expect(transport.matchups, isEmpty);
+    },
+  );
+
+  test('observation caps a refreshed slate at firmware capacity', () async {
+    for (var index = 0; index < 7; index++) {
+      final id = 'extra$index';
+      points[id] = 10.0 + index;
+      await save(id);
+    }
+
+    await coordinator.observe();
+
+    expect(transport.slates.single, hasLength(8));
+    expect(transport.slates.single.first.identity, 'sleeper:a');
+  });
+
+  test(
+    'legacy matchup transport retains Primary-only observation updates',
+    () async {
+      final legacy = _LegacyMatchupTransport();
+      final api = SleeperApiClient(
+        client: MockClient(
+          (_) async => throw StateError('Tests must not use the network'),
+        ),
+      );
+      final legacyCoordinator = FantasyLiveObservationCoordinator(
+        leagueConfigStore: store,
+        repository: SleeperFantasyRepository(api),
+        playerRepository: SleeperPlayerRepository(apiClient: api),
+        transport: transport,
+        matchupTransport: legacy,
+        isBleConnected: () => transport.connected,
+        matchupLoader: (id) async => _snapshot(id, points[id]!),
+      );
+      addTearDown(legacyCoordinator.dispose);
+
+      await legacyCoordinator.observe();
+
+      expect(legacy.matchups.single.leagueName, 'League a');
+      expect(transport.slates, isEmpty);
     },
   );
 
@@ -588,11 +692,11 @@ void main() {
     'persisted primary changes only device display, including startup sync',
     () async {
       await coordinator.observe();
-      expect(transport.matchups.single.leagueName, 'League a');
+      expect(transport.slates.single.first.matchup.leagueName, 'League a');
       await coordinator.setPrimaryLeague('sleeper:b');
       expect(await coordinator.syncStartupCategory(), isTrue);
       expect(transport.slates.last.first.identity, 'sleeper:b');
-      expect(transport.matchups.last.leagueName, 'League a');
+      expect(transport.matchups, isEmpty);
       points['a'] = 11;
       points['b'] = 21;
       final result = await coordinator.observe();
@@ -760,10 +864,10 @@ void main() {
       final result = await coordinator.observe();
       expect(result.leagues['sleeper:a']!.alertCount, 1);
       // Editing another league must not steal the persisted primary.
-      expect(transport.matchups.last.leagueName, 'League a');
+      expect(transport.slates.last.first.matchup.leagueName, 'League a');
       await coordinator.setPrimaryLeague('sleeper:c');
       await coordinator.observe();
-      expect(transport.matchups.last.leagueName, 'League c');
+      expect(transport.slates.last.first.matchup.leagueName, 'League c');
       await coordinator.removeConfiguration();
       expect((await store.readAll()).map((c) => c.leagueId), ['a', 'b']);
       expect(
@@ -869,6 +973,18 @@ class _Transport
 
   @override
   Future<void> clearFantasyMatchup() async {}
+}
+
+class _LegacyMatchupTransport implements FantasyMatchupTransport {
+  final matchups = <FantasyMatchupDisplayData>[];
+
+  @override
+  Future<void> clearFantasyMatchup() async {}
+
+  @override
+  Future<void> sendFantasyMatchup(FantasyMatchupDisplayData matchup) async {
+    matchups.add(matchup);
+  }
 }
 
 SleeperLeagueSnapshot _snapshot(String id, double points) =>

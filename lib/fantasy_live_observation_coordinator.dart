@@ -108,8 +108,8 @@ class FantasyRuntimeStatus {
   final bool alertsEnabled;
 }
 
-/// Orchestrates isolated Sleeper sessions. Device RAM holds only the primary
-/// matchup; scoring alerts from every eligible league use the existing transport.
+/// Orchestrates isolated provider sessions. Slate-capable devices retain every
+/// eligible league matchup, with Primary first; scoring alerts stay per-league.
 class FantasyLiveObservationCoordinator extends ChangeNotifier {
   FantasyLiveObservationCoordinator({
     SleeperFantasyConfigStore? configStore,
@@ -498,6 +498,17 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     final generation = _generation;
     try {
       final configs = await _reconcile();
+      final slateTransport = matchupTransport;
+      FantasySlateTransport? activeSlateTransport;
+      if (slateTransport is FantasySlateTransport && isBleConnected()) {
+        // The runtime check narrows the independent transport interface.
+        activeSlateTransport = slateTransport as FantasySlateTransport;
+      }
+      final useSlateTransport = activeSlateTransport != null;
+      // A slate-capable device receives one atomic replacement after every
+      // observation. Legacy transports retain the Primary-only display update.
+      final shouldSyncPersistentMatchup =
+          syncPersistentMatchup && !useSlateTransport;
       final results = <String, FantasyObservationResult>{};
       for (final config in configs) {
         if (generation != _generation) break;
@@ -517,7 +528,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
             session,
             generation,
             startupOnly,
-            syncPersistentMatchup,
+            shouldSyncPersistentMatchup,
           );
         } else if (config.provider == FantasyProvider.espn) {
           final session = _espnSessions[config.id];
@@ -526,14 +537,17 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
             session,
             generation,
             startupOnly,
-            syncPersistentMatchup,
+            shouldSyncPersistentMatchup,
           );
         }
       }
       if (_primaryId == null ||
           (_sessions[_primaryId]?.config.teamId == null &&
               _espnSessions[_primaryId]?.config.teamId == null)) {
-        await _clearPersistentFantasy();
+        if (!useSlateTransport) await _clearPersistentFantasy();
+      }
+      if (useSlateTransport && !startupOnly) {
+        await _syncObservedFantasySlate(activeSlateTransport, configs);
       }
       final alerts = [for (final result in results.values) ...result.alerts];
       if (sendAlerts && !startupOnly) {
@@ -891,6 +905,50 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         _diagnose('Fantasy alert group retained after BLE failure: $error');
         return;
       }
+    }
+  }
+
+  Future<void> _syncObservedFantasySlate(
+    FantasySlateTransport transport,
+    List<FantasyLeagueConfig> configs,
+  ) async {
+    final entries = <FantasyMatchupSlateEntry>[];
+    for (final config in configs.where((config) => config.hasSelectedTeam)) {
+      final display = switch (config.provider) {
+        FantasyProvider.sleeper => _sessions[config.id]?.latestMatchup,
+        FantasyProvider.espn => _espnSessions[config.id]?.latestMatchup,
+      };
+      if (display == null) continue;
+      entries.add(
+        FantasyMatchupSlateEntry(
+          identity: config.id,
+          matchup: config.provider == FantasyProvider.sleeper
+              ? FantasyMatchupDisplayData.fromSleeper(
+                  display as SleeperFantasyMatchup,
+                )
+              : FantasyMatchupDisplayData.fromNormalized(
+                  display as FantasyMatchupSnapshot,
+                ),
+        ),
+      );
+    }
+    entries.sort((left, right) {
+      final leftPrimary = left.identity == _primaryId;
+      final rightPrimary = right.identity == _primaryId;
+      if (leftPrimary != rightPrimary) return leftPrimary ? -1 : 1;
+      final name = left.matchup.leagueName.compareTo(right.matchup.leagueName);
+      return name != 0 ? name : left.identity.compareTo(right.identity);
+    });
+    final slate = List<FantasyMatchupSlateEntry>.unmodifiable(
+      entries.take(FantasyMatchupSlateBuilder.capacity),
+    );
+    try {
+      await transport.sendFantasySlate(slate);
+      _diagnose(
+        'Fantasy slate sent after observation: ${slate.length} entries.',
+      );
+    } on Object catch (error) {
+      _diagnose('Fantasy slate send failed after observation: $error');
     }
   }
 
