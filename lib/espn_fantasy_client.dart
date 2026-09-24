@@ -72,7 +72,7 @@ class EspnFantasyClient {
   }) => _get(
     season: season,
     leagueId: leagueId,
-    views: const ['mMatchupScore', 'mScoreboard'],
+    views: const ['mMatchupScore', 'mScoreboard', 'mLiveScoring'],
     scoringPeriod: scoringPeriod,
     matchupPeriod: matchupPeriod,
   );

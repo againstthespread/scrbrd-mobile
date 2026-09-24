@@ -221,6 +221,7 @@ FantasyScoringTeam _parseSide(Object? value, FantasyLeagueDetails league) {
     stage = 'totalPoints';
     final points = side['totalPointsLive'] ?? side['totalPoints'];
     final total = _finite(points);
+    final projectedTotal = _optionalFinite(side['totalProjectedPointsLive']);
     stage = 'rosterForCurrentScoringPeriod.entries';
     final entries = _list(
       _map(side['rosterForCurrentScoringPeriod'])['entries'],
@@ -272,6 +273,7 @@ FantasyScoringTeam _parseSide(Object? value, FantasyLeagueDetails league) {
       team: teams.first,
       totalPoints: total,
       starters: List.unmodifiable(starters),
+      projectedTotalPoints: projectedTotal,
     );
   } on Object {
     throw EspnFantasyException(
@@ -319,6 +321,8 @@ String _sideShape(Object? value) {
   return 'teamId=${_shape(value['teamId'])}, '
       'totalPointsLive=${_shape(value['totalPointsLive'])}, '
       'totalPoints=${_shape(value['totalPoints'])}, '
+      'totalProjectedPointsLive='
+      '${_shape(value['totalProjectedPointsLive'])}, '
       'roster=${_shape(roster)}, entries=${_shape(entries)}'
       '${entries is List ? '(${entries.length})' : ''}, '
       'firstEntry.slot=${_shape(first is Map ? first['lineupSlotId'] : null)}, '
@@ -375,6 +379,12 @@ double _finite(Object? value) {
     throw const FormatException();
   }
   return value.toDouble();
+}
+
+double? _optionalFinite(Object? value) {
+  if (value is! num) return null;
+  final result = value.toDouble();
+  return result.isFinite ? result : null;
 }
 
 String? _nonempty(Object? value) =>

@@ -20,6 +20,8 @@ class FantasyMatchupDisplayData {
     required this.opponentScore,
     required this.week,
     required this.status,
+    this.userProjectedScore,
+    this.opponentProjectedScore,
   });
 
   factory FantasyMatchupDisplayData.fromSleeper(SleeperFantasyMatchup matchup) {
@@ -40,6 +42,8 @@ class FantasyMatchupDisplayData {
       userScore: matchup.team.matchup.points,
       opponentName: truncateUtf8DisplayText(matchup.opponent.name, 20),
       opponentScore: matchup.opponent.matchup.points,
+      userProjectedScore: null,
+      opponentProjectedScore: null,
       week: matchup.week,
       status: status,
     );
@@ -57,6 +61,8 @@ class FantasyMatchupDisplayData {
       userScore: matchup.team.totalPoints,
       opponentName: truncateUtf8DisplayText(opponent?.team.name ?? 'BYE', 20),
       opponentScore: opponent?.totalPoints ?? 0,
+      userProjectedScore: matchup.team.projectedTotalPoints,
+      opponentProjectedScore: opponent?.projectedTotalPoints,
       week: matchup.matchupPeriod,
       status: hasScoring
           ? FantasyMatchupDisplayStatus.live
@@ -69,6 +75,8 @@ class FantasyMatchupDisplayData {
   final double userScore;
   final String opponentName;
   final double opponentScore;
+  final double? userProjectedScore;
+  final double? opponentProjectedScore;
   final int week;
   final FantasyMatchupDisplayStatus status;
 
@@ -80,6 +88,8 @@ class FantasyMatchupDisplayData {
       userScore == other.userScore &&
       opponentName == other.opponentName &&
       opponentScore == other.opponentScore &&
+      userProjectedScore == other.userProjectedScore &&
+      opponentProjectedScore == other.opponentProjectedScore &&
       week == other.week &&
       status == other.status;
 
@@ -90,6 +100,8 @@ class FantasyMatchupDisplayData {
     userScore,
     opponentName,
     opponentScore,
+    userProjectedScore,
+    opponentProjectedScore,
     week,
     status,
   );

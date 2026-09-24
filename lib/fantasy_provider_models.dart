@@ -45,9 +45,11 @@ class FantasyScoringTeam {
     required this.team,
     required this.totalPoints,
     required this.starters,
+    this.projectedTotalPoints,
   });
   final FantasyTeamDetails team;
   final double totalPoints;
+  final double? projectedTotalPoints;
 
   /// Only active scoring lineup players; bench and IR are omitted.
   final List<FantasyScoringPlayer> starters;

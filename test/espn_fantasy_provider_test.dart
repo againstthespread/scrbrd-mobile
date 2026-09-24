@@ -119,6 +119,7 @@ void main() {
       expect(seen.single.url.queryParametersAll['view'], [
         'mMatchupScore',
         'mScoreboard',
+        'mLiveScoring',
       ]);
       expect(seen.single.url.queryParameters['scoringPeriodId'], '4');
       expect(
@@ -261,8 +262,42 @@ void main() {
       expect(result.opponent!.team.id, '8');
       expect(result.team.totalPoints, 102.375);
       expect(result.opponent!.totalPoints, 97.125);
+      expect(result.team.projectedTotalPoints, 126.7);
+      expect(result.opponent!.projectedTotalPoints, 119.4);
       expect(result.scoringPeriod, 4);
       expect(result.matchupPeriod, 3);
+    });
+
+    test('missing ESPN projections remain unavailable', () async {
+      final current = (box['schedule'] as List)[1] as Map<String, dynamic>;
+      (current['home'] as Map).remove('totalProjectedPointsLive');
+      (current['away'] as Map).remove('totalProjectedPointsLive');
+
+      final result = await repository.loadCurrentMatchup(
+        season: 2030,
+        leagueId: '12345',
+        teamId: '7',
+      );
+
+      expect(result.team.projectedTotalPoints, isNull);
+      expect(result.opponent!.projectedTotalPoints, isNull);
+      expect(result.team.totalPoints, 102.375);
+      expect(result.opponent!.totalPoints, 97.125);
+    });
+
+    test('invalid ESPN projection metadata becomes unavailable', () async {
+      final current = (box['schedule'] as List)[1] as Map<String, dynamic>;
+      (current['home'] as Map)['totalProjectedPointsLive'] = 'not-a-number';
+
+      final result = await repository.loadCurrentMatchup(
+        season: 2030,
+        leagueId: '12345',
+        teamId: '7',
+      );
+
+      expect(result.team.projectedTotalPoints, isNull);
+      expect(result.opponent!.projectedTotalPoints, 119.4);
+      expect(result.team.totalPoints, 102.375);
     });
 
     test(
@@ -684,8 +719,8 @@ Map<String, dynamic> _boxFixture() => {
         _entry(103, 21, 5),
         _entry(104, 23, null),
         _entry(105, 22, 3),
-      ]),
-      'away': _side(8, 97.125, [_entry(201, 2, 7.125)]),
+      ], projection: 126.7),
+      'away': _side(8, 97.125, [_entry(201, 2, 7.125)], projection: 119.4),
     },
   ],
 };
@@ -699,10 +734,12 @@ List<dynamic> _homeEntries(Map<String, dynamic> box) {
 Map<String, dynamic> _side(
   int teamId,
   num score,
-  List<Map<String, dynamic>> entries,
-) => {
+  List<Map<String, dynamic>> entries, {
+  num? projection,
+}) => {
   'teamId': teamId,
   'totalPointsLive': score,
+  'totalProjectedPointsLive': ?projection,
   'rosterForCurrentScoringPeriod': {'entries': entries},
 };
 Map<String, dynamic> _entry(int id, int slot, num? actual, {String? name}) => {

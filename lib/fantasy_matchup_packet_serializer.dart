@@ -29,6 +29,15 @@ class FantasyMatchupPacketSerializer {
         data.opponentScore.abs() > 10000) {
       throw const FormatException('Fantasy score is invalid.');
     }
+    for (final projection in [
+      data.userProjectedScore,
+      data.opponentProjectedScore,
+    ]) {
+      if (projection != null &&
+          (!projection.isFinite || projection.abs() > 10000)) {
+        throw const FormatException('Fantasy projection is invalid.');
+      }
+    }
     if (data.week < 1 || data.week > 30) {
       throw const FormatException('Fantasy week must be between 1 and 30.');
     }
@@ -40,6 +49,10 @@ class FantasyMatchupPacketSerializer {
       'userScore': data.userScore,
       'opponentName': opponentName,
       'opponentScore': data.opponentScore,
+      if (data.userProjectedScore != null)
+        'userProjectedScore': data.userProjectedScore,
+      if (data.opponentProjectedScore != null)
+        'opponentProjectedScore': data.opponentProjectedScore,
       'week': data.week,
       'status': data.status.wireValue,
     };
