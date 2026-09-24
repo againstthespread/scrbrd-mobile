@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -149,6 +150,176 @@ void main() {
       expect(await repository.resolvePlayersSafely(['7564']), isEmpty);
     },
   );
+
+  group('cache-first alert metadata resolution', () {
+    test('all requested IDs cached skips the full-index request', () async {
+      var requests = 0;
+      final repository = _repository(
+        onRequest: () => requests++,
+        cache: _MemoryPlayerCache(
+          value: CachedSleeperPlayers(
+            fetchedAt: DateTime.utc(2026, 8, 22),
+            players: {'7564': _chase},
+          ),
+        ),
+      );
+
+      final players = await repository.resolvePlayersWithRefreshSafely([
+        '7564',
+      ]);
+
+      expect(players['7564']?.fullName, "Ja'Marr Chase");
+      expect(requests, 0);
+    });
+
+    test('one missing ID triggers one refresh and resolves its name', () async {
+      var requests = 0;
+      final repository = _repository(
+        onRequest: () => requests++,
+        cache: _MemoryPlayerCache(
+          value: CachedSleeperPlayers(
+            fetchedAt: DateTime.utc(2026, 8, 22),
+            players: {'7564': _chase},
+          ),
+        ),
+      );
+
+      final players = await repository.resolvePlayersWithRefreshSafely([
+        '9756',
+      ]);
+
+      expect(players['9756']?.fullName, 'Example Player');
+      expect(requests, 1);
+    });
+
+    test('several missing IDs share one batch index refresh', () async {
+      var requests = 0;
+      final repository = _repository(
+        onRequest: () => requests++,
+        cache: _MemoryPlayerCache(),
+      );
+
+      final players = await repository.resolvePlayersWithRefreshSafely([
+        '7564',
+        '9756',
+      ]);
+
+      expect(players.keys, containsAll(['7564', '9756']));
+      expect(requests, 1);
+    });
+
+    test('mixed cached and refreshed names are both preserved', () async {
+      var requests = 0;
+      final repository = _repository(
+        onRequest: () => requests++,
+        cache: _MemoryPlayerCache(
+          value: CachedSleeperPlayers(
+            fetchedAt: DateTime.utc(2026, 8, 22),
+            players: {'7564': _chase},
+          ),
+        ),
+      );
+
+      final players = await repository.resolvePlayersWithRefreshSafely([
+        '7564',
+        '9756',
+      ]);
+
+      expect(players['7564']?.fullName, "Ja'Marr Chase");
+      expect(players['9756']?.fullName, 'Example Player');
+      expect(requests, 1);
+    });
+
+    test(
+      'refresh failure retains cached metadata and safely omits missing ID',
+      () async {
+        var requests = 0;
+        final repository = SleeperPlayerRepository(
+          apiClient: SleeperApiClient(
+            client: MockClient((_) async {
+              requests++;
+              return http.Response('unavailable', 503);
+            }),
+          ),
+          cache: _MemoryPlayerCache(
+            value: CachedSleeperPlayers(
+              fetchedAt: DateTime.utc(2026, 8, 22),
+              players: {'7564': _chase},
+            ),
+          ),
+        );
+
+        final players = await repository.resolvePlayersWithRefreshSafely([
+          '7564',
+          'missing',
+        ]);
+
+        expect(players['7564']?.fullName, "Ja'Marr Chase");
+        expect(players, isNot(contains('missing')));
+        expect(requests, 1);
+      },
+    );
+
+    test('fresh index missing an ID leaves safe raw-ID fallback', () async {
+      var requests = 0;
+      final repository = _repository(
+        onRequest: () => requests++,
+        cache: _MemoryPlayerCache(),
+      );
+
+      final players = await repository.resolvePlayersWithRefreshSafely([
+        'not-in-index',
+      ]);
+
+      expect(players, isEmpty);
+      expect(requests, 1);
+    });
+
+    test(
+      'repeated unresolved ID observes the negative retry interval',
+      () async {
+        var requests = 0;
+        final repository = _repository(
+          onRequest: () => requests++,
+          cache: _MemoryPlayerCache(),
+        );
+
+        await repository.resolvePlayersWithRefreshSafely(['not-in-index']);
+        await repository.resolvePlayersWithRefreshSafely(['not-in-index']);
+
+        expect(requests, 1);
+      },
+    );
+
+    test(
+      'concurrent missing-ID requests reuse one in-flight refresh',
+      () async {
+        var requests = 0;
+        final requestStarted = Completer<void>();
+        final releaseRequest = Completer<void>();
+        final repository = SleeperPlayerRepository(
+          apiClient: SleeperApiClient(
+            client: MockClient((_) async {
+              requests++;
+              requestStarted.complete();
+              await releaseRequest.future;
+              return http.Response(jsonEncode({'7564': _chase.toJson()}), 200);
+            }),
+          ),
+          cache: _MemoryPlayerCache(),
+        );
+
+        final first = repository.resolvePlayersWithRefreshSafely(['7564']);
+        final second = repository.resolvePlayersWithRefreshSafely(['7564']);
+        await requestStarted.future;
+        releaseRequest.complete();
+        final results = await Future.wait([first, second]);
+
+        expect(results.every((players) => players.containsKey('7564')), isTrue);
+        expect(requests, 1);
+      },
+    );
+  });
 
   test(
     'metadata implementation has no ESPN play, BLE, firmware, or timer coupling',

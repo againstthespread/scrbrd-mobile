@@ -80,6 +80,8 @@ class SleeperPlayerRepository {
     SleeperPlayerCache? cache,
     DateTime Function()? now,
     this.cacheLifetime = const Duration(hours: 24),
+    this.missingPlayerRetryInterval = const Duration(hours: 1),
+    this.refreshFailureRetryInterval = const Duration(minutes: 5),
   }) : _cache = cache ?? FileSleeperPlayerCache(),
        _now = now ?? DateTime.now;
 
@@ -87,8 +89,15 @@ class SleeperPlayerRepository {
   final SleeperPlayerCache _cache;
   final DateTime Function() _now;
   final Duration cacheLifetime;
+  final Duration missingPlayerRetryInterval;
+  final Duration refreshFailureRetryInterval;
   Map<String, SleeperFantasyPlayer>? _memoryIndex;
+  DateTime? _memoryFetchedAt;
+  bool _cacheRead = false;
+  Future<Map<String, SleeperFantasyPlayer>>? _cacheReadInProgress;
   Future<Map<String, SleeperFantasyPlayer>>? _loadInProgress;
+  final Map<String, DateTime> _retryMissingAfter = {};
+  DateTime? _refreshFailureRetryAfter;
 
   Future<Map<String, SleeperFantasyPlayer>> resolvePlayers(
     Iterable<String> playerIds,
@@ -114,55 +123,122 @@ class SleeperPlayerRepository {
     }
   }
 
+  /// Resolves cached metadata first, refreshing the shared full index only
+  /// when requested IDs are missing. Metadata failures remain non-fatal.
+  Future<Map<String, SleeperFantasyPlayer>> resolvePlayersWithRefreshSafely(
+    Iterable<String> playerIds,
+  ) async {
+    final requestedIds = playerIds.toSet();
+    if (requestedIds.isEmpty) return const {};
+    Map<String, SleeperFantasyPlayer> index;
+    try {
+      index = await _loadCachedIndex();
+    } on Object {
+      index = const {};
+    }
+    var resolved = _selectPlayers(index, requestedIds);
+    final now = _now();
+    final missing = requestedIds
+        .where(
+          (id) =>
+              !resolved.containsKey(id) &&
+              !(_retryMissingAfter[id]?.isAfter(now) ?? false),
+        )
+        .toSet();
+    if (missing.isEmpty) return resolved;
+    if (_refreshFailureRetryAfter?.isAfter(now) ?? false) return resolved;
+
+    try {
+      index = await _refreshIndex();
+      _refreshFailureRetryAfter = null;
+      resolved = {...resolved, ..._selectPlayers(index, requestedIds)};
+      final retryAfter = _now().add(missingPlayerRetryInterval);
+      for (final id in missing) {
+        if (resolved.containsKey(id)) {
+          _retryMissingAfter.remove(id);
+        } else {
+          _retryMissingAfter[id] = retryAfter;
+        }
+      }
+    } on Object {
+      _refreshFailureRetryAfter = _now().add(refreshFailureRetryInterval);
+    }
+    return resolved;
+  }
+
   /// Resolves from memory/disk only and never downloads the full player index.
   Future<Map<String, SleeperFantasyPlayer>> resolveCachedPlayersSafely(
     Iterable<String> playerIds,
   ) async {
     try {
-      var index = _memoryIndex;
-      if (index == null) {
-        final cached = await _cache.read();
-        index = cached?.players ?? const {};
-        _memoryIndex = cached?.players;
-      }
-      return {
-        for (final id in playerIds.toSet())
-          // ignore: use_null_aware_elements
-          if (index[id] case final player?) id: player,
-      };
+      return _selectPlayers(await _loadCachedIndex(), playerIds.toSet());
     } on Object {
       return const {};
     }
   }
 
-  Future<Map<String, SleeperFantasyPlayer>> _loadIndex() {
+  Future<Map<String, SleeperFantasyPlayer>> _loadIndex() async {
+    Map<String, SleeperFantasyPlayer> cached;
+    try {
+      cached = await _loadCachedIndex();
+    } on Object {
+      cached = const {};
+    }
+    final fetchedAt = _memoryFetchedAt;
+    if (fetchedAt != null && _now().difference(fetchedAt) < cacheLifetime) {
+      return cached;
+    }
+    try {
+      return await _refreshIndex();
+    } on Object {
+      if (_memoryFetchedAt != null) return cached;
+      rethrow;
+    }
+  }
+
+  Future<Map<String, SleeperFantasyPlayer>> _loadCachedIndex() {
     final memoryIndex = _memoryIndex;
-    if (memoryIndex != null) return Future.value(memoryIndex);
-    return _loadInProgress ??= _loadAndCache().whenComplete(
+    if (_cacheRead && memoryIndex != null) return Future.value(memoryIndex);
+    return _cacheReadInProgress ??= _readCache().whenComplete(
+      () => _cacheReadInProgress = null,
+    );
+  }
+
+  Future<Map<String, SleeperFantasyPlayer>> _readCache() async {
+    final cached = await _cache.read();
+    _cacheRead = true;
+    _memoryFetchedAt = cached?.fetchedAt;
+    return _memoryIndex = cached?.players ?? const {};
+  }
+
+  Future<Map<String, SleeperFantasyPlayer>> _refreshIndex() {
+    return _loadInProgress ??= _fetchAndCache().whenComplete(
       () => _loadInProgress = null,
     );
   }
 
-  Future<Map<String, SleeperFantasyPlayer>> _loadAndCache() async {
-    final cached = await _cache.read();
+  Future<Map<String, SleeperFantasyPlayer>> _fetchAndCache() async {
     final now = _now();
-    if (cached != null && now.difference(cached.fetchedAt) < cacheLifetime) {
-      return _memoryIndex = cached.players;
-    }
+    final players = await apiClient.fetchNflPlayers();
+    _cacheRead = true;
+    _memoryIndex = players;
+    _memoryFetchedAt = now;
     try {
-      final players = await apiClient.fetchNflPlayers();
-      _memoryIndex = players;
-      try {
-        await _cache.write(
-          CachedSleeperPlayers(fetchedAt: now, players: players),
-        );
-      } on Object {
-        // A cache write failure must not discard successfully fetched metadata.
-      }
-      return players;
+      await _cache.write(
+        CachedSleeperPlayers(fetchedAt: now, players: players),
+      );
     } on Object {
-      if (cached != null) return _memoryIndex = cached.players;
-      rethrow;
+      // A cache write failure must not discard successfully fetched metadata.
     }
+    return players;
   }
+
+  Map<String, SleeperFantasyPlayer> _selectPlayers(
+    Map<String, SleeperFantasyPlayer> index,
+    Set<String> playerIds,
+  ) => {
+    for (final id in playerIds)
+      // ignore: use_null_aware_elements
+      if (index[id] case final player?) id: player,
+  };
 }

@@ -149,6 +149,7 @@ void main() {
   test(
     'same Sleeper player in two leagues produces one aggregate delivery',
     () async {
+      metadata['shared-player'] = _player('shared-player');
       points['b'] = 10;
       await coordinator.observe();
       points['a'] = 11;
@@ -156,6 +157,7 @@ void main() {
       final result = await coordinator.observe();
       expect(result.alertCount, 2);
       expect(transport.alerts.single.delta.playerId, 'shared-player');
+      expect(transport.alerts.single.player?.fullName, 'Shared player');
       expect(transport.alerts.single.headline, 'Scored in 2 leagues');
       expect((await coordinator.observe()).alerts, isEmpty);
       expect(transport.alerts.length, 1);

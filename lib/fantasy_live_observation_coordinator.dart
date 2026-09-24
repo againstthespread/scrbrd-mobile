@@ -151,7 +151,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
        _setupLoader = setupLoader ?? repository.loadLeague,
        _matchupLoader = matchupLoader ?? repository.refreshMatchups,
        _metadataResolver =
-           metadataResolver ?? playerRepository.resolveCachedPlayersSafely,
+           metadataResolver ?? playerRepository.resolvePlayersWithRefreshSafely,
        _espnMatchupLoader =
            espnMatchupLoader ??
            DeviceEspnFantasySetupGateway(

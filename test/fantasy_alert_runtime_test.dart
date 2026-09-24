@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:sports_hub_mobile/fantasy_alert_packet_serializer.dart';
 import 'package:sports_hub_mobile/fantasy_alert_transport.dart';
@@ -170,6 +171,62 @@ void main() {
       );
       expect(jsonDecode(utf8.decode(packet))['player'], 'opponent-player');
     });
+
+    test(
+      'mixed cached and missing players get independent names from one refresh',
+      () async {
+        var playerIndexRequests = 0;
+        transport = _Transport();
+        snapshots = [
+          _snapshot(),
+          _snapshot(userPoints: 10.4, secondUserPoints: 1, opponentPoints: 6),
+        ];
+        final api = SleeperApiClient(
+          client: MockClient((request) async {
+            playerIndexRequests++;
+            expect(request.url.path, '/v1/players/nfl');
+            return http.Response(
+              jsonEncode({
+                'second-user': _secondPlayer.toJson(),
+                'opponent-player': _opponentPlayer.toJson(),
+              }),
+              200,
+            );
+          }),
+        );
+        coordinator = FantasyLiveObservationCoordinator(
+          configStore: config,
+          repository: SleeperFantasyRepository(api),
+          playerRepository: SleeperPlayerRepository(
+            apiClient: api,
+            cache: _RuntimeMemoryPlayerCache(
+              CachedSleeperPlayers(
+                fetchedAt: DateTime.now(),
+                players: {'user-player': _chase},
+              ),
+            ),
+          ),
+          transport: transport,
+          isBleConnected: () => transport.connected,
+          matchupLoader: (_) async => snapshots[loads++],
+        );
+
+        await coordinator.observe();
+        final result = await coordinator.observe();
+
+        expect(playerIndexRequests, 1);
+        expect(result.alerts.map((alert) => alert.player?.fullName), [
+          "Ja'Marr Chase",
+          'Second Player',
+          'Opponent Player',
+        ]);
+        expect(transport.alerts.map((alert) => alert.player?.fullName), [
+          "Ja'Marr Chase",
+          'Second Player',
+          'Opponent Player',
+        ]);
+      },
+    );
 
     test(
       'both simultaneous alerts drain in one observation with user priority',
@@ -593,3 +650,35 @@ const _chase = SleeperFantasyPlayer(
   nflTeam: 'CIN',
   espnPlayerId: '4362628',
 );
+
+const _secondPlayer = SleeperFantasyPlayer(
+  sleeperPlayerId: 'second-user',
+  fullName: 'Second Player',
+  firstName: 'Second',
+  lastName: 'Player',
+  position: 'WR',
+  nflTeam: 'BUF',
+  espnPlayerId: null,
+);
+
+const _opponentPlayer = SleeperFantasyPlayer(
+  sleeperPlayerId: 'opponent-player',
+  fullName: 'Opponent Player',
+  firstName: 'Opponent',
+  lastName: 'Player',
+  position: 'RB',
+  nflTeam: 'MIA',
+  espnPlayerId: null,
+);
+
+class _RuntimeMemoryPlayerCache implements SleeperPlayerCache {
+  _RuntimeMemoryPlayerCache(this.value);
+
+  CachedSleeperPlayers? value;
+
+  @override
+  Future<CachedSleeperPlayers?> read() async => value;
+
+  @override
+  Future<void> write(CachedSleeperPlayers cache) async => value = cache;
+}
