@@ -21,6 +21,7 @@ import 'package:sports_hub_mobile/sleeper_api_client.dart';
 import 'package:sports_hub_mobile/sleeper_fantasy_repository.dart';
 import 'package:sports_hub_mobile/sleeper_models.dart';
 import 'package:sports_hub_mobile/sleeper_player_repository.dart';
+import 'package:sports_hub_mobile/sleeper_projection.dart';
 import 'package:sports_hub_mobile/tracked_device_session.dart';
 
 void main() {
@@ -32,6 +33,7 @@ void main() {
   late Set<String> espnFailures;
   late Map<String, SleeperFantasyPlayer> metadata;
   late List<String> loads;
+  late _ProjectionEnricher projectionEnricher;
   Completer<void>? loadGate;
   Completer<void>? loadStarted;
 
@@ -57,6 +59,7 @@ void main() {
     espnFailures = {};
     metadata = {};
     loads = [];
+    projectionEnricher = _ProjectionEnricher();
     loadGate = null;
     loadStarted = null;
     transport = _Transport();
@@ -85,6 +88,7 @@ void main() {
         for (final id in ids)
           if (metadata[id] != null) id: metadata[id]!,
       },
+      sleeperProjectionEnricher: projectionEnricher,
       espnMatchupLoader: (_, leagueId, teamId) async {
         if (espnFailures.contains(leagueId)) {
           throw StateError('ESPN unavailable $leagueId');
@@ -181,6 +185,157 @@ void main() {
       failures.clear();
       points['b'] = 21;
       expect((await coordinator.observe()).leagues['sleeper:b']!.alertCount, 1);
+    },
+  );
+
+  test(
+    'projection enrichment failure does not block actual loading or alerts',
+    () async {
+      projectionEnricher.failApply = true;
+      projectionEnricher.failRefresh = true;
+      final baseline = await coordinator.observe();
+      expect(baseline.succeeded, isTrue);
+      expect(baseline.leagues['sleeper:a']!.matchup!.team.matchup.points, 10);
+
+      points['a'] = 11;
+      final result = await coordinator.observe();
+
+      expect(result.succeeded, isTrue);
+      expect(result.leagues['sleeper:a']!.matchup!.team.matchup.points, 11);
+      expect(result.leagues['sleeper:a']!.alerts.single.delta.delta, 1);
+      expect(transport.alerts.single.userName, 'Team a');
+    },
+  );
+
+  test('multiple projected Sleeper leagues retain one atomic slate', () async {
+    projectionEnricher.userProjections.addAll({'a': 101, 'b': 202});
+    projectionEnricher.opponentProjections.addAll({'a': 91, 'b': 192});
+
+    await coordinator.observe();
+
+    expect(transport.slates, hasLength(1));
+    final slate = transport.slates.single;
+    expect(slate.map((entry) => entry.identity), ['sleeper:a', 'sleeper:b']);
+    expect(slate.map((entry) => entry.matchup.userProjectedScore), [101, 202]);
+    expect(slate.map((entry) => entry.matchup.opponentProjectedScore), [
+      91,
+      192,
+    ]);
+    expect(transport.matchups, isEmpty);
+  });
+
+  test('projection-only changes never create scoring alerts', () async {
+    projectionEnricher.userProjections['a'] = 100;
+    await coordinator.observe();
+    projectionEnricher.userProjections['a'] = 150;
+
+    final projectionOnly = await coordinator.observe();
+    expect(projectionOnly.alerts, isEmpty);
+
+    points['a'] = 11;
+    final actualChange = await coordinator.observe();
+    expect(actualChange.alerts.single.delta.delta, 1);
+  });
+
+  test(
+    'completed baseline capture triggers a subsequent projected slate',
+    () async {
+      await store.remove(FantasyProvider.sleeper, 'b');
+      await coordinator.loadConfigurationStatus();
+      projectionEnricher.populateOnRefresh = true;
+      transport.projectedSlateSent = Completer<void>();
+
+      await coordinator.observe();
+      await transport.projectedSlateSent!.future;
+
+      expect(transport.slates.last.single.matchup.userProjectedScore, 123);
+      expect(transport.slates.last.single.matchup.opponentProjectedScore, 99);
+    },
+  );
+
+  test(
+    'BLE WAKE production path captures and automatically resends projection',
+    () async {
+      await store.clear();
+      await save('runtime');
+      final api = SleeperApiClient(
+        client: MockClient(
+          (_) async => throw StateError('Tests must not use the network'),
+        ),
+      );
+      final source = _GatedRuntimeProjectionSource();
+      final baselineStore = _RuntimeBaselineStore();
+      final diagnostics = <String>[];
+      final projectionService = SleeperSettlingProjectionService(
+        projectionSource: source,
+        metadataResolver: (ids) async => {
+          for (final id in ids)
+            id: SleeperFantasyPlayer(
+              sleeperPlayerId: id,
+              fullName: id == 'qb' ? 'Runtime Quarterback' : 'Runtime Runner',
+              firstName: 'Runtime',
+              lastName: id,
+              position: id == 'qb' ? 'QB' : 'RB',
+              nflTeam: id == 'qb' ? 'BUF' : 'KC',
+              espnPlayerId: null,
+            ),
+        },
+        gameStatusSource: _RuntimeStatusSource(),
+        baselineStore: baselineStore,
+        onDiagnostic: diagnostics.add,
+      );
+      final productionCoordinator = FantasyLiveObservationCoordinator(
+        leagueConfigStore: store,
+        repository: SleeperFantasyRepository(api),
+        playerRepository: SleeperPlayerRepository(apiClient: api),
+        transport: transport,
+        isBleConnected: () => true,
+        matchupLoader: (_) async => _projectionRuntimeSnapshot(),
+        sleeperProjectionEnricher: projectionService,
+        onDiagnostic: diagnostics.add,
+      );
+      addTearDown(productionCoordinator.dispose);
+      addTearDown(api.close);
+      transport.projectedSlateSent = Completer<void>();
+
+      final wake = runIsolatedWakeDomains(
+        refreshSports: () async {},
+        observeFantasy: productionCoordinator.observe,
+        onDiagnostic: diagnostics.add,
+      );
+      await source.started.future;
+      await wake;
+
+      expect(transport.slates, hasLength(1));
+      expect(transport.slates.single.single.identity, 'sleeper:runtime');
+      expect(transport.slates.single.single.matchup.userProjectedScore, isNull);
+
+      source.gate.complete();
+      await transport.projectedSlateSent!.future;
+      await pumpEventQueue(times: 20);
+
+      expect(transport.slates, hasLength(2));
+      expect(transport.slates.last.single.matchup.userProjectedScore, 10);
+      expect(transport.slates.last.single.matchup.opponentProjectedScore, 8);
+      expect(source.calls, {'qb': 1, 'rb': 1});
+      expect(
+        baselineStore.snapshot?.leagues['runtime']?.players.keys,
+        containsAll(['qb', 'rb']),
+      );
+      expect(
+        diagnostics,
+        contains(contains('Sleeper PROJ: observation league=runtime')),
+      );
+      expect(
+        diagnostics,
+        contains(contains('Sleeper PROJ: raw fetch success player=qb')),
+      );
+      expect(
+        diagnostics,
+        contains(
+          contains('Sleeper PROJ: post-capture slate refresh completed'),
+        ),
+      );
     },
   );
 
@@ -1146,6 +1301,7 @@ class _Transport
   final alerts = <FantasyPointAlert>[];
   final matchups = <FantasyMatchupDisplayData>[];
   final slates = <List<FantasyMatchupSlateEntry>>[];
+  Completer<void>? projectedSlateSent;
 
   @override
   Future<void> sendFantasyAlert(FantasyPointAlert alert) async {
@@ -1173,6 +1329,10 @@ class _Transport
   Future<void> sendFantasySlate(List<FantasyMatchupSlateEntry> entries) async {
     if (failSlate) throw StateError('Fantasy slate send failed');
     slates.add(List.unmodifiable(entries));
+    if (entries.any((entry) => entry.matchup.userProjectedScore != null)) {
+      projectedSlateSent?.complete();
+      projectedSlateSent = null;
+    }
   }
 
   @override
@@ -1192,6 +1352,136 @@ class _LegacyMatchupTransport implements FantasyMatchupTransport {
     matchups.add(matchup);
   }
 }
+
+class _ProjectionEnricher implements SleeperProjectionEnricher {
+  final userProjections = <String, double>{};
+  final opponentProjections = <String, double>{};
+  bool failApply = false;
+  bool failRefresh = false;
+  bool populateOnRefresh = false;
+
+  @override
+  Future<SleeperFantasyMatchup> applyCached(
+    SleeperFantasyMatchup matchup,
+  ) async {
+    if (failApply) throw StateError('projection cache unavailable');
+    return matchup.withProjectedTotals(
+      teamProjection: userProjections[matchup.league.leagueId],
+      opponentProjection: opponentProjections[matchup.league.leagueId],
+    );
+  }
+
+  @override
+  Future<bool> refresh(SleeperFantasyMatchup matchup) async {
+    if (failRefresh) throw StateError('projection API unavailable');
+    if (!populateOnRefresh) return false;
+    userProjections[matchup.league.leagueId] = 123;
+    opponentProjections[matchup.league.leagueId] = 99;
+    return true;
+  }
+}
+
+class _GatedRuntimeProjectionSource implements SleeperProjectionSource {
+  final started = Completer<void>();
+  final gate = Completer<void>();
+  final calls = <String, int>{};
+
+  @override
+  Future<SleeperPlayerProjection?> fetchPlayerProjection({
+    required String playerId,
+    required String season,
+    required int week,
+    required String seasonType,
+  }) async {
+    calls.update(playerId, (value) => value + 1, ifAbsent: () => 1);
+    if (!started.isCompleted) started.complete();
+    await gate.future;
+    return SleeperPlayerProjection(
+      playerId: playerId,
+      season: season,
+      week: week,
+      seasonType: seasonType,
+      team: playerId == 'qb' ? 'BUF' : 'KC',
+      gameId: 'game-$playerId',
+      gameDate: DateTime(2026, 9, 27),
+      stats: playerId == 'qb' ? const {'pass_yd': 250} : const {'rush_yd': 80},
+    );
+  }
+}
+
+class _RuntimeStatusSource implements SleeperNflGameStatusSource {
+  @override
+  Future<Map<String, SleeperNflGamePhase>> statusesForDates(
+    Iterable<DateTime> dates,
+  ) async => const {
+    'BUF': SleeperNflGamePhase.upcoming,
+    'KC': SleeperNflGamePhase.upcoming,
+  };
+}
+
+class _RuntimeBaselineStore implements SleeperProjectionBaselineStore {
+  SleeperProjectionBaselineSnapshot? snapshot;
+
+  @override
+  Future<SleeperProjectionBaselineSnapshot?> read() async => snapshot;
+
+  @override
+  Future<void> write(SleeperProjectionBaselineSnapshot value) async {
+    snapshot = value;
+  }
+}
+
+SleeperLeagueSnapshot _projectionRuntimeSnapshot() => SleeperLeagueSnapshot(
+  league: const SleeperLeague(
+    leagueId: 'runtime',
+    name: 'Runtime League',
+    season: '2026',
+    status: 'in_season',
+    scoringSettings: {
+      'pass_yd': 0.04,
+      'rush_yd': 0.1,
+      'fum_rec_td': 6,
+      'pts_allow_0': 10,
+    },
+    rosterPositions: [],
+  ),
+  week: 3,
+  seasonType: 'regular',
+  users: const [
+    SleeperUser(userId: 'home', displayName: 'Runtime Home'),
+    SleeperUser(userId: 'away', displayName: 'Runtime Away'),
+  ],
+  rosters: const [
+    SleeperRoster(
+      rosterId: 1,
+      ownerId: 'home',
+      players: ['qb'],
+      starters: ['qb'],
+    ),
+    SleeperRoster(
+      rosterId: 2,
+      ownerId: 'away',
+      players: ['rb'],
+      starters: ['rb'],
+    ),
+  ],
+  matchups: const [
+    SleeperMatchup(
+      rosterId: 1,
+      matchupId: 1,
+      points: 0,
+      starters: ['qb'],
+      playerPoints: {'qb': 0},
+    ),
+    SleeperMatchup(
+      rosterId: 2,
+      matchupId: 1,
+      points: 0,
+      starters: ['rb'],
+      playerPoints: {'rb': 0},
+    ),
+  ],
+);
 
 SleeperLeagueSnapshot _snapshot(String id, double points) =>
     SleeperLeagueSnapshot(

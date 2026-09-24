@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import 'espn_fantasy_credentials.dart';
@@ -20,6 +22,7 @@ import 'sleeper_fantasy_config.dart';
 import 'sleeper_fantasy_repository.dart';
 import 'sleeper_models.dart';
 import 'sleeper_player_repository.dart';
+import 'sleeper_projection.dart';
 
 typedef FantasyMatchupLoader =
     Future<SleeperLeagueSnapshot> Function(String leagueId);
@@ -127,6 +130,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     FantasyMatchupLoader? matchupLoader,
     FantasyMetadataResolver? metadataResolver,
     EspnMatchupLoader? espnMatchupLoader,
+    this.sleeperProjectionEnricher,
     this.onDiagnostic,
   }) : assert(configStore != null || leagueConfigStore != null),
        leagueConfigStore =
@@ -190,10 +194,13 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   final FantasyMatchupLoader _matchupLoader;
   final FantasyMetadataResolver _metadataResolver;
   final EspnMatchupLoader _espnMatchupLoader;
+  final SleeperProjectionEnricher? sleeperProjectionEnricher;
   final void Function(String message)? onDiagnostic;
 
   FantasyRuntimeStatus _status = const FantasyRuntimeStatus();
   bool _observing = false;
+  bool _projectionDisplayRefreshPending = false;
+  Future<void>? _projectionDisplayRefreshInProgress;
   bool _deviceContentEnabled = true;
   int _generation = 0;
 
@@ -460,7 +467,10 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
           primaryStore: primaryStore,
           loadSleeper: (config) async {
             final snapshot = await _matchupLoader(config.leagueId);
-            return snapshot.matchupForRoster(int.parse(config.teamId!));
+            return _enrichSleeperSafely(
+              snapshot.matchupForRoster(int.parse(config.teamId!)),
+              config.id,
+            );
           },
           loadEspn: (config) => _espnMatchupLoader(
             currentFantasySeason(),
@@ -605,6 +615,9 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       );
     } finally {
       _observing = false;
+      if (_projectionDisplayRefreshPending) {
+        _scheduleProjectionDisplayRefresh();
+      }
     }
   }
 
@@ -623,6 +636,10 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         identical(_sessions[config.id], session) &&
         revision == session.revision;
     try {
+      _diagnose(
+        'Sleeper PROJ: observation league=${config.leagueId} '
+        'config=${config.id}',
+      );
       if (startupOnly && session.baselineEstablished) {
         final matchup = session.latestMatchup;
         final context = session.observationContext;
@@ -645,7 +662,15 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         );
       }
       final snapshot = await _matchupLoader(config.leagueId);
-      final matchup = snapshot.matchupForRoster(int.parse(config.teamId!));
+      final matchup = await _enrichSleeperSafely(
+        snapshot.matchupForRoster(int.parse(config.teamId!)),
+        config.id,
+      );
+      _diagnose(
+        'Sleeper PROJ: observation enriched league=${config.leagueId} '
+        'team=${matchup.team.projectedTotalPoints ?? 'null'} '
+        'opponent=${matchup.opponent.projectedTotalPoints ?? 'null'}',
+      );
       if (!isCurrent()) return _connectionChangedResult();
       session.latestMatchup = matchup;
       final context =
@@ -965,6 +990,15 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       entries.take(FantasyMatchupSlateBuilder.capacity),
     );
     try {
+      for (final entry in entries.where(
+        (entry) => entry.identity.startsWith('sleeper:'),
+      )) {
+        _diagnose(
+          'Sleeper PROJ: observation slate league=${entry.identity} '
+          'team=${entry.matchup.userProjectedScore ?? 'null'} '
+          'opponent=${entry.matchup.opponentProjectedScore ?? 'null'}',
+        );
+      }
       await transport.sendFantasySlate(slate);
       _diagnose(
         'Fantasy slate sent after observation: ${slate.length} entries.',
@@ -993,9 +1027,15 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       primaryStore: primaryStore,
       loadSleeper: (config) async {
         final known = _sessions[config.id]?.latestMatchup;
-        if (known != null) return known;
+        if (known != null) {
+          final enricher = sleeperProjectionEnricher;
+          return enricher == null ? known : enricher.applyCached(known);
+        }
         final snapshot = await _matchupLoader(config.leagueId);
-        return snapshot.matchupForRoster(int.parse(config.teamId!));
+        return _enrichSleeperSafely(
+          snapshot.matchupForRoster(int.parse(config.teamId!)),
+          config.id,
+        );
       },
       loadEspn: (config) async {
         if (config.id == primary && primaryEspnMatchup != null) {
@@ -1011,10 +1051,97 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     );
     final slate = await builder.build();
     if (generation != _generation || !isBleConnected()) return;
+    for (final entry in slate.where(
+      (entry) => entry.identity.startsWith('sleeper:'),
+    )) {
+      _diagnose(
+        'Sleeper PROJ: display slate league=${entry.identity} '
+        'team=${entry.matchup.userProjectedScore ?? 'null'} '
+        'opponent=${entry.matchup.opponentProjectedScore ?? 'null'}',
+      );
+    }
     try {
       await (transport as FantasySlateTransport).sendFantasySlate(slate);
     } on Object catch (error) {
       _diagnose('Fantasy display slate send failed: ${error.runtimeType}');
+    }
+  }
+
+  Future<SleeperFantasyMatchup> _enrichSleeperSafely(
+    SleeperFantasyMatchup matchup,
+    String configId,
+  ) async {
+    final enricher = sleeperProjectionEnricher;
+    if (enricher == null) return matchup;
+    var enriched = matchup;
+    try {
+      enriched = await enricher.applyCached(matchup);
+    } on Object catch (error) {
+      _diagnose(
+        'Sleeper projection cache unavailable for $configId: '
+        '${error.runtimeType}',
+      );
+    }
+    try {
+      unawaited(
+        enricher
+            .refresh(matchup)
+            .then((changed) {
+              _diagnose(
+                'Sleeper PROJ: capture returned config=$configId '
+                'changed=$changed',
+              );
+              if (!changed) return;
+              _diagnose(
+                'Sleeper PROJ: capture complete; scheduling slate refresh '
+                'config=$configId',
+              );
+              _scheduleProjectionDisplayRefresh();
+            })
+            .catchError((Object error) {
+              _diagnose(
+                'Sleeper projection refresh unavailable for $configId: '
+                '${error.runtimeType}',
+              );
+            }),
+      );
+    } on Object catch (error) {
+      _diagnose(
+        'Sleeper projection refresh unavailable for $configId: '
+        '${error.runtimeType}',
+      );
+    }
+    return enriched;
+  }
+
+  void _scheduleProjectionDisplayRefresh() {
+    _projectionDisplayRefreshPending = true;
+    if (_observing || _projectionDisplayRefreshInProgress != null) return;
+    late final Future<void> refresh;
+    refresh = _drainProjectionDisplayRefreshes().whenComplete(() {
+      if (identical(_projectionDisplayRefreshInProgress, refresh)) {
+        _projectionDisplayRefreshInProgress = null;
+      }
+      if (_projectionDisplayRefreshPending && !_observing) {
+        _scheduleProjectionDisplayRefresh();
+      }
+    });
+    _projectionDisplayRefreshInProgress = refresh;
+  }
+
+  Future<void> _drainProjectionDisplayRefreshes() async {
+    while (_projectionDisplayRefreshPending && !_observing) {
+      _projectionDisplayRefreshPending = false;
+      _diagnose('Sleeper PROJ: post-capture slate refresh started');
+      try {
+        await _syncConfiguredFantasySlate();
+        _diagnose('Sleeper PROJ: post-capture slate refresh completed');
+      } on Object catch (error) {
+        _diagnose(
+          'Sleeper projection display refresh unavailable: '
+          '${error.runtimeType}',
+        );
+      }
     }
   }
 

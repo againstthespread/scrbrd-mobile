@@ -22,6 +22,7 @@ import 'session_aware_device_sender.dart';
 import 'sleeper_api_client.dart';
 import 'sleeper_fantasy_repository.dart';
 import 'sleeper_player_repository.dart';
+import 'sleeper_projection.dart';
 import 'tracked_device_session.dart';
 import 'favorites_store.dart';
 import 'device_content_preferences.dart';
@@ -60,6 +61,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   late final SleeperApiClient _sleeperApiClient;
   late final SleeperFantasyRepository _fantasyRepository;
   late final SleeperPlayerRepository _sleeperPlayerRepository;
+  late final SleeperSettlingProjectionService _sleeperProjectionService;
   late final FantasyLiveObservationCoordinator _fantasyCoordinator;
   late final FavoritesStore _favoritesStore;
   late final DeviceContentPreferencesStore _contentPreferencesStore;
@@ -112,6 +114,15 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     _sleeperPlayerRepository = SleeperPlayerRepository(
       apiClient: _sleeperApiClient,
     );
+    _sleeperProjectionService = SleeperSettlingProjectionService(
+      projectionSource: SleeperApiProjectionSource(_sleeperApiClient),
+      metadataResolver:
+          _sleeperPlayerRepository.resolvePlayersWithRefreshSafely,
+      gameStatusSource: SportsRepositorySleeperNflGameStatusSource(
+        widget.repository,
+      ),
+      onDiagnostic: _recordBackgroundUpdaterDiagnostic,
+    );
     _fantasyCoordinator = FantasyLiveObservationCoordinator(
       leagueConfigStore: SharedPreferencesFantasyLeagueConfigStore(),
       repository: _fantasyRepository,
@@ -119,7 +130,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       transport: _deviceSender,
       isBleConnected: () =>
           _transport.currentSnapshot.state.isPhysicallyConnected,
-      onDiagnostic: (message) => debugPrint('FANTASY: $message'),
+      sleeperProjectionEnricher: _sleeperProjectionService,
+      onDiagnostic: _recordBackgroundUpdaterDiagnostic,
     );
     _fantasyCoordinator.addListener(_handleFantasyStatusChanged);
     unawaited(_fantasyCoordinator.loadConfigurationStatus());

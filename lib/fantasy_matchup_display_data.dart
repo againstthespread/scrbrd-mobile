@@ -42,8 +42,8 @@ class FantasyMatchupDisplayData {
       userScore: matchup.team.matchup.points,
       opponentName: truncateUtf8DisplayText(matchup.opponent.name, 20),
       opponentScore: matchup.opponent.matchup.points,
-      userProjectedScore: null,
-      opponentProjectedScore: null,
+      userProjectedScore: matchup.team.projectedTotalPoints,
+      opponentProjectedScore: matchup.opponent.projectedTotalPoints,
       week: matchup.week,
       status: status,
     );

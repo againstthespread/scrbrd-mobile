@@ -148,6 +148,45 @@ class SleeperNflState {
   int get fantasyWeek => isPreseason ? 1 : week;
 }
 
+class SleeperPlayerProjection {
+  const SleeperPlayerProjection({
+    required this.playerId,
+    required this.season,
+    required this.week,
+    required this.seasonType,
+    required this.team,
+    required this.gameId,
+    required this.gameDate,
+    required this.stats,
+  });
+
+  factory SleeperPlayerProjection.fromJson(Map<String, dynamic> json) {
+    final date = DateTime.tryParse(_string(json['date']));
+    if (date == null) {
+      throw const FormatException('Sleeper projection has no game date.');
+    }
+    return SleeperPlayerProjection(
+      playerId: _requiredString(json, 'player_id'),
+      season: _string(json['season']),
+      week: _requiredInt(json, 'week'),
+      seasonType: _string(json['season_type']).toLowerCase(),
+      team: _requiredString(json, 'team'),
+      gameId: _nullableString(json['game_id']),
+      gameDate: DateTime(date.year, date.month, date.day),
+      stats: Map.unmodifiable(_numberMap(json['stats'])),
+    );
+  }
+
+  final String playerId;
+  final String season;
+  final int week;
+  final String seasonType;
+  final String team;
+  final String? gameId;
+  final DateTime gameDate;
+  final Map<String, double> stats;
+}
+
 class SleeperFantasyPlayer {
   const SleeperFantasyPlayer({
     required this.sleeperPlayerId,
@@ -219,11 +258,13 @@ class SleeperFantasyTeam {
     required this.roster,
     required this.user,
     required this.matchup,
+    this.projectedTotalPoints,
   });
 
   final SleeperRoster roster;
   final SleeperUser? user;
   final SleeperMatchup matchup;
+  final double? projectedTotalPoints;
 
   String get name => user?.label ?? 'Roster ${roster.rosterId}';
 
@@ -243,12 +284,35 @@ class SleeperFantasyMatchup {
     required this.week,
     required this.team,
     required this.opponent,
+    this.seasonType = 'regular',
   });
 
   final SleeperLeague league;
   final int week;
+  final String seasonType;
   final SleeperFantasyTeam team;
   final SleeperFantasyTeam opponent;
+
+  SleeperFantasyMatchup withProjectedTotals({
+    required double? teamProjection,
+    required double? opponentProjection,
+  }) => SleeperFantasyMatchup(
+    league: league,
+    week: week,
+    seasonType: seasonType,
+    team: SleeperFantasyTeam(
+      roster: team.roster,
+      user: team.user,
+      matchup: team.matchup,
+      projectedTotalPoints: teamProjection,
+    ),
+    opponent: SleeperFantasyTeam(
+      roster: opponent.roster,
+      user: opponent.user,
+      matchup: opponent.matchup,
+      projectedTotalPoints: opponentProjection,
+    ),
+  );
 }
 
 Map<String, dynamic>? _map(Object? value) =>

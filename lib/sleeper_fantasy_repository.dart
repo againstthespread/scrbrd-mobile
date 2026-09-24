@@ -18,10 +18,12 @@ class SleeperLeagueSnapshot {
     required this.users,
     required this.rosters,
     required this.matchups,
+    this.seasonType = 'regular',
   });
 
   final SleeperLeague league;
   final int week;
+  final String seasonType;
   final List<SleeperUser> users;
   final List<SleeperRoster> rosters;
   final List<SleeperMatchup> matchups;
@@ -69,6 +71,7 @@ class SleeperLeagueSnapshot {
     return SleeperFantasyMatchup(
       league: league,
       week: week,
+      seasonType: seasonType,
       team: SleeperFantasyTeam(
         roster: roster,
         user: userForRoster(roster),
@@ -112,6 +115,7 @@ class SleeperFantasyRepository {
     final snapshot = SleeperLeagueSnapshot(
       league: league,
       week: fantasyWeek,
+      seasonType: nflState.seasonType,
       users: users,
       rosters: rosters,
       matchups: matchups,
@@ -133,10 +137,12 @@ class SleeperFantasyRepository {
       final nflState = await _apiClient.fetchNflState();
       _weekCheckedAt[normalizedId] = _clock();
       final fantasyWeek = nflState.fantasyWeek;
-      if (fantasyWeek != cached.week) {
+      if (fantasyWeek != cached.week ||
+          nflState.seasonType != cached.seasonType) {
         cached = SleeperLeagueSnapshot(
           league: cached.league,
           week: fantasyWeek,
+          seasonType: nflState.seasonType,
           users: cached.users,
           rosters: cached.rosters,
           matchups: const [],
@@ -148,6 +154,7 @@ class SleeperFantasyRepository {
     final refreshed = SleeperLeagueSnapshot(
       league: cached.league,
       week: cached.week,
+      seasonType: cached.seasonType,
       users: cached.users,
       rosters: cached.rosters,
       matchups: matchups,
