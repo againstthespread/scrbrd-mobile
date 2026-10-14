@@ -16,6 +16,52 @@ import 'package:sports_hub_mobile/sports_repository.dart';
 import 'package:sports_hub_mobile/tracked_device_session.dart';
 
 void main() {
+  test('F34 queued startup owns the gate before a deferred WAKE', () async {
+    final gate = SportsOperationGate();
+    final firstRelease = Completer<void>();
+    final secondRelease = Completer<void>();
+    final order = <String>[];
+    final first = gate.runInitialSync(() async {
+      order.add('old');
+      await firstRelease.future;
+    });
+    final second = gate.runInitialSync(() async {
+      order.add('new');
+      await secondRelease.future;
+    });
+    await gate.requestLiveRefresh(() async => order.add('wake'));
+    firstRelease.complete();
+    for (var tick = 0; tick < 5; tick++) {
+      await Future<void>.delayed(Duration.zero);
+    }
+    expect(order, ['old', 'new']);
+    secondRelease.complete();
+    await first;
+    await second;
+    expect(order, ['old', 'new', 'wake']);
+  });
+
+  test(
+    'F34 reconnect startup waits for active refresh without overlapping writes',
+    () async {
+      final gate = SportsOperationGate();
+      final release = Completer<void>();
+      final order = <String>[];
+      final live = gate.requestLiveRefresh(() async {
+        order.add('refresh');
+        await release.future;
+      });
+      final startup = gate.runInitialSync(() async => order.add('startup'));
+      await gate.requestLiveRefresh(() async => order.add('new wake'));
+      await Future<void>.delayed(Duration.zero);
+      expect(order, ['refresh']);
+      release.complete();
+      await live;
+      await startup;
+      expect(order, ['refresh', 'startup', 'new wake']);
+    },
+  );
+
   test('idle WAKE starts exactly one live refresh', () async {
     final gate = SportsOperationGate();
     var refreshes = 0;

@@ -458,7 +458,9 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
 
   Future<bool> syncStartupCategory() async {
     if (!_deviceContentEnabled) return false;
+    final generation = _generation;
     await _reconcile();
+    if (generation != _generation || !isBleConnected()) return false;
     var slateSent = false;
     var slateAttempted = false;
     final slateTransport = matchupTransport;
@@ -470,29 +472,37 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
           configStore: leagueConfigStore,
           primaryStore: primaryStore,
           loadSleeper: (config) async {
+            if (generation != _generation) {
+              throw StateError('Fantasy startup session changed.');
+            }
             final snapshot = await _matchupLoader(config.leagueId);
             return _enrichSleeperSafely(
               snapshot.matchupForRoster(int.parse(config.teamId!)),
               config.id,
             );
           },
-          loadEspn: (config) => _espnMatchupLoader(
-            currentFantasySeason(),
-            config.leagueId,
-            config.teamId!,
-          ),
+          loadEspn: (config) async {
+            if (generation != _generation) {
+              throw StateError('Fantasy startup session changed.');
+            }
+            return _espnMatchupLoader(
+              currentFantasySeason(),
+              config.leagueId,
+              config.teamId!,
+            );
+          },
         );
-        await _sendFantasySlateIfChanged(
-          transport,
-          await builder.build(),
-          force: true,
-        );
-        slateSent = true;
+        final entries = await builder.build();
+        if (generation != _generation || !isBleConnected()) return false;
+        await _sendFantasySlateIfChanged(transport, entries, force: true);
+        slateSent = entries.isNotEmpty;
       }
     } finally {
-      await establishStartupBaseline(syncPersistentMatchup: !slateAttempted);
+      if (generation == _generation && isBleConnected()) {
+        await establishStartupBaseline(syncPersistentMatchup: !slateAttempted);
+      }
     }
-    return slateSent || deviceSession.baseline != null;
+    return slateAttempted ? slateSent : deviceSession.baseline != null;
   }
 
   Future<void> removeConfiguration() async {

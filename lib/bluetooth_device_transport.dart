@@ -85,7 +85,7 @@ class BluetoothDeviceTransport
   bool _isWriting = false;
   int? _writingGeneration;
   int _connectionGeneration = 0;
-  int? _fantasySendingGeneration;
+  int? _transferSendingGeneration;
   int _scanGeneration = 0;
 
   Stream<BleDeviceSnapshot> get snapshots => _snapshotController.stream;
@@ -262,13 +262,7 @@ class BluetoothDeviceTransport
       'games=${games.length}, chunks=${transfer.chunkPackets.length}',
     );
     try {
-      await _sendPacket(transfer.startPacket);
-      for (var index = 0; index < transfer.chunkPackets.length; index++) {
-        final chunk = transfer.chunkPackets[index];
-        debugPrint('Slate transfer chunk: index=$index, bytes=${chunk.length}');
-        await _sendPacket(chunk);
-      }
-      await _sendPacket(transfer.endPacket);
+      await _sendTransferPackets(transfer.packets);
       debugPrint('Slate transfer complete: id=${transfer.slateId}');
     } on Object catch (error) {
       debugPrint('Slate transfer failed: id=${transfer.slateId}, error=$error');
@@ -288,13 +282,11 @@ class BluetoothDeviceTransport
       'golfers=${leaderboard.golfers.length}, chunks=${transfer.chunkPackets.length}',
     );
     try {
-      await _sendPacket(transfer.startPacket);
-      for (var index = 0; index < transfer.chunkPackets.length; index++) {
-        final packet = transfer.chunkPackets[index];
-        debugPrint('Golf chunk: index=$index, bytes=${packet.length}');
-        await _sendPacket(packet);
-      }
-      await _sendPacket(transfer.endPacket);
+      await _sendTransferPackets([
+        transfer.startPacket,
+        ...transfer.chunkPackets,
+        transfer.endPacket,
+      ]);
       debugPrint(
         'Golf transfer complete: tournament=${leaderboard.tournamentId}',
       );
@@ -333,24 +325,28 @@ class BluetoothDeviceTransport
         ),
       fantasyMatchupSerializer.serializeSlateEnd(),
     ];
+    await _sendTransferPackets(packets);
+  }
+
+  Future<void> _sendTransferPackets(List<List<int>> packets) async {
     final generation = _connectionGeneration;
-    if (_fantasySendingGeneration == generation) {
-      throw StateError('A fantasy slate is already being sent.');
+    if (_transferSendingGeneration == generation) {
+      throw StateError('A slate transfer is already being sent.');
     }
-    _fantasySendingGeneration = generation;
+    _transferSendingGeneration = generation;
     try {
       for (final packet in packets) {
         if (generation != _connectionGeneration) {
-          throw StateError('Fantasy slate connection changed.');
+          throw StateError('Slate transfer connection changed.');
         }
-        await _sendPacket(packet);
+        await _sendPacket(packet, transferGeneration: generation);
         if (generation != _connectionGeneration) {
-          throw StateError('Fantasy slate connection changed.');
+          throw StateError('Slate transfer connection changed.');
         }
       }
     } finally {
-      if (_fantasySendingGeneration == generation) {
-        _fantasySendingGeneration = null;
+      if (_transferSendingGeneration == generation) {
+        _transferSendingGeneration = null;
       }
     }
   }
@@ -359,7 +355,11 @@ class BluetoothDeviceTransport
   Future<void> clearFantasyMatchup() =>
       _sendPacket(fantasyMatchupSerializer.serializeClear());
 
-  Future<void> _sendPacket(List<int> packet) async {
+  Future<void> _sendPacket(List<int> packet, {int? transferGeneration}) async {
+    if (_transferSendingGeneration == _connectionGeneration &&
+        transferGeneration != _connectionGeneration) {
+      throw StateError('A slate transfer owns the connection.');
+    }
     final characteristic = _writableCharacteristic;
     if (characteristic == null ||
         _snapshot.state == BleConnectionState.disconnected ||
@@ -382,9 +382,7 @@ class BluetoothDeviceTransport
       if (_writeCanRestoreConnected(generation, characteristic)) {
         _emit(_snapshot.copyWith(state: BleConnectionState.connected));
       } else {
-        debugPrint(
-          'BLE write completion ignored; stale generation=$generation',
-        );
+        throw StateError('BLE write cancelled; connection changed.');
       }
     } on Object catch (error) {
       if (_writeCanRestoreConnected(generation, characteristic)) {

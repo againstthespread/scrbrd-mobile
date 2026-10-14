@@ -98,6 +98,7 @@ class InitialDeviceSyncCoordinator {
   }
 
   Future<void> _runOwned(int generation) async {
+    if (!_isCurrent(generation)) return;
     final now = clock();
     final today = DateTime(now.year, now.month, now.day);
     final favorites = readFavorites?.call() ?? const <FavoriteTeam>{};
@@ -111,9 +112,11 @@ class InitialDeviceSyncCoordinator {
 
     try {
       await sender.sendControlCommand(syncStartCommand);
+      if (!_isCurrent(generation)) return;
       onAuthoritativeSyncStarted?.call();
       _diagnose('SYNC_START sent');
     } on Object catch (error) {
+      if (!_isCurrent(generation)) return;
       _diagnose('SYNC_START failed: $error');
       _setSnapshot(
         InitialSyncSnapshot(
@@ -213,6 +216,7 @@ class InitialDeviceSyncCoordinator {
       }
     }
 
+    if (!_isCurrent(generation)) return;
     final status = failures.isNotEmpty
         ? InitialSyncStatus.partialFailure
         : sentCount > 0

@@ -169,6 +169,108 @@ void main() {
     );
   }
 
+  for (final golf in [false, true]) {
+    for (var boundary = 0; boundary < 3; boundary++) {
+      test(
+        'F34 ${golf ? "golf" : "sports"} reconnect at packet $boundary retains baseline',
+        () async {
+          final harness = await _WriteHarness.create();
+          final session = TrackedDeviceSession();
+          if (golf) {
+            session.recordGolf(_golf('-1'));
+          } else {
+            session.recordTeamSlate(
+              league: SportsLeague.mlb,
+              selectedDate: _date,
+              games: [_game(score: 1)],
+            );
+          }
+          final sender = SessionAwareDeviceSender(
+            transport: harness.transport,
+            session: session,
+          );
+          final send = golf
+              ? sender.sendGolf(_golf('-2'), selectedDate: _date)
+              : sender.sendTeamSlate([_game(score: 2)], selectedDate: _date);
+          final failure = expectLater(send, throwsA(isA<StateError>()));
+          for (var index = 0; index < boundary; index++) {
+            await Future<void>.delayed(Duration.zero);
+            harness.completeWrite(index);
+          }
+          await Future<void>.delayed(Duration.zero);
+          harness.physicalDisconnect();
+          await Future<void>.delayed(Duration.zero);
+          harness.physicalReconnect();
+          await Future<void>.delayed(Duration.zero);
+          harness.completeWrite(boundary);
+          await drainWrites(harness, send);
+          await failure;
+          expect(harness.writeCount, boundary + 1);
+          if (golf) {
+            expect(
+              (session[SportsLeague.pga] as TrackedGolfLeaderboard)
+                  .leaderboard
+                  .golfers
+                  .single
+                  .score,
+              '-1',
+            );
+          } else {
+            expect(
+              (session[SportsLeague.mlb] as TrackedTeamSlate)
+                  .games
+                  .single
+                  .awayScore,
+              1,
+            );
+          }
+          final retry = golf
+              ? sender.sendGolf(_golf('-2'), selectedDate: _date)
+              : sender.sendTeamSlate([_game(score: 2)], selectedDate: _date);
+          await drainWrites(harness, retry);
+          await retry;
+          expect(
+            jsonDecode(utf8.decode(harness.packets[boundary + 1]))['type'],
+            golf ? 'golf_start' : 'slate_start',
+          );
+          session.dispose();
+          await harness.dispose();
+        },
+      );
+    }
+  }
+
+  test(
+    'F34 cancelled old write cannot release an active new transfer',
+    () async {
+      final harness = await _WriteHarness.create();
+      final old = harness.transport.sendGameSlate([_game(score: 1)]);
+      final cancelled = expectLater(old, throwsA(isA<StateError>()));
+      await Future<void>.delayed(Duration.zero);
+      harness.physicalDisconnect();
+      await Future<void>.delayed(Duration.zero);
+      harness.physicalReconnect();
+      await Future<void>.delayed(Duration.zero);
+      final fresh = harness.transport.sendGameSlate([_game(score: 2)]);
+      await Future<void>.delayed(Duration.zero);
+      expect(harness.writeCount, 2);
+      harness.completeWrite(0);
+      await cancelled;
+      expect(
+        harness.transport.currentSnapshot.state,
+        BleConnectionState.sending,
+      );
+      await expectLater(
+        harness.transport.sendFantasySlate([_fantasyEntry('A')]),
+        throwsA(isA<StateError>()),
+      );
+      await drainWrites(harness, fresh);
+      await fresh;
+      expect(harness.writeCount, 4);
+      await harness.dispose();
+    },
+  );
+
   test('sending remains a physically connected BLE state', () {
     expect(BleConnectionState.connected.isPhysicallyConnected, isTrue);
     expect(BleConnectionState.sending.isPhysicallyConnected, isTrue);
@@ -258,11 +360,12 @@ void main() {
       );
 
       final send = harness.transport.sendControlCommand('PING');
+      final failure = expectLater(send, throwsA(isA<StateError>()));
       await Future<void>.delayed(Duration.zero);
       harness.physicalDisconnect();
       await Future<void>.delayed(Duration.zero);
       harness.completeWrite(0);
-      await send;
+      await failure;
 
       expect(
         harness.transport.currentSnapshot.state,
@@ -286,11 +389,12 @@ void main() {
     () async {
       final harness = await _WriteHarness.create();
       final send = harness.transport.sendControlCommand('PING');
+      final failure = expectLater(send, throwsA(isA<StateError>()));
       await Future<void>.delayed(Duration.zero);
 
       await harness.transport.disconnect();
       harness.completeWrite(0);
-      await send;
+      await failure;
 
       expect(
         harness.transport.currentSnapshot.state,
@@ -307,11 +411,12 @@ void main() {
   test('later physical reconnect uses the new generation normally', () async {
     final harness = await _WriteHarness.create();
     final staleSend = harness.transport.sendControlCommand('OLD');
+    final failure = expectLater(staleSend, throwsA(isA<StateError>()));
     await Future<void>.delayed(Duration.zero);
     harness.physicalDisconnect();
     await Future<void>.delayed(Duration.zero);
     harness.completeWrite(0);
-    await staleSend;
+    await failure;
 
     harness.physicalReconnect();
     await Future<void>.delayed(Duration.zero);

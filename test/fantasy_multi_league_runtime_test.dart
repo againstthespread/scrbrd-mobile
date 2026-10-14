@@ -90,6 +90,10 @@ void main() {
       },
       sleeperProjectionEnricher: projectionEnricher,
       espnMatchupLoader: (_, leagueId, teamId) async {
+        if (loadStarted != null && !loadStarted!.isCompleted) {
+          loadStarted!.complete();
+        }
+        if (loadGate != null) await loadGate!.future;
         if (espnFailures.contains(leagueId)) {
           throw StateError('ESPN unavailable $leagueId');
         }
@@ -568,12 +572,57 @@ void main() {
   );
 
   test(
+    'F34 empty startup slate does not count as an available category',
+    () async {
+      await store.clear();
+      expect(await coordinator.syncStartupCategory(), isFalse);
+      expect(transport.slates, [isEmpty]);
+    },
+  );
+
+  test(
+    'F34 stale startup fantasy fetch does not send into a new session',
+    () async {
+      await save('a');
+      loadGate = Completer<void>();
+      loadStarted = Completer<void>();
+      final old = coordinator.syncStartupCategory();
+      await loadStarted!.future;
+      coordinator.endConnectionSession();
+      coordinator.beginConnectionSession();
+      loadGate!.complete();
+      await old;
+      expect(transport.slates, isEmpty);
+      expect(transport.matchups, isEmpty);
+      expect(loads, ['a']);
+    },
+  );
+
+  test(
+    'F34 stale ESPN startup fetch does not send into a new session',
+    () async {
+      await store.clear();
+      await save('a', provider: FantasyProvider.espn);
+      loadGate = Completer<void>();
+      loadStarted = Completer<void>();
+      final old = coordinator.syncStartupCategory();
+      await loadStarted!.future;
+      coordinator.endConnectionSession();
+      coordinator.beginConnectionSession();
+      loadGate!.complete();
+      await old;
+      expect(transport.slates, isEmpty);
+      expect(transport.matchups, isEmpty);
+    },
+  );
+
+  test(
     'startup sends an empty slate when no configured team is selected',
     () async {
       await save('a', team: null);
       await save('b', team: null);
 
-      expect(await coordinator.syncStartupCategory(), isTrue);
+      expect(await coordinator.syncStartupCategory(), isFalse);
 
       expect(transport.slates, [isEmpty]);
       expect(loads, isEmpty);

@@ -9,23 +9,35 @@ class SportsOperationGate {
   final void Function(String message)? onDiagnostic;
 
   bool _initialSyncActive = false;
+  int _queuedInitialSyncs = 0;
+  Future<void> _initialSyncTail = Future<void>.value();
+  Completer<void>? _liveRefreshFinished;
   bool _liveRefreshActive = false;
   bool _refreshPending = false;
   Future<void> Function()? _pendingRefresh;
 
-  bool get isInitialSyncActive => _initialSyncActive;
+  bool get isInitialSyncActive => _initialSyncActive || _queuedInitialSyncs > 0;
   bool get isLiveRefreshActive => _liveRefreshActive;
 
   Future<void> runInitialSync(Future<void> Function() operation) async {
-    if (_initialSyncActive) return;
+    final previous = _initialSyncTail;
+    final finished = Completer<void>();
+    _initialSyncTail = finished.future;
+    _queuedInitialSyncs++;
+    await previous;
+    // A reconnect's startup must not overlap an older refresh's final writes.
+    final liveFinished = _liveRefreshFinished;
+    if (liveFinished != null) await liveFinished.future;
     _initialSyncActive = true;
     _diagnose('initial sync ownership acquired');
     try {
       await operation();
     } finally {
       _initialSyncActive = false;
+      _queuedInitialSyncs--;
+      finished.complete();
       _diagnose('initial sync ownership released');
-      if (_refreshPending) {
+      if (_queuedInitialSyncs == 0 && _refreshPending) {
         final refresh = _takePendingRefresh();
         if (refresh != null) {
           _diagnose('post-sync deferred WAKE executed');
@@ -36,7 +48,7 @@ class SportsOperationGate {
   }
 
   Future<void> requestLiveRefresh(Future<void> Function() refresh) async {
-    if (_initialSyncActive) {
+    if (isInitialSyncActive) {
       _markRefreshPending(
         refresh,
         firstDiagnostic: 'WAKE received during initial sync; deferred',
@@ -65,6 +77,8 @@ class SportsOperationGate {
     Future<void> Function() initialRefresh,
   ) async {
     _liveRefreshActive = true;
+    final finished = Completer<void>();
+    _liveRefreshFinished = finished;
     var refresh = initialRefresh;
     Object? firstError;
     StackTrace? firstStackTrace;
@@ -79,6 +93,7 @@ class SportsOperationGate {
           _diagnose('live refresh failed: $error');
         }
 
+        if (_queuedInitialSyncs > 0) break;
         final pendingRefresh = _takePendingRefresh();
         if (pendingRefresh == null) {
           _diagnose('live refresh completed; no deferred WAKE pending');
@@ -89,6 +104,8 @@ class SportsOperationGate {
       }
     } finally {
       _liveRefreshActive = false;
+      _liveRefreshFinished = null;
+      finished.complete();
     }
 
     if (firstError != null) {

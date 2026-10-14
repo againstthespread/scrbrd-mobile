@@ -60,6 +60,37 @@ void main() {
     );
   });
 
+  test(
+    'F34 reconnect while previous provider fetch is pending starts current sync',
+    () async {
+      final pending = Completer<List<SportsGame>>();
+      final harness = _Harness(
+        pendingFirstFetch: pending,
+        games: {
+          SportsLeague.nba: [_game('NBA')],
+        },
+      );
+      harness.coordinator.handleConnectionState(BleConnectionState.connected);
+      await harness.settle();
+      for (var reconnect = 0; reconnect < 2; reconnect++) {
+        harness.connected = false;
+        harness.coordinator.handleConnectionState(
+          BleConnectionState.disconnected,
+        );
+        harness.connected = true;
+        harness.coordinator.handleConnectionState(BleConnectionState.connected);
+      }
+      pending.complete([]);
+      await harness.settle();
+      expect(
+        harness.transport.controls.where((c) => c == 'SYNC_START'),
+        hasLength(2),
+      );
+      expect(harness.transport.sent, ['NBA']);
+      expect(harness.coordinator.snapshot.status, InitialSyncStatus.complete);
+    },
+  );
+
   test('SYNC_START precedes fetch and all-empty sends SYNC_EMPTY', () async {
     final events = <String>[];
     final harness = _Harness(events: events);
