@@ -16,6 +16,238 @@ import 'package:sports_hub_mobile/sports_hub_ble_protocol.dart';
 import 'package:sports_hub_mobile/tracked_device_session.dart';
 
 void main() {
+  for (final terminal in ['error', 'done']) {
+    test('F18 WAKE $terminal recovers without a physical reconnect', () async {
+      final streams = <StreamController<List<int>>>[];
+      final harness = await _WriteHarness.create(
+        wakeStreamProvider: (_) {
+          final stream = StreamController<List<int>>.broadcast();
+          streams.add(stream);
+          return stream.stream;
+        },
+      );
+      final received = <List<int>>[];
+      final subscription = harness.transport.wakeNotifications.listen(
+        received.add,
+      );
+      addTearDown(() async {
+        await subscription.cancel();
+        await harness.dispose();
+        for (final stream in streams) {
+          await stream.close();
+        }
+      });
+      if (terminal == 'error') {
+        streams.single.addError(StateError('CCCD subscription failed'));
+      } else {
+        await streams.single.close();
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 1100));
+      expect(streams, hasLength(2));
+      streams.last.add(utf8.encode('WAKE'));
+      await Future<void>.delayed(Duration.zero);
+      expect(received, [utf8.encode('WAKE')]);
+      expect(
+        harness.transport.currentSnapshot.state,
+        BleConnectionState.connected,
+      );
+    });
+  }
+
+  Future<void> waitForWake(bool Function() ready) async {
+    for (var tick = 0; tick < 100 && !ready(); tick++) {
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+    }
+    expect(ready(), isTrue);
+  }
+
+  test(
+    'F18 retry budget is bounded and explicit resume owns one fresh listener',
+    () async {
+      var attempts = 0;
+      var fail = true;
+      final stream = StreamController<List<int>>.broadcast();
+      final harness = await _WriteHarness.create(
+        wakeRetryDelays: List.filled(3, const Duration(milliseconds: 1)),
+        wakeStreamProvider: (_) {
+          attempts++;
+          if (fail) throw StateError('subscribe failed synchronously');
+          return stream.stream;
+        },
+      );
+      addTearDown(() async {
+        await harness.dispose();
+        await stream.close();
+      });
+      await waitForWake(
+        () =>
+            harness.transport.wakeSubscriptionHealth ==
+            WakeSubscriptionHealth.failed,
+      );
+      expect(attempts, 4);
+      expect(
+        harness.transport.currentSnapshot.errorMessage,
+        contains('Automatic refresh paused'),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(attempts, 4);
+      harness.physicalReconnect();
+      await Future<void>.delayed(Duration.zero);
+      expect(attempts, 4);
+      expect(
+        harness.transport.currentSnapshot.errorMessage,
+        contains('Automatic refresh paused'),
+      );
+      fail = false;
+      final first = harness.transport.resumeWakeNotifications();
+      final second = harness.transport.resumeWakeNotifications();
+      expect(identical(first, second), isTrue);
+      await first;
+      expect(attempts, 5);
+      expect(
+        harness.transport.wakeSubscriptionHealth,
+        WakeSubscriptionHealth.listening,
+      );
+      stream.add(utf8.encode('WAKE'));
+      await Future<void>.delayed(Duration.zero);
+      expect(harness.transport.currentSnapshot.errorMessage, isNull);
+    },
+  );
+
+  test(
+    'F18 notifications and duplicate connected events do not reset retry budget',
+    () async {
+      final streams = <StreamController<List<int>>>[];
+      final harness = await _WriteHarness.create(
+        wakeRetryDelays: List.filled(3, const Duration(milliseconds: 1)),
+        wakeStreamProvider: (_) {
+          final stream = StreamController<List<int>>.broadcast();
+          streams.add(stream);
+          return stream.stream;
+        },
+      );
+      addTearDown(() async {
+        await harness.dispose();
+        for (final s in streams) {
+          await s.close();
+        }
+      });
+      harness.physicalReconnect();
+      await Future<void>.delayed(Duration.zero);
+      expect(streams, hasLength(1));
+      for (var attempt = 0; attempt < 4; attempt++) {
+        streams.last.add(utf8.encode('WAKE'));
+        streams.last.addError(StateError('interrupted'));
+        await waitForWake(
+          () => attempt == 3
+              ? harness.transport.wakeSubscriptionHealth ==
+                    WakeSubscriptionHealth.failed
+              : streams.length == attempt + 2,
+        );
+      }
+      expect(streams, hasLength(4));
+      expect(
+        harness.transport.wakeSubscriptionHealth,
+        WakeSubscriptionHealth.failed,
+      );
+    },
+  );
+
+  test(
+    'F18 disconnect cancels queued recovery and reconnect uses only new stream',
+    () async {
+      final streams = <StreamController<List<int>>>[];
+      final harness = await _WriteHarness.create(
+        wakeRetryDelays: [const Duration(milliseconds: 30)],
+        wakeStreamProvider: (_) {
+          final s = StreamController<List<int>>.broadcast();
+          streams.add(s);
+          return s.stream;
+        },
+      );
+      final received = <List<int>>[];
+      final listener = harness.transport.wakeNotifications.listen(received.add);
+      addTearDown(() async {
+        await listener.cancel();
+        await harness.dispose();
+        for (final s in streams) {
+          await s.close();
+        }
+      });
+      streams.single.addError(StateError('broken'));
+      await Future<void>.delayed(Duration.zero);
+      harness.physicalDisconnect();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(streams, hasLength(1));
+      expect(
+        harness.transport.wakeSubscriptionHealth,
+        WakeSubscriptionHealth.inactive,
+      );
+      harness.physicalReconnect();
+      await waitForWake(() => streams.length == 2);
+      streams.first.add(utf8.encode('obsolete'));
+      streams.last.add(utf8.encode('WAKE'));
+      await Future<void>.delayed(Duration.zero);
+      expect(received, [utf8.encode('WAKE')]);
+    },
+  );
+
+  test(
+    'F18 disconnect during cancellation cannot install a stale recovery listener',
+    () async {
+      final cancel = Completer<void>();
+      final streams = <StreamController<List<int>>>[];
+      final harness = await _WriteHarness.create(
+        wakeRetryDelays: [const Duration(milliseconds: 1)],
+        wakeStreamProvider: (_) {
+          final s = StreamController<List<int>>(
+            onCancel: streams.isEmpty ? () => cancel.future : null,
+          );
+          streams.add(s);
+          return s.stream;
+        },
+      );
+      addTearDown(() async {
+        if (!cancel.isCompleted) cancel.complete();
+        await harness.dispose();
+        for (final s in streams) {
+          await s.close();
+        }
+      });
+      streams.single.addError(StateError('broken'));
+      await waitForWake(() => !streams.first.hasListener);
+      harness.physicalDisconnect();
+      harness.physicalReconnect();
+      await Future<void>.delayed(Duration.zero);
+      cancel.complete();
+      await waitForWake(() => streams.length == 2);
+      expect(streams.where((s) => s.hasListener), hasLength(1));
+      expect(
+        harness.transport.wakeSubscriptionHealth,
+        WakeSubscriptionHealth.listening,
+      );
+    },
+  );
+
+  test('F18 disposal cancels pending recovery timers', () async {
+    var attempts = 0;
+    final harness = await _WriteHarness.create(
+      wakeRetryDelays: [const Duration(milliseconds: 20)],
+      wakeStreamProvider: (_) {
+        attempts++;
+        return Stream.error(StateError('broken'));
+      },
+    );
+    await Future<void>.delayed(Duration.zero);
+    await harness.dispose();
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    expect(attempts, 1);
+    expect(
+      harness.transport.wakeSubscriptionHealth,
+      WakeSubscriptionHealth.inactive,
+    );
+  });
+
   Future<void> drainWrites(_WriteHarness harness, Future<void> send) async {
     var done = false;
     send.then((_) => done = true, onError: (Object _) => done = true);
@@ -650,7 +882,10 @@ class _ScanHarness {
 }
 
 class _WriteHarness {
-  _WriteHarness._() {
+  _WriteHarness._({
+    BleWakeStreamFactory? wakeStreamProvider,
+    List<Duration>? wakeRetryDelays,
+  }) {
     transport = BluetoothDeviceTransport(
       scanTimeout: const Duration(milliseconds: 10),
       bleStatusProvider: () => BleStatus.ready,
@@ -661,7 +896,14 @@ class _WriteHarness {
             required servicesWithCharacteristicsToDiscover,
             required connectionTimeout,
           }) => connection.stream,
-      wakeStreamProvider: (_) => const Stream.empty(),
+      wakeStreamProvider: wakeStreamProvider ?? (_) => wake.stream,
+      wakeRetryDelays:
+          wakeRetryDelays ??
+          const [
+            Duration(seconds: 1),
+            Duration(seconds: 2),
+            Duration(seconds: 4),
+          ],
       writeWithResponse: (characteristic, {required value}) {
         final completion = Completer<void>();
         writes.add(completion);
@@ -671,8 +913,14 @@ class _WriteHarness {
     );
   }
 
-  static Future<_WriteHarness> create() async {
-    final harness = _WriteHarness._();
+  static Future<_WriteHarness> create({
+    BleWakeStreamFactory? wakeStreamProvider,
+    List<Duration>? wakeRetryDelays,
+  }) async {
+    final harness = _WriteHarness._(
+      wakeStreamProvider: wakeStreamProvider,
+      wakeRetryDelays: wakeRetryDelays,
+    );
     final scanAttempt = harness.transport.scanForDevice();
     await Future<void>.delayed(Duration.zero);
     harness.scan.add(_device('write-device'));
@@ -686,6 +934,7 @@ class _WriteHarness {
     return harness;
   }
 
+  final wake = StreamController<List<int>>.broadcast();
   final scan = StreamController<DiscoveredDevice>.broadcast();
   final connection = StreamController<ConnectionStateUpdate>.broadcast();
   final writes = <Completer<void>>[];
@@ -718,6 +967,7 @@ class _WriteHarness {
 
   Future<void> dispose() async {
     await transport.dispose();
+    await wake.close();
     await scan.close();
     await connection.close();
   }

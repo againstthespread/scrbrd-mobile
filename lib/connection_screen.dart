@@ -34,6 +34,7 @@ class ConnectionScreen extends StatefulWidget {
   const ConnectionScreen({
     super.key,
     required this.repository,
+    this.transport,
     this.favoritesStore,
     this.contentPreferencesStore,
     this.collegeFootballPreferencesStore,
@@ -41,6 +42,7 @@ class ConnectionScreen extends StatefulWidget {
   });
 
   final SportsRepository repository;
+  final BluetoothDeviceTransport? transport;
   final FavoritesStore? favoritesStore;
   final DeviceContentPreferencesStore? contentPreferencesStore;
   final CollegeFootballPreferencesStore? collegeFootballPreferencesStore;
@@ -91,6 +93,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _lifecycleState =
+        WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed;
     _favoritesStore = widget.favoritesStore ?? MemoryFavoritesStore();
     _contentPreferencesStore =
         widget.contentPreferencesStore ?? MemoryDeviceContentPreferencesStore();
@@ -99,7 +103,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         widget.collegeFootballPreferencesStore ??
         MemoryCollegeFootballPreferencesStore();
     _activeCollegeFootballPreferences = _collegeFootballPreferencesStore.read();
-    _transport = BluetoothDeviceTransport();
+    _transport = widget.transport ?? BluetoothDeviceTransport();
     _trackedSession = TrackedDeviceSession()
       ..addListener(_handleTrackedSessionChanged);
     _deviceSender = SessionAwareDeviceSender(
@@ -156,7 +160,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       readFavorites: _favoritesStore.readFavorites,
       readContentPreferences: () => _activeContentPreferences,
       readCollegeFootballPreferences: () => _activeCollegeFootballPreferences,
-      syncFantasyCategory: _fantasyCoordinator.syncStartupCategory,
+      syncFantasyCategory: _fantasyCoordinator.syncStartupCategoryOutcome,
       onAuthoritativeSyncStarted: _trackedSession.clear,
     );
     _deviceSnapshot = _transport.currentSnapshot;
@@ -259,8 +263,16 @@ class _ConnectionScreenState extends State<ConnectionScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    final previous = _lifecycleState;
     _lifecycleState = state;
     debugPrint('BACKGROUND SCORE REFRESH: lifecycle=${state.name}');
+    if (state == AppLifecycleState.resumed &&
+        previous != state &&
+        !_isDisposing &&
+        _transport.currentSnapshot.state.isPhysicallyConnected) {
+      unawaited(_transport.resumeWakeNotifications());
+      _requestAutomaticRefresh('APP RESUME');
+    }
   }
 
   void _handleBleWakeNotification(List<int> payload) {
@@ -270,12 +282,21 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       'BLE connected=$connected; refresh permitted=$connected; '
       'payload=$payload',
     );
+    _requestAutomaticRefresh('BLE WAKE');
+  }
+
+  void _requestAutomaticRefresh(String trigger) {
+    if (_isDisposing ||
+        !_transport.currentSnapshot.state.isPhysicallyConnected) {
+      return;
+    }
     unawaited(
       _sportsOperationGate.requestLiveRefresh(
         () => runIsolatedWakeDomains(
           refreshSports: _liveRefreshCoordinator.refreshTrackedSessionOnce,
           observeFantasy: _fantasyCoordinator.observe,
           onDiagnostic: _recordBackgroundUpdaterDiagnostic,
+          triggerLabel: trigger,
         ),
       ),
     );
@@ -659,6 +680,9 @@ class _ConnectionStatusCard extends StatelessWidget {
     if (snapshot.state == BleConnectionState.disconnected) {
       return ('Disconnected', null);
     }
+    if (snapshot.errorMessage != null) {
+      return ('Connected', snapshot.errorMessage);
+    }
     return switch (syncSnapshot.status) {
       InitialSyncStatus.syncing => (
         "Syncing today's sports...",
@@ -672,6 +696,7 @@ class _ConnectionStatusCard extends StatelessWidget {
         'Connected',
         "Some sports couldn't be loaded",
       ),
+      InitialSyncStatus.failure => ('Connected', "Sports couldn't be loaded"),
       InitialSyncStatus.empty => ('Connected', 'No sports loaded today'),
       InitialSyncStatus.idle => ('Connected', null),
     };

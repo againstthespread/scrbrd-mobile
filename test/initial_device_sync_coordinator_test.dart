@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:sports_hub_mobile/fantasy_startup_outcome.dart';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sports_hub_mobile/ble_device_state.dart';
@@ -133,7 +134,7 @@ void main() {
   );
 
   test(
-    'partial fetch failure isolates leagues and never sends SYNC_EMPTY',
+    'failed fetch with no loaded content isolates leagues and never sends SYNC_EMPTY',
     () async {
       final harness = _Harness(fetchFailures: {SportsLeague.nfl});
       await harness.coordinator.startForConnectionForTest();
@@ -144,10 +145,7 @@ void main() {
         SportsLeague.mlb,
       ]);
       expect(harness.transport.controls, ['SYNC_START']);
-      expect(
-        harness.coordinator.snapshot.status,
-        InitialSyncStatus.partialFailure,
-      );
+      expect(harness.coordinator.snapshot.status, InitialSyncStatus.failure);
     },
   );
 
@@ -281,7 +279,7 @@ class _Harness {
           preferences ?? DeviceContentPreferences.defaults(),
       syncFantasyCategory: () async {
         if (fantasyAvailable) transport.sent.add('FANTASY');
-        return fantasyAvailable;
+        return FantasyStartupOutcome(hasContent: fantasyAvailable);
       },
       onAuthoritativeSyncStarted: session.clear,
     );

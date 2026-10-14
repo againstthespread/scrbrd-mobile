@@ -10,6 +10,17 @@ typedef SleeperSlateLoader =
 typedef EspnSlateLoader =
     Future<FantasyMatchupSnapshot> Function(FantasyLeagueConfig config);
 
+class FantasySlateBuildOutcome {
+  FantasySlateBuildOutcome({
+    required List<FantasyMatchupSlateEntry> entries,
+    required Map<String, Object> failures,
+  }) : entries = List.unmodifiable(entries),
+       failures = Map.unmodifiable(failures);
+
+  final List<FantasyMatchupSlateEntry> entries;
+  final Map<String, Object> failures;
+}
+
 class FantasyMatchupSlateBuilder {
   FantasyMatchupSlateBuilder({
     required this.configStore,
@@ -24,13 +35,17 @@ class FantasyMatchupSlateBuilder {
   final SleeperSlateLoader loadSleeper;
   final EspnSlateLoader loadEspn;
 
-  Future<List<FantasyMatchupSlateEntry>> build() async {
+  Future<List<FantasyMatchupSlateEntry>> build() async =>
+      (await buildOutcome()).entries;
+
+  Future<FantasySlateBuildOutcome> buildOutcome() async {
     final configs = await configStore.readAll();
     final eligible = configs.where((config) => config.hasSelectedTeam).toList();
     final primary = await primaryStore.resolve(
       eligible.map((config) => config.id),
     );
     final entries = <FantasyMatchupSlateEntry>[];
+    final failures = <String, Object>{};
     for (final config in eligible) {
       try {
         final display = switch (config.provider) {
@@ -44,8 +59,8 @@ class FantasyMatchupSlateBuilder {
         entries.add(
           FantasyMatchupSlateEntry(identity: config.id, matchup: display),
         );
-      } on Object {
-        // A provider failure omits only its league from this display slate.
+      } on Object catch (error) {
+        failures[config.id] = error;
       }
     }
     entries.sort((left, right) {
@@ -55,6 +70,9 @@ class FantasyMatchupSlateBuilder {
       final name = left.matchup.leagueName.compareTo(right.matchup.leagueName);
       return name != 0 ? name : left.identity.compareTo(right.identity);
     });
-    return List.unmodifiable(entries.take(capacity));
+    return FantasySlateBuildOutcome(
+      entries: entries.take(capacity).toList(),
+      failures: failures,
+    );
   }
 }

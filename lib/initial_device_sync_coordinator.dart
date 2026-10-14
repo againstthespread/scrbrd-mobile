@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'ble_device_state.dart';
+import 'fantasy_startup_outcome.dart';
 import 'session_aware_device_sender.dart';
 import 'sports_operation_gate.dart';
 import 'sports_league.dart';
@@ -11,7 +12,14 @@ import 'device_content_preferences.dart';
 import 'college_football.dart';
 import 'power_four_game_filter.dart';
 
-enum InitialSyncStatus { idle, syncing, complete, empty, partialFailure }
+enum InitialSyncStatus {
+  idle,
+  syncing,
+  complete,
+  empty,
+  partialFailure,
+  failure,
+}
 
 class InitialSyncSnapshot {
   const InitialSyncSnapshot({
@@ -57,7 +65,7 @@ class InitialDeviceSyncCoordinator {
   final Future<void> Function()? onInitialSyncComplete;
   final Set<FavoriteTeam> Function()? readFavorites;
   final DeviceContentPreferences Function()? readContentPreferences;
-  final Future<bool> Function()? syncFantasyCategory;
+  final Future<FantasyStartupOutcome> Function()? syncFantasyCategory;
   final void Function()? onAuthoritativeSyncStarted;
   final CollegeFootballPreferences Function()? readCollegeFootballPreferences;
 
@@ -120,7 +128,7 @@ class InitialDeviceSyncCoordinator {
       _diagnose('SYNC_START failed: $error');
       _setSnapshot(
         InitialSyncSnapshot(
-          status: InitialSyncStatus.partialFailure,
+          status: InitialSyncStatus.failure,
           lastErrorSummary: 'Unable to start device sync: $error',
         ),
       );
@@ -135,11 +143,19 @@ class InitialDeviceSyncCoordinator {
       if (category == DeviceContentCategory.fantasy) {
         try {
           _diagnose('Fantasy sync started');
-          if (await syncFantasyCategory?.call() == true) {
+          final result =
+              await syncFantasyCategory?.call() ??
+              const FantasyStartupOutcome();
+          failures.addAll(result.failures.map((error) => 'Fantasy: $error'));
+          if (result.hasContent) {
             sentCount++;
             _diagnose('Fantasy sent');
           } else {
-            _diagnose('Fantasy unavailable; skipped');
+            _diagnose(
+              result.isEmpty
+                  ? 'Fantasy empty; skipped'
+                  : 'Fantasy failed; no content loaded',
+            );
           }
         } on Object catch (error) {
           failures.add('Fantasy: $error');
@@ -218,7 +234,9 @@ class InitialDeviceSyncCoordinator {
 
     if (!_isCurrent(generation)) return;
     final status = failures.isNotEmpty
-        ? InitialSyncStatus.partialFailure
+        ? sentCount > 0
+              ? InitialSyncStatus.partialFailure
+              : InitialSyncStatus.failure
         : sentCount > 0
         ? InitialSyncStatus.complete
         : InitialSyncStatus.empty;

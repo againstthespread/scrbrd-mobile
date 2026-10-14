@@ -13,6 +13,7 @@ import 'sleeper_league_observation_session.dart';
 import 'fantasy_device_session.dart';
 import 'fantasy_matchup_display_data.dart';
 import 'fantasy_matchup_slate_builder.dart';
+import 'fantasy_startup_outcome.dart';
 import 'fantasy_matchup_transport.dart';
 import 'fantasy_provider_models.dart';
 import 'fantasy_point_alert.dart';
@@ -457,12 +458,21 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     );
   }
 
-  Future<bool> syncStartupCategory() async {
-    if (!_deviceContentEnabled) return false;
+  Future<bool> syncStartupCategory() async =>
+      (await syncStartupCategoryOutcome()).hasContent;
+
+  Future<FantasyStartupOutcome> syncStartupCategoryOutcome() async {
+    if (!_deviceContentEnabled) return const FantasyStartupOutcome();
     final generation = _generation;
     await _reconcile();
-    if (generation != _generation || !isBleConnected()) return false;
+    if (generation != _generation || !isBleConnected()) {
+      return const FantasyStartupOutcome(
+        failures: ['Fantasy startup session changed.'],
+      );
+    }
     var slateSent = false;
+    final failures = <String>[];
+    FantasyObservationResult? baseline;
     var slateAttempted = false;
     final slateTransport = matchupTransport;
     try {
@@ -493,17 +503,53 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
             );
           },
         );
-        final entries = await builder.build();
-        if (generation != _generation || !isBleConnected()) return false;
-        await _sendFantasySlateIfChanged(transport, entries, force: true);
+        final built = await builder.buildOutcome();
+        final entries = built.entries;
+        failures.addAll(
+          built.failures.entries.map((e) => '${e.key}: ${e.value}'),
+        );
+        if (generation != _generation || !isBleConnected()) {
+          return const FantasyStartupOutcome(
+            failures: ['Fantasy startup session changed.'],
+          );
+        }
+        // An intentional empty configuration clears Fantasy. Provider failure
+        // is unknown data and must not masquerade as an empty clear.
+        if (entries.isNotEmpty || built.failures.isEmpty) {
+          await _sendFantasySlateIfChanged(transport, entries, force: true);
+        }
         slateSent = entries.isNotEmpty;
       }
     } finally {
       if (generation == _generation && isBleConnected()) {
-        await establishStartupBaseline(syncPersistentMatchup: !slateAttempted);
+        baseline = await _observe(
+          startupOnly: true,
+          sendAlerts: false,
+          syncPersistentMatchup: !slateAttempted,
+        );
+        if (baseline.error != null) {
+          failures.add('Fantasy: ${baseline.error}');
+        }
+        for (final entry in baseline.leagues.entries) {
+          if (entry.value.error != null) {
+            final error = '${entry.key}: ${entry.value.error}';
+            if (!failures.contains(error)) failures.add(error);
+          }
+        }
       }
     }
-    return slateAttempted ? slateSent : deviceSession.baseline != null;
+    if (generation != _generation || !isBleConnected()) {
+      return const FantasyStartupOutcome(
+        failures: ['Fantasy startup session changed.'],
+      );
+    }
+    return FantasyStartupOutcome(
+      hasContent: slateAttempted
+          ? slateSent
+          : deviceSession.baseline != null &&
+                baseline?.leagues[_primaryId]?.succeeded == true,
+      failures: List.unmodifiable(failures),
+    );
   }
 
   Future<void> removeConfiguration() async {

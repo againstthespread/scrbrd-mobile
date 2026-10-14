@@ -65,6 +65,35 @@ void main() {
     expect(find.text("Some sports couldn't be loaded"), findsOneWidget);
   });
 
+  testWidgets('subscription failure is visible while BLE remains connected', (
+    tester,
+  ) async {
+    await _pumpHome(
+      tester,
+      connectionState: BleConnectionState.connected,
+      errorMessage:
+          'Automatic refresh paused. Return to the app or reconnect to retry.',
+    );
+    expect(
+      find.text(
+        'Automatic refresh paused. Return to the app or reconnect to retry.',
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('startup failure is distinct from genuinely empty content', (
+    tester,
+  ) async {
+    await _pumpHome(
+      tester,
+      connectionState: BleConnectionState.connected,
+      sync: const InitialSyncSnapshot(status: InitialSyncStatus.failure),
+    );
+    expect(find.text("Sports couldn't be loaded"), findsOneWidget);
+    expect(find.text('No sports loaded today'), findsNothing);
+  });
+
   testWidgets("Today's Sports reflects only TrackedDeviceSession content", (
     tester,
   ) async {
@@ -229,6 +258,7 @@ void main() {
 Future<void> _pumpHome(
   WidgetTester tester, {
   BleConnectionState connectionState = BleConnectionState.disconnected,
+  String? errorMessage,
   InitialSyncSnapshot sync = const InitialSyncSnapshot(
     status: InitialSyncStatus.idle,
   ),
@@ -241,7 +271,10 @@ Future<void> _pumpHome(
   return tester.pumpWidget(
     MaterialApp(
       home: ScrbrdHomeView(
-        snapshot: BleDeviceSnapshot(state: connectionState),
+        snapshot: BleDeviceSnapshot(
+          state: connectionState,
+          errorMessage: errorMessage,
+        ),
         initialSyncSnapshot: sync,
         trackedContent: content,
         onConnect: () {},

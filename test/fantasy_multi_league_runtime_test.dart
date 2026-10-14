@@ -1,5 +1,13 @@
 import 'dart:async';
 
+import 'package:sports_hub_mobile/device_content_preferences.dart';
+
+import 'package:sports_hub_mobile/initial_device_sync_coordinator.dart';
+import 'package:sports_hub_mobile/sports_repository.dart';
+import 'package:sports_hub_mobile/sports_data_source.dart';
+import 'package:sports_hub_mobile/sports_game.dart';
+import 'package:sports_hub_mobile/sports_league.dart';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -105,6 +113,106 @@ void main() {
   });
 
   tearDown(() => coordinator.dispose());
+
+  group('F37 startup classification', () {
+    Future<InitialSyncSnapshot> start({bool sports = false}) async {
+      final initial = InitialDeviceSyncCoordinator(
+        repository: SportsRepository(
+          _EmptyStartupSportsSource(withGame: sports),
+        ),
+        sender: SessionAwareDeviceSender(
+          transport: transport,
+          session: TrackedDeviceSession(),
+        ),
+        isBleConnected: () => transport.connected,
+        readContentPreferences: () => DeviceContentPreferences([
+          for (final category in DeviceContentCategory.values)
+            DeviceContentPreference(
+              category: category,
+              enabled:
+                  category == DeviceContentCategory.fantasy ||
+                  sports && category == DeviceContentCategory.nba,
+            ),
+        ]),
+        syncFantasyCategory: coordinator.syncStartupCategoryOutcome,
+      );
+      await initial.startForConnectionForTest();
+      return initial.snapshot;
+    }
+
+    test(
+      'all provider failures are failure, never genuine emptiness',
+      () async {
+        failures.addAll(['a', 'b']);
+        final result = await start();
+        expect(result.status.name, 'failure');
+        expect(result.successfullySyncedLeagueCount, 0);
+        expect(result.lastErrorSummary, contains('sleeper:a'));
+        expect(transport.controls, ['SYNC_START']);
+        expect(transport.slates, isEmpty);
+      },
+    );
+
+    test(
+      'partial provider failure still sends content and reports partial',
+      () async {
+        failures.add('b');
+        final result = await start();
+        expect(result.status, InitialSyncStatus.partialFailure);
+        expect(result.successfullySyncedLeagueCount, 1);
+        expect(result.lastErrorSummary, contains('sleeper:b'));
+        expect(transport.controls, ['SYNC_START', 'SYNC_COMPLETE']);
+        expect(transport.slates.single.single.identity, 'sleeper:a');
+      },
+    );
+
+    test(
+      'sports content plus failed fantasy providers is partial, not empty or complete',
+      () async {
+        failures.addAll(['a', 'b']);
+        final result = await start(sports: true);
+        expect(result.status, InitialSyncStatus.partialFailure);
+        expect(result.successfullySyncedLeagueCount, 1);
+        expect(result.lastErrorSummary, contains('sleeper:a'));
+        expect(transport.controls, ['SYNC_START', 'SYNC_COMPLETE']);
+        expect(transport.slates, isEmpty);
+      },
+    );
+
+    test(
+      'ESPN failure is distinguished from unselected configurations',
+      () async {
+        await save('a', team: null);
+        await save('b', team: null);
+        await save('c', provider: FantasyProvider.espn);
+        espnFailures.add('c');
+        final result = await start();
+        expect(result.status.name, 'failure');
+        expect(result.lastErrorSummary, contains('espn:c'));
+        expect(transport.controls, ['SYNC_START']);
+      },
+    );
+
+    for (final empty in ['unconfigured', 'unselected']) {
+      test(
+        '$empty fantasy startup intentionally clears and completes empty',
+        () async {
+          if (empty == 'unconfigured') {
+            await store.clear();
+          } else {
+            await save('a', team: null);
+            await save('b', team: null);
+          }
+          final result = await start();
+          expect(result.status, InitialSyncStatus.empty);
+          expect(result.successfullySyncedLeagueCount, 0);
+          expect(result.lastErrorSummary, isNull);
+          expect(transport.controls, ['SYNC_START', 'SYNC_EMPTY']);
+          expect(transport.slates, [isEmpty]);
+        },
+      );
+    }
+  });
 
   group('F11 event-preserving aggregation', () {
     test(
@@ -1647,6 +1755,7 @@ class _Transport
   final failTeams = <String>{};
   int attempts = 0;
   int? failAt;
+  final controls = <String>[];
   final alerts = <FantasyPointAlert>[];
   final matchups = <FantasyMatchupDisplayData>[];
   final slates = <List<FantasyMatchupSlateEntry>>[];
@@ -1662,7 +1771,9 @@ class _Transport
   }
 
   @override
-  Future<void> sendControlCommand(String command) async {}
+  Future<void> sendControlCommand(String command) async {
+    controls.add(command);
+  }
 
   @override
   Future<void> sendGameData(GameData gameData) async {}
@@ -1920,3 +2031,26 @@ SleeperFantasyPlayer _player(String id, {String? espnId}) =>
       nflTeam: 'TEAM',
       espnPlayerId: espnId,
     );
+
+class _EmptyStartupSportsSource implements SportsDataSource {
+  _EmptyStartupSportsSource({this.withGame = false});
+  final bool withGame;
+  @override
+  Future<List<SportsGame>> fetchGamesForDate(
+    SportsLeague league,
+    DateTime date,
+  ) async => withGame
+      ? [
+          const SportsGame(
+            league: 'NBA',
+            eventId: 'one',
+            awayTeam: 'Away',
+            homeTeam: 'Home',
+            awayScore: 1,
+            homeScore: 0,
+            status: 'LIVE',
+            clock: 'Q1',
+          ),
+        ]
+      : [];
+}

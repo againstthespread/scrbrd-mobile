@@ -33,6 +33,14 @@ typedef BleWriteWithResponse =
       required List<int> value,
     });
 
+enum WakeSubscriptionHealth {
+  inactive,
+  subscribing,
+  listening,
+  retrying,
+  failed,
+}
+
 class BluetoothDeviceTransport
     implements
         DeviceTransport,
@@ -53,7 +61,12 @@ class BluetoothDeviceTransport
     this.connectionStreamProvider,
     this.wakeStreamProvider,
     this.writeWithResponse,
-  });
+    List<Duration> wakeRetryDelays = const [
+      Duration(seconds: 1),
+      Duration(seconds: 2),
+      Duration(seconds: 4),
+    ],
+  }) : wakeRetryDelays = List.unmodifiable(wakeRetryDelays);
 
   final SportsHubBleProtocol protocol;
   final GamePacketSerializer serializer;
@@ -68,6 +81,7 @@ class BluetoothDeviceTransport
   final BleConnectionStreamFactory? connectionStreamProvider;
   final BleWakeStreamFactory? wakeStreamProvider;
   final BleWriteWithResponse? writeWithResponse;
+  final List<Duration> wakeRetryDelays;
   FlutterReactiveBle? _ble;
 
   final _snapshotController = StreamController<BleDeviceSnapshot>.broadcast();
@@ -79,6 +93,15 @@ class BluetoothDeviceTransport
   StreamSubscription<ConnectionStateUpdate>? _connectionSubscription;
   StreamSubscription<List<int>>? _wakeNotificationSubscription;
   QualifiedCharacteristic? _writableCharacteristic;
+  QualifiedCharacteristic? _wakeCharacteristic;
+  Timer? _wakeRetryTimer;
+  int _wakeEpoch = 0;
+  int _wakeRecoveryAttempts = 0;
+  WakeSubscriptionHealth _wakeHealth = WakeSubscriptionHealth.inactive;
+  Future<void> _wakeCancellation = Future<void>.value();
+  Future<void>? _wakeResume;
+  static const _wakeFailureMessage =
+      'Automatic refresh paused. Return to the app or reconnect to retry.';
   BleDeviceSnapshot _snapshot = const BleDeviceSnapshot(
     state: BleConnectionState.disconnected,
   );
@@ -87,6 +110,8 @@ class BluetoothDeviceTransport
   int _connectionGeneration = 0;
   int? _transferSendingGeneration;
   int _scanGeneration = 0;
+
+  WakeSubscriptionHealth get wakeSubscriptionHealth => _wakeHealth;
 
   Stream<BleDeviceSnapshot> get snapshots => _snapshotController.stream;
 
@@ -434,6 +459,7 @@ class BluetoothDeviceTransport
         _writableCharacteristic != null ||
         _snapshot.state.isPhysicallyConnected;
     _connectionGeneration++;
+    unawaited(_cancelWakeNotificationSubscription());
     _writableCharacteristic = null;
     _isWriting = false;
     _writingGeneration = null;
@@ -554,41 +580,154 @@ class BluetoothDeviceTransport
   void _startWakeNotificationSubscription(
     QualifiedCharacteristic characteristic,
   ) {
-    unawaited(_wakeNotificationSubscription?.cancel());
-    _wakeNotificationSubscription =
-        (wakeStreamProvider?.call(characteristic) ??
-                _bleClient.subscribeToCharacteristic(characteristic))
-            .listen(
-              (value) {
-                if (!_wakeNotificationController.isClosed) {
-                  _wakeNotificationController.add(value);
-                }
-              },
-              onError: (Object error) {
-                debugPrint(
-                  'BLE WAKE: wake notification subscription '
-                  'failed: $error',
-                );
-              },
-              onDone: () {
-                debugPrint('BLE WAKE: wake subscription cancelled');
-              },
-            );
-    debugPrint('BLE WAKE: wake subscription started');
+    // Duplicate connected events must not create duplicate listeners or replenish
+    // the automatic recovery budget.
+    if (_wakeCharacteristic?.deviceId == characteristic.deviceId) return;
+    _wakeCharacteristic = characteristic;
+    _wakeRecoveryAttempts = 0;
+    unawaited(_listenForWake(characteristic));
+  }
+
+  bool _isCurrentWake(
+    int generation,
+    int epoch,
+    QualifiedCharacteristic characteristic,
+  ) =>
+      generation == _connectionGeneration &&
+      epoch == _wakeEpoch &&
+      identical(characteristic, _wakeCharacteristic) &&
+      _writableCharacteristic != null &&
+      (_snapshot.state.isPhysicallyConnected ||
+          _snapshot.state == BleConnectionState.connecting);
+
+  Future<void> _listenForWake(QualifiedCharacteristic characteristic) async {
+    final generation = _connectionGeneration;
+    final epoch = ++_wakeEpoch;
+    _wakeHealth = WakeSubscriptionHealth.subscribing;
+    final previous = _wakeNotificationSubscription;
+    _wakeNotificationSubscription = null;
+    final cancellation = _wakeCancellation.then(
+      (_) => _cancelWakeStream(previous),
+    );
+    _wakeCancellation = cancellation;
+    await cancellation;
+    if (!_isCurrentWake(generation, epoch, characteristic)) return;
+    try {
+      final stream =
+          wakeStreamProvider?.call(characteristic) ??
+          _bleClient.subscribeToCharacteristic(characteristic);
+      final subscription = stream.listen(
+        (value) {
+          if (!_isCurrentWake(generation, epoch, characteristic)) return;
+          if (_snapshot.errorMessage == _wakeFailureMessage) {
+            _emit(_snapshot.copyWith(clearError: true));
+          }
+          if (!_wakeNotificationController.isClosed) {
+            _wakeNotificationController.add(value);
+          }
+        },
+        onError: (Object error) {
+          _wakeSubscriptionFailed(generation, epoch, characteristic, error);
+        },
+        onDone: () {
+          _wakeSubscriptionFailed(
+            generation,
+            epoch,
+            characteristic,
+            'stream ended',
+          );
+        },
+      );
+      if (!_isCurrentWake(generation, epoch, characteristic)) {
+        await _cancelWakeStream(subscription);
+        return;
+      }
+      _wakeNotificationSubscription = subscription;
+      _wakeHealth = WakeSubscriptionHealth.listening;
+      debugPrint('BLE WAKE: subscription listening; generation=$generation');
+    } on Object catch (error) {
+      _wakeSubscriptionFailed(generation, epoch, characteristic, error);
+    }
+  }
+
+  void _wakeSubscriptionFailed(
+    int generation,
+    int epoch,
+    QualifiedCharacteristic characteristic,
+    Object error,
+  ) {
+    if (!_isCurrentWake(generation, epoch, characteristic)) return;
+    final retryEpoch =
+        ++_wakeEpoch; // Ignore late values/error/done from this attempt.
+    debugPrint('BLE WAKE: subscription interrupted: $error');
+    if (_wakeRecoveryAttempts >= wakeRetryDelays.length) {
+      _wakeHealth = WakeSubscriptionHealth.failed;
+      final previous = _wakeNotificationSubscription;
+      _wakeNotificationSubscription = null;
+      _wakeCancellation = _wakeCancellation.then(
+        (_) => _cancelWakeStream(previous),
+      );
+      _emit(_snapshot.copyWith(errorMessage: _wakeFailureMessage));
+      return;
+    }
+    _wakeHealth = WakeSubscriptionHealth.retrying;
+    final delay = wakeRetryDelays[_wakeRecoveryAttempts++];
+    _wakeRetryTimer = Timer(delay, () {
+      _wakeRetryTimer = null;
+      if (!_isCurrentWake(generation, retryEpoch, characteristic)) return;
+      unawaited(_listenForWake(characteristic));
+    });
+  }
+
+  /// One bounded recovery cycle per explicit foreground transition. Concurrent
+  /// resume requests share ownership; refresh work still uses SportsOperationGate.
+  Future<void> resumeWakeNotifications() {
+    if (_wakeResume != null) return _wakeResume!;
+    final characteristic = _wakeCharacteristic;
+    if (!_snapshot.state.isPhysicallyConnected || characteristic == null) {
+      return Future<void>.value();
+    }
+    _wakeRetryTimer?.cancel();
+    _wakeRetryTimer = null;
+    _wakeRecoveryAttempts = 0;
+    late final Future<void> resume;
+    resume = _listenForWake(characteristic).whenComplete(() {
+      if (identical(_wakeResume, resume)) _wakeResume = null;
+    });
+    _wakeResume = resume;
+    return resume;
+  }
+
+  Future<void> _cancelWakeStream(
+    StreamSubscription<List<int>>? subscription,
+  ) async {
+    if (subscription == null) return;
+    try {
+      await subscription.cancel().timeout(const Duration(seconds: 3));
+    } on Object catch (error) {
+      debugPrint('BLE WAKE: subscription cancellation failed: $error');
+    }
   }
 
   Future<void> _cancelWakeNotificationSubscription() async {
-    final subscription = _wakeNotificationSubscription;
+    ++_wakeEpoch;
+    _wakeRetryTimer?.cancel();
+    _wakeRetryTimer = null;
+    _wakeCharacteristic = null;
+    _wakeRecoveryAttempts = 0;
+    _wakeHealth = WakeSubscriptionHealth.inactive;
+    _wakeResume = null;
+    final previous = _wakeNotificationSubscription;
     _wakeNotificationSubscription = null;
-    if (subscription == null) {
-      return;
-    }
-
-    await subscription.cancel();
-    debugPrint('BLE WAKE: wake subscription cancelled');
+    final cancellation = _wakeCancellation.then(
+      (_) => _cancelWakeStream(previous),
+    );
+    _wakeCancellation = cancellation;
+    await cancellation;
   }
 
   void _emitError(String message) {
+    unawaited(_cancelWakeNotificationSubscription());
     _emit(
       _snapshot.copyWith(
         state: BleConnectionState.error,
@@ -598,6 +737,10 @@ class BluetoothDeviceTransport
   }
 
   void _emit(BleDeviceSnapshot snapshot) {
+    if (snapshot.state.isPhysicallyConnected &&
+        _wakeHealth == WakeSubscriptionHealth.failed) {
+      snapshot = snapshot.copyWith(errorMessage: _wakeFailureMessage);
+    }
     _snapshot = snapshot;
     if (!_snapshotController.isClosed) {
       _snapshotController.add(snapshot);
