@@ -203,6 +203,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   Future<void>? _projectionDisplayRefreshInProgress;
   bool _deviceContentEnabled = true;
   int _generation = 0;
+  int _observationSequence = 0;
 
   FantasyRuntimeStatus get status => _status;
   String? get primaryLeagueId => _primaryId;
@@ -542,6 +543,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       );
     }
     _observing = true;
+    final observation = ++_observationSequence;
     final generation = _generation;
     try {
       final configs = await _reconcile();
@@ -574,6 +576,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
           results[config.id] = await _observeSleeperSession(
             session,
             generation,
+            observation,
             startupOnly,
             shouldSyncPersistentMatchup,
           );
@@ -583,6 +586,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
           results[config.id] = await _observeEspnSession(
             session,
             generation,
+            observation,
             startupOnly,
             shouldSyncPersistentMatchup,
           );
@@ -642,6 +646,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   Future<FantasyObservationResult> _observeSleeperSession(
     SleeperLeagueObservationSession session,
     int generation,
+    int observation,
     bool startupOnly,
     bool syncPersistentMatchup,
   ) async {
@@ -748,6 +753,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       for (final alert in alerts) {
         pendingStore.add(
           PendingFantasyAlert(
+            observation: observation,
             id: fantasyTransitionId(
               leagueId: config.leagueId,
               week: snapshot.week,
@@ -786,6 +792,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   Future<FantasyObservationResult> _observeEspnSession(
     EspnLeagueObservationSession session,
     int generation,
+    int observation,
     bool startupOnly,
     bool syncPersistentMatchup,
   ) async {
@@ -870,6 +877,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       for (final alert in alerts) {
         session.pendingStore.add(
           PendingFantasyAlert(
+            observation: observation,
             id: fantasyNormalizedTransitionId(
               provider: FantasyProvider.espn,
               matchup: matchup,
@@ -922,53 +930,80 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   }
 
   Future<void> _drainPendingAlertsAcrossSessions(int generation) async {
-    // Queues remain league-local. This pass only combines their presentation.
+    // Keep observation order across retries. Canonical identity alone cannot
+    // establish that transitions from separate refreshes are the same event.
     final pending = <_PendingAlertReference>[
       for (final session in _sessions.values)
         for (final alert in session.pendingStore.items)
-          _PendingAlertReference(session.pendingStore, alert),
+          _PendingAlertReference(
+            session.config.id,
+            session.pendingStore,
+            alert,
+          ),
       for (final session in _espnSessions.values)
         for (final alert in session.pendingStore.items)
-          _PendingAlertReference(session.pendingStore, alert),
+          _PendingAlertReference(
+            session.config.id,
+            session.pendingStore,
+            alert,
+          ),
     ];
-    final grouped = <String, List<_PendingAlertReference>>{};
+    final batches = <int, List<_PendingAlertReference>>{};
     for (final item in pending) {
-      final key =
-          item.pending.alert.canonicalPlayerId ??
-          'transition:${item.pending.id}';
-      grouped.putIfAbsent(key, () => []).add(item);
+      batches.putIfAbsent(item.pending.observation, () => []).add(item);
     }
-    for (final group in grouped.values) {
-      if (!isBleConnected() || generation != _generation) return;
-      final first = group.first.pending.alert;
-      final sameDelta = group.every(
-        (item) => item.pending.alert.delta.delta == first.delta.delta,
-      );
-      final presentation = group.length == 1
-          ? first
-          : FantasyPointAlert(
-              delta: first.delta,
-              player: first.player,
-              playerName: first.playerName,
-              canonicalPlayerId: first.canonicalPlayerId,
-              headline: 'Scored in ${group.length} leagues',
-              userName: first.userName,
-              userScore: first.userScore,
-              opponentName: first.opponentName,
-              opponentScore: first.opponentScore,
+    final observations = batches.keys.toList()..sort();
+    for (final observation in observations) {
+      final grouped = <(String, double), List<_PendingAlertReference>>{};
+      for (final item in batches[observation]!) {
+        final alert = item.pending.alert;
+        final player =
+            alert.canonicalPlayerId ?? 'transition:${item.pending.id}';
+        // A single packet can represent one delta. Never discard another
+        // league's differing scoring value or an opposite-sign correction.
+        grouped.putIfAbsent((player, alert.delta.delta), () => []).add(item);
+      }
+      final deliveries = <List<_PendingAlertReference>>[
+        for (final group in grouped.values)
+          if (group.map((item) => item.leagueId).toSet().length == group.length)
+            group
+          else
+            // Multiple transitions in one league are not a multi-league event.
+            for (final item in group) [item],
+      ];
+      for (final group in deliveries) {
+        if (!isBleConnected() || generation != _generation) return;
+        final first = group.first.pending.alert;
+        final leagueCount = group.map((item) => item.leagueId).toSet().length;
+        final presentation = leagueCount == 1
+            ? first
+            : FantasyPointAlert(
+                delta: first.delta,
+                player: first.player,
+                playerName: first.playerName,
+                canonicalPlayerId: first.canonicalPlayerId,
+                headline: 'Scored in $leagueCount leagues',
+                userName: first.userName,
+                userScore: first.userScore,
+                opponentName: first.opponentName,
+                opponentScore: first.opponentScore,
+              );
+        try {
+          await transport.sendFantasyAlert(presentation);
+          for (final item in group) {
+            item.store.markDelivered(
+              item.pending.id,
+              observation: item.pending.observation,
             );
-      try {
-        await transport.sendFantasyAlert(presentation);
-        for (final item in group) {
-          item.store.markDelivered(item.pending.id);
+          }
+          _diagnose(
+            'Fantasy alert delivered: $leagueCount league(s); '
+            'observation=$observation',
+          );
+        } on Object catch (error) {
+          _diagnose('Fantasy alert group retained after BLE failure: $error');
+          return;
         }
-        _diagnose(
-          'Fantasy alert delivered: ${group.length} league transition(s); '
-          'sharedDelta=$sameDelta',
-        );
-      } on Object catch (error) {
-        _diagnose('Fantasy alert group retained after BLE failure: $error');
-        return;
       }
     }
   }
@@ -1291,7 +1326,9 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
 }
 
 class _PendingAlertReference {
-  const _PendingAlertReference(this.store, this.pending);
+  const _PendingAlertReference(this.leagueId, this.store, this.pending);
+
+  final String leagueId;
 
   final PendingFantasyAlertStore store;
   final PendingFantasyAlert pending;

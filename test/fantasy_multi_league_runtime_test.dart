@@ -106,6 +106,267 @@ void main() {
 
   tearDown(() => coordinator.dispose());
 
+  group('F11 event-preserving aggregation', () {
+    test(
+      'one league retains successive events and their totals in order',
+      () async {
+        await save('b', alerts: false);
+        await coordinator.observe();
+        transport.failTeams.add('Team a');
+        points['a'] = 11;
+        await coordinator.observe();
+        points['a'] = 13;
+        await coordinator.observe();
+        expect(coordinator.status.pendingAlerts, 2);
+        transport.failTeams.clear();
+        await coordinator.observe();
+        expect(transport.alerts.map((a) => a.delta.delta), [1, 2]);
+        expect(transport.alerts.map((a) => a.userScore), [11, 13]);
+        expect(transport.alerts.map((a) => a.headline), ['', '']);
+        expect(coordinator.status.pendingAlerts, 0);
+      },
+    );
+
+    test(
+      'a correction followed by the same transition is a new event',
+      () async {
+        await save('b', alerts: false);
+        await coordinator.observe();
+        transport.connected = false;
+        for (final value in [11.0, 10.0, 11.0]) {
+          points['a'] = value;
+          await coordinator.observe();
+        }
+        expect(coordinator.status.pendingAlerts, 3);
+        transport.connected = true;
+        await coordinator.observe();
+        expect(transport.alerts.map((a) => a.delta.delta), [1, -1, 1]);
+        expect(transport.alerts.map((a) => a.userScore), [11, 10, 11]);
+        expect(transport.alerts.every((a) => a.headline.isEmpty), isTrue);
+        await coordinator.observe();
+        expect(transport.alerts, hasLength(3));
+      },
+    );
+
+    test('separate refreshes count unique leagues for each event', () async {
+      await coordinator.observe();
+      transport.connected = false;
+      for (var step = 1; step <= 2; step++) {
+        points['a'] = 10.0 + step;
+        points['b'] = 20.0 + step;
+        await coordinator.observe();
+      }
+      expect(coordinator.status.pendingAlerts, 4);
+      transport.connected = true;
+      await coordinator.observe();
+      expect(transport.alerts.map((a) => a.headline), [
+        'Scored in 2 leagues',
+        'Scored in 2 leagues',
+      ]);
+      expect(transport.alerts.map((a) => a.delta.previousPoints), [10, 11]);
+      expect(transport.alerts.map((a) => a.userScore), [11, 12]);
+      expect(coordinator.status.pendingAlerts, 0);
+    });
+
+    test(
+      'different league scoring deltas each keep their own totals',
+      () async {
+        await coordinator.observe();
+        points['a'] = 12;
+        points['b'] = 21;
+        await coordinator.observe();
+        expect(transport.alerts.map((a) => a.delta.delta), [2, 1]);
+        expect(transport.alerts.map((a) => a.userScore), [12, 21]);
+        expect(transport.alerts.map((a) => a.userName), ['Team a', 'Team b']);
+        expect(transport.alerts.every((a) => a.headline.isEmpty), isTrue);
+      },
+    );
+
+    test(
+      'a negative correction cannot hide behind another league gain',
+      () async {
+        await coordinator.observe();
+        points['a'] = 11;
+        points['b'] = 19;
+        await coordinator.observe();
+        expect(transport.alerts.map((a) => a.delta.delta), [1, -1]);
+        expect(transport.alerts.map((a) => a.userScore), [11, 19]);
+        expect(transport.alerts.every((a) => a.headline.isEmpty), isTrue);
+      },
+    );
+
+    test(
+      'failed later group retries before new events without resending success',
+      () async {
+        await coordinator.observe();
+        transport.connected = false;
+        for (var step = 1; step <= 2; step++) {
+          points['a'] = 10.0 + step;
+          points['b'] = 20.0 + step;
+          await coordinator.observe();
+        }
+        transport.connected = true;
+        transport.failAt = 2;
+        await coordinator.observe();
+        expect(transport.alerts.map((a) => a.userScore), [11]);
+        expect(coordinator.pendingAlertsByLeague, {
+          'sleeper:a': 1,
+          'sleeper:b': 1,
+        });
+        transport.failAt = null;
+        points['a'] = 13;
+        points['b'] = 23;
+        await coordinator.observe();
+        expect(transport.alerts.map((a) => a.userScore), [11, 12, 13]);
+        expect(
+          transport.alerts.every((a) => a.headline == 'Scored in 2 leagues'),
+          isTrue,
+        );
+        expect(coordinator.status.pendingAlerts, 0);
+        await coordinator.observe();
+        expect(transport.alerts, hasLength(3));
+      },
+    );
+
+    test(
+      'provider-qualified league identity counts equal raw IDs separately',
+      () async {
+        await save('b', alerts: false);
+        await save('a', provider: FantasyProvider.espn);
+        metadata['shared-player'] = _player('shared-player', espnId: '-16001');
+        await coordinator.observe();
+        points['a'] = 11;
+        await coordinator.observe();
+        expect(transport.alerts.single.headline, 'Scored in 2 leagues');
+        expect(coordinator.status.pendingAlerts, 0);
+      },
+    );
+
+    test(
+      'matching negative corrections still aggregate across leagues',
+      () async {
+        await coordinator.observe();
+        points['a'] = 9;
+        points['b'] = 19;
+        await coordinator.observe();
+        expect(transport.alerts.single.delta.delta, -1);
+        expect(transport.alerts.single.userScore, 9);
+        expect(transport.alerts.single.headline, 'Scored in 2 leagues');
+      },
+    );
+
+    test('ESPN correction cycles retain each observed transition', () async {
+      await save('a', alerts: false);
+      await save('b', alerts: false);
+      await save('c', provider: FantasyProvider.espn);
+      await coordinator.observe();
+      transport.connected = false;
+      for (final value in [31.0, 30.0, 31.0]) {
+        points['c'] = value;
+        await coordinator.observe();
+      }
+      expect(coordinator.status.pendingAlerts, 3);
+      transport.connected = true;
+      await coordinator.observe();
+      expect(transport.alerts.map((a) => a.delta.delta), [1, -1, 1]);
+      expect(transport.alerts.map((a) => a.userScore), [31, 30, 31]);
+      expect(coordinator.status.pendingAlerts, 0);
+    });
+
+    test(
+      'two same-player entries in one league never count as two leagues',
+      () async {
+        await coordinator.observe();
+        FantasyPointAlert alert(FantasyMatchupSide side, double total) =>
+            FantasyPointAlert(
+              delta: FantasyPointDelta(
+                playerId: 'same',
+                side: side,
+                previousPoints: 10,
+                currentPoints: 11,
+                delta: 1,
+              ),
+              player: null,
+              canonicalPlayerId: 'same',
+              userName: 'Team a',
+              userScore: total,
+              opponentName: 'Opponent',
+              opponentScore: 20,
+            );
+        coordinator.pendingStore.add(
+          PendingFantasyAlert(
+            id: 'user',
+            alert: alert(FantasyMatchupSide.user, 11),
+          ),
+        );
+        coordinator.pendingStore.add(
+          PendingFantasyAlert(
+            id: 'opponent',
+            alert: alert(FantasyMatchupSide.opponent, 12),
+          ),
+        );
+        await coordinator.observe();
+        expect(transport.alerts.map((a) => a.delta.side), [
+          FantasyMatchupSide.user,
+          FantasyMatchupSide.opponent,
+        ]);
+        expect(transport.alerts.map((a) => a.userScore), [11, 12]);
+        expect(transport.alerts.every((a) => a.headline.isEmpty), isTrue);
+        expect(coordinator.status.pendingAlerts, 0);
+      },
+    );
+
+    test('store delivery removes only its observation and retains FIFO', () {
+      final pending = PendingFantasyAlertStore();
+      const delta = FantasyPointDelta(
+        playerId: 'same',
+        side: FantasyMatchupSide.user,
+        previousPoints: 10,
+        currentPoints: 11,
+        delta: 1,
+      );
+      const alert = FantasyPointAlert(
+        delta: delta,
+        player: null,
+        userName: 'Home',
+        userScore: 11,
+        opponentName: 'Away',
+        opponentScore: 20,
+      );
+      const first = PendingFantasyAlert(
+        id: 'same',
+        alert: alert,
+        observation: 1,
+      );
+      const later = PendingFantasyAlert(
+        id: 'same',
+        alert: alert,
+        observation: 2,
+      );
+      expect(pending.add(later), isTrue);
+      expect(pending.add(first), isTrue);
+      expect(pending.add(first), isFalse);
+      expect(pending.items.map((a) => a.observation), [1, 2]);
+      pending.markDelivered(first.id, observation: first.observation);
+      expect(pending.items, [later]);
+      expect(pending.add(first), isFalse);
+    });
+
+    test(
+      'delivered transition may recur after a delivered correction',
+      () async {
+        await save('b', alerts: false);
+        await coordinator.observe();
+        for (final value in [11.0, 10.0, 11.0]) {
+          points['a'] = value;
+          await coordinator.observe();
+        }
+        expect(transport.alerts.map((a) => a.delta.delta), [1, -1, 1]);
+        expect(coordinator.status.pendingAlerts, 0);
+      },
+    );
+  });
+
   test(
     'two leagues establish independent zero-alert baselines in one cycle',
     () async {
@@ -1032,7 +1293,7 @@ void main() {
   });
 
   test(
-    'aggregate retains an included delta instead of summing league scoring',
+    'different cross-provider scoring values deliver separately without summing',
     () async {
       await save('c', provider: FantasyProvider.espn);
       metadata['shared-player'] = _player('shared-player', espnId: '-16001');
@@ -1040,8 +1301,9 @@ void main() {
       points['a'] = 12;
       points['c'] = 31;
       await coordinator.observe();
-      expect(transport.alerts.single.headline, 'Scored in 2 leagues');
-      expect(transport.alerts.single.delta.delta, 2);
+      expect(transport.alerts.map((a) => a.delta.delta), [2, 1]);
+      expect(transport.alerts.map((a) => a.userScore), [12, 31]);
+      expect(transport.alerts.every((a) => a.headline.isEmpty), isTrue);
     },
   );
 
@@ -1383,6 +1645,8 @@ class _Transport
   bool failSlate = false;
   int clearCount = 0;
   final failTeams = <String>{};
+  int attempts = 0;
+  int? failAt;
   final alerts = <FantasyPointAlert>[];
   final matchups = <FantasyMatchupDisplayData>[];
   final slates = <List<FantasyMatchupSlateEntry>>[];
@@ -1390,7 +1654,10 @@ class _Transport
 
   @override
   Future<void> sendFantasyAlert(FantasyPointAlert alert) async {
-    if (failTeams.contains(alert.userName)) throw StateError('BLE send failed');
+    attempts++;
+    if (failTeams.contains(alert.userName) || attempts == failAt) {
+      throw StateError('BLE send failed');
+    }
     alerts.add(alert);
   }
 

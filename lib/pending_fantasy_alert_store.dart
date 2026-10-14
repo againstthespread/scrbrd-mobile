@@ -5,31 +5,40 @@ import 'fantasy_provider_models.dart';
 import 'sleeper_models.dart';
 
 class PendingFantasyAlert {
-  const PendingFantasyAlert({required this.id, required this.alert});
+  const PendingFantasyAlert({
+    required this.id,
+    required this.alert,
+    this.observation = 0,
+  });
 
   final String id;
   final FantasyPointAlert alert;
+
+  /// Runtime observation order, shared by leagues fetched in the same refresh.
+  final int observation;
 }
 
 class PendingFantasyAlertStore {
   // Pending transitions must survive a burst or a disconnected observation.
   final List<PendingFantasyAlert> _pending = [];
-  final Set<String> _seen = {};
+  final Set<(int, String)> _seen = {};
 
   int get length => _pending.length;
   PendingFantasyAlert? get next => _pending.isEmpty ? null : _pending.first;
   List<PendingFantasyAlert> get items => List.unmodifiable(_pending);
 
   bool add(PendingFantasyAlert alert) {
-    if (_seen.contains(alert.id)) return false;
-    _seen.add(alert.id);
+    // A correction can return a player to an earlier score. The same numeric
+    // transition in a later observation is a new event, not a duplicate retry.
+    if (!_seen.add((alert.observation, alert.id))) return false;
     _pending.add(alert);
     _pending.sort(_compare);
     return true;
   }
 
-  void markDelivered(String id) =>
-      _pending.removeWhere((item) => item.id == id);
+  void markDelivered(String id, {int observation = 0}) => _pending.removeWhere(
+    (item) => item.id == id && item.observation == observation,
+  );
 
   void clear() {
     _pending.clear();
@@ -60,6 +69,9 @@ String fantasyNormalizedTransitionId({
     '${delta.playerId}|${delta.previousPoints}|${delta.currentPoints}';
 
 int _compare(PendingFantasyAlert left, PendingFantasyAlert right) {
+  final observation = left.observation.compareTo(right.observation);
+  if (observation != 0) return observation;
+  // Preserve established user/magnitude priority within one observation only.
   final leftUser = left.alert.delta.side == FantasyMatchupSide.user;
   final rightUser = right.alert.delta.side == FantasyMatchupSide.user;
   if (leftUser != rightUser) return leftUser ? -1 : 1;

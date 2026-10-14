@@ -327,6 +327,42 @@ void main() {
       expect(coordinator.status.pendingAlerts, 0);
     });
 
+    test(
+      'retry preserves both matchup totals captured for each event',
+      () async {
+        snapshots = [
+          _snapshot(
+            userPoints: 10,
+            userTotal: 100,
+            opponentPoints: 5,
+            opponentTotal: 80,
+          ),
+          _snapshot(
+            userPoints: 11,
+            userTotal: 101,
+            opponentPoints: 5,
+            opponentTotal: 83,
+          ),
+          _snapshot(
+            userPoints: 13,
+            userTotal: 103,
+            opponentPoints: 5,
+            opponentTotal: 85,
+          ),
+        ];
+        await coordinator.observe();
+        transport.fail = true;
+        await coordinator.observe();
+        await coordinator.observe();
+        transport.fail = false;
+        await coordinator.observe();
+        expect(transport.alerts.map((a) => a.delta.delta), [1, 2]);
+        expect(transport.alerts.map((a) => a.userScore), [101, 103]);
+        expect(transport.alerts.map((a) => a.opponentScore), [83, 85]);
+        expect(coordinator.status.pendingAlerts, 0);
+      },
+    );
+
     test('startup baseline is owned once per connection session', () async {
       await coordinator.establishStartupBaseline();
       await coordinator.establishStartupBaseline();
