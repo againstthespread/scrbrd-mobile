@@ -237,7 +237,7 @@ class FantasyNormalizedPointDeltaTracker {
 
   static Map<String, double> _points(FantasyScoringTeam? team) => {
     for (final player in team?.starters ?? const <FantasyScoringPlayer>[])
-      player.id: player.points,
+      if (player.points != null) player.id: player.points!,
   };
 
   static List<FantasyPointDelta> _compare(
@@ -246,6 +246,11 @@ class FantasyNormalizedPointDeltaTracker {
     Map<String, double> trackedPoints,
   ) {
     final next = _points(team);
+    // Retain known points for unavailable starters, but prune removed players.
+    for (final player in team.starters) {
+      final previous = trackedPoints[player.id];
+      if (player.points == null && previous != null) next[player.id] = previous;
+    }
     final events = <FantasyPointDelta>[];
     for (final entry in next.entries) {
       final previous = trackedPoints[entry.key];

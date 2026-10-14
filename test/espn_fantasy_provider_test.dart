@@ -8,6 +8,8 @@ import 'package:sports_hub_mobile/espn_fantasy_client.dart';
 import 'package:sports_hub_mobile/espn_fantasy_credentials.dart';
 import 'package:sports_hub_mobile/espn_fantasy_repository.dart';
 import 'package:sports_hub_mobile/fantasy_league_config.dart';
+import 'package:sports_hub_mobile/fantasy_point_delta_tracker.dart';
+import 'package:sports_hub_mobile/fantasy_provider_models.dart';
 import 'package:sports_hub_mobile/fantasy_live_observation_coordinator.dart';
 import 'package:sports_hub_mobile/fantasy_primary_league_store.dart';
 
@@ -311,11 +313,95 @@ void main() {
         expect(result.team.starters.map((p) => p.id), ['101', '104']);
         expect(result.team.starters.first.name, 'Synthetic Quarterback');
         expect(result.team.starters.first.points, 12.345);
-        expect(result.team.starters.last.points, 0);
+        expect(result.team.starters.last.points, isNull);
         expect(result.opponent!.starters.single.id, '201');
         expect(result.opponent!.starters.single.points, 7.125);
       },
     );
+
+    for (final missing in [
+      'absent',
+      'null',
+      'empty',
+      'other period',
+      'projected only',
+      'null total',
+      'absent total',
+    ]) {
+      test(
+        'unavailable ESPN stats ($missing) do not create false alerts',
+        () async {
+          // Decode like a real response so optional fields can hold null.
+          box = jsonDecode(jsonEncode(box)) as Map<String, dynamic>;
+          Future<FantasyMatchupSnapshot> load() => repository
+              .loadCurrentMatchup(season: 2030, leagueId: '12345', teamId: '7');
+          final player =
+              (_homeEntries(box).first['playerPoolEntry'] as Map)['player']
+                  as Map;
+          final originalStats = player['stats'];
+          final tracker = FantasyNormalizedPointDeltaTracker();
+          tracker.observe(await load());
+          switch (missing) {
+            case 'absent':
+              player.remove('stats');
+            case 'null':
+              player['stats'] = null;
+            case 'empty':
+              player['stats'] = [];
+            case 'other period':
+              player['stats'] = [
+                {'scoringPeriodId': 3, 'statSourceId': 0, 'appliedTotal': 999},
+              ];
+            case 'projected only':
+              player['stats'] = [
+                {'scoringPeriodId': 4, 'statSourceId': 1, 'appliedTotal': 999},
+              ];
+            case 'null total':
+              player['stats'] = [
+                {'scoringPeriodId': 4, 'statSourceId': 0, 'appliedTotal': null},
+              ];
+            case 'absent total':
+              player['stats'] = [
+                {'scoringPeriodId': 4, 'statSourceId': 0},
+              ];
+          }
+          final unavailable = await load();
+          final missingEvents = tracker.observe(unavailable).events;
+          player['stats'] = originalStats;
+          final restoredEvents = tracker.observe(await load()).events;
+          expect(
+            [
+              missingEvents.map((event) => event.delta).toList(),
+              restoredEvents.map((event) => event.delta).toList(),
+            ],
+            [[], []],
+          );
+          expect(unavailable.team.starters.first.points, isNull);
+          expect(unavailable.team.totalPoints, 102.375);
+          (originalStats as List).last['appliedTotal'] = 13.345;
+          expect(tracker.observe(await load()).events.single.delta, 1);
+        },
+      );
+    }
+
+    test('explicit zero and negative ESPN corrections remain alerts', () async {
+      Future<FantasyMatchupSnapshot> load() => repository.loadCurrentMatchup(
+        season: 2030,
+        leagueId: '12345',
+        teamId: '7',
+      );
+      final tracker = FantasyNormalizedPointDeltaTracker();
+      tracker.observe(await load());
+      final player =
+          (_homeEntries(box).first['playerPoolEntry'] as Map)['player'] as Map;
+      final actual = (player['stats'] as List).last as Map;
+      actual['appliedTotal'] = 0;
+      final zero = await load();
+      expect(zero.team.starters.first.points, 0);
+      expect(tracker.observe(zero).events.single.delta, -12.345);
+      actual['appliedTotal'] = -2.5;
+      expect(tracker.observe(await load()).events.single.delta, -2.5);
+    });
 
     test('bench, IR and unassigned slots are excluded', () async {
       final result = await repository.loadCurrentMatchup(

@@ -1036,7 +1036,8 @@ String _points(double value) {
       : fixed;
 }
 
-String _espnPoints(double value) {
+String _espnPoints(double? value) {
+  if (value == null) return '--';
   final text = value.toString();
   return text.endsWith('.0') ? text.substring(0, text.length - 2) : text;
 }

@@ -248,7 +248,7 @@ FantasyScoringTeam _parseSide(Object? value, FantasyLeagueDetails league) {
       final playerIdentity = _playerId(player['id']);
       if (playerIdentity != playerId) throw const FormatException();
       final stats = player['stats'];
-      double currentPoints = 0;
+      double? currentPoints;
       if (stats != null) {
         stage = 'entry.player.stats';
         for (final rawStat in _list(stats)) {
@@ -256,7 +256,8 @@ FantasyScoringTeam _parseSide(Object? value, FantasyLeagueDetails league) {
           if (stat['scoringPeriodId'] == league.scoringPeriod &&
               stat['statSourceId'] == 0) {
             stage = 'entry.player.stats.appliedTotal';
-            currentPoints = _finite(stat['appliedTotal']);
+            final appliedTotal = stat['appliedTotal'];
+            currentPoints = appliedTotal == null ? null : _finite(appliedTotal);
             break;
           }
         }

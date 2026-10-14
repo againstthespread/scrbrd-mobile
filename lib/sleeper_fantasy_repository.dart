@@ -131,11 +131,12 @@ class SleeperFantasyRepository {
     var cached = _snapshots[normalizedId];
     if (cached == null) return loadLeague(normalizedId);
 
+    DateTime? checkedAt;
     final lastCheck = _weekCheckedAt[normalizedId];
     if (lastCheck == null ||
         _clock().difference(lastCheck) >= weekRefreshInterval) {
       final nflState = await _apiClient.fetchNflState();
-      _weekCheckedAt[normalizedId] = _clock();
+      checkedAt = _clock();
       final fantasyWeek = nflState.fantasyWeek;
       if (fantasyWeek != cached.week ||
           nflState.seasonType != cached.seasonType) {
@@ -160,6 +161,8 @@ class SleeperFantasyRepository {
       matchups: matchups,
     );
     _snapshots[normalizedId] = refreshed;
+    // A failed fetch must leave the old check expired so rollover retries.
+    if (checkedAt != null) _weekCheckedAt[normalizedId] = checkedAt;
     return refreshed;
   }
 

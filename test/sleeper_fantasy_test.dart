@@ -189,6 +189,77 @@ void main() {
     expect(paths, ['/v1/league/league-1/matchups/6']);
   });
 
+  for (final transition in [(6, 'regular', 7), (1, 'pre', 1)]) {
+    test(
+      'failed ${transition.$2} rollover retries without losing cache',
+      () async {
+        var now = DateTime(2026, 10, 12);
+        var week = transition.$1;
+        var seasonType = transition.$2;
+        var failMatchups = false;
+        final paths = <String>[];
+        final client = MockClient((request) async {
+          final path = request.url.path;
+          paths.add(path);
+          if (path.contains('/matchups/') && failMatchups) {
+            return http.Response('{}', 503);
+          }
+          final Object body = switch (path) {
+            '/v1/league/league-1' => {
+              'league_id': 'league-1',
+              'name': 'League',
+              'scoring_settings': <String, dynamic>{},
+            },
+            '/v1/league/league-1/users' ||
+            '/v1/league/league-1/rosters' => <Object>[],
+            '/v1/state/nfl' => {
+              'week': week,
+              'season': '2026',
+              'season_type': seasonType,
+            },
+            _ => [
+              {'roster_id': 1, 'matchup_id': 1, 'points': week.toDouble()},
+            ],
+          };
+          return http.Response(jsonEncode(body), 200);
+        });
+        final repository = SleeperFantasyRepository(
+          SleeperApiClient(client: client),
+          clock: () => now,
+        );
+        final previous = await repository.loadLeague('league-1');
+        now = now.add(const Duration(hours: 7));
+        week = transition.$3;
+        seasonType = 'regular';
+        failMatchups = true;
+        for (var attempt = 0; attempt < 2; attempt++) {
+          paths.clear();
+          await expectLater(
+            repository.refreshMatchups('league-1'),
+            throwsA(isA<SleeperApiException>()),
+          );
+          expect(paths, [
+            '/v1/state/nfl',
+            '/v1/league/league-1/matchups/$week',
+          ]);
+          expect(previous.week, transition.$1);
+          expect(previous.seasonType, transition.$2);
+          expect(previous.matchups.single.points, transition.$1.toDouble());
+        }
+        failMatchups = false;
+        paths.clear();
+        final recovered = await repository.refreshMatchups('league-1');
+        expect(paths, ['/v1/state/nfl', '/v1/league/league-1/matchups/$week']);
+        expect(recovered.week, week);
+        expect(recovered.seasonType, 'regular');
+        expect(recovered.matchups.single.points, week.toDouble());
+        paths.clear();
+        await repository.refreshMatchups('league-1');
+        expect(paths, ['/v1/league/league-1/matchups/$week']);
+      },
+    );
+  }
+
   test('load and refresh share preseason fantasy Week 1 resolution', () async {
     final paths = <String>[];
     final client = MockClient((request) async {

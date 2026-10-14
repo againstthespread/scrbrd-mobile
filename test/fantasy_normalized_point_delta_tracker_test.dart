@@ -26,7 +26,7 @@ void main() {
       team: const FantasyTeamDetails(id: '1', name: 'Home'),
       totalPoints: starters.fold<double>(
         0,
-        (sum, player) => sum + player.points,
+        (sum, player) => sum + (player.points ?? 0),
       ),
       starters: starters,
     ),
@@ -49,6 +49,40 @@ void main() {
     );
     expect(next.events.single.playerId, '-16001');
     expect(next.events.single.delta, 2.5);
+  });
+
+  test('unavailable starter retains baseline while other players score', () {
+    final tracker = FantasyNormalizedPointDeltaTracker();
+    FantasyMatchupSnapshot current(double? defense, double other) => matchup(
+      starters: [
+        FantasyScoringPlayer(id: '-16001', name: 'D/ST', points: defense),
+        FantasyScoringPlayer(id: '123', name: 'Starter', points: other),
+      ],
+    );
+    tracker.observe(current(10, 3));
+    final partial = tracker.observe(current(null, 4));
+    expect(partial.events.single.playerId, '123');
+    expect(partial.events.single.delta, 1);
+    expect(tracker.observe(current(null, 4)).events, isEmpty);
+    final recovered = tracker.observe(current(11, 4));
+    expect(recovered.events.single.playerId, '-16001');
+    expect(recovered.events.single.delta, 1);
+  });
+
+  test('initial unavailable points establish baseline only when known', () {
+    final tracker = FantasyNormalizedPointDeltaTracker();
+    FantasyMatchupSnapshot current(double? points) => matchup(
+      starters: [
+        FantasyScoringPlayer(id: '-16001', name: 'D/ST', points: points),
+      ],
+    );
+    expect(tracker.observe(current(null)).baselineReset, isTrue);
+    expect(tracker.observe(current(null)).events, isEmpty);
+    expect(tracker.observe(current(0)).events, isEmpty);
+    expect(tracker.observe(current(-2.5)).events.single.delta, -2.5);
+    tracker.observe(matchup(starters: const []));
+    // Removed/reintroduced players must not retain the old lineup baseline.
+    expect(tracker.observe(current(10)).events, isEmpty);
   });
 
   test('new scoring period and new starter establish safe baselines', () {

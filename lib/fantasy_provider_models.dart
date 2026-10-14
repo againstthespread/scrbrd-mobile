@@ -37,7 +37,9 @@ class FantasyScoringPlayer {
   });
   final String id;
   final String name;
-  final double points;
+
+  /// Null when the provider has no reliable actual points for this period.
+  final double? points;
 }
 
 class FantasyScoringTeam {
