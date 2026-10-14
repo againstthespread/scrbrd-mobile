@@ -13,6 +13,7 @@ import 'sleeper_league_observation_session.dart';
 import 'fantasy_device_session.dart';
 import 'fantasy_matchup_display_data.dart';
 import 'fantasy_matchup_slate_builder.dart';
+import 'fantasy_matchup_packet_serializer.dart';
 import 'fantasy_startup_outcome.dart';
 import 'fantasy_matchup_transport.dart';
 import 'fantasy_provider_models.dart';
@@ -205,6 +206,11 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   bool _deviceContentEnabled = true;
   int _generation = 0;
   int _observationSequence = 0;
+  bool _startupReconciliationPending = false;
+
+  void holdDeviceUpdatesForStartup() {
+    _startupReconciliationPending = true;
+  }
 
   FantasyRuntimeStatus get status => _status;
   String? get primaryLeagueId => _primaryId;
@@ -295,6 +301,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
 
   void beginConnectionSession({bool fantasyEnabled = true}) {
     _deviceContentEnabled = fantasyEnabled;
+    _startupReconciliationPending = false;
     _lastSentFantasySlate = null;
     _generation++;
     for (final session in _sessions.values) {
@@ -463,92 +470,125 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
 
   Future<FantasyStartupOutcome> syncStartupCategoryOutcome() async {
     if (!_deviceContentEnabled) return const FantasyStartupOutcome();
+    if (matchupTransport is FantasySlateTransport) {
+      return (await prepareStartupCategory()).commit();
+    }
+    // Preserve the legacy single-matchup API for existing callers. Reconnect
+    // reconciliation uses the explicitly prepared slate path below.
     final generation = _generation;
-    await _reconcile();
-    if (generation != _generation || !isBleConnected()) {
-      return const FantasyStartupOutcome(
-        failures: ['Fantasy startup session changed.'],
-      );
-    }
-    var slateSent = false;
-    final failures = <String>[];
-    FantasyObservationResult? baseline;
-    var slateAttempted = false;
-    final slateTransport = matchupTransport;
-    try {
-      if (slateTransport is FantasySlateTransport && isBleConnected()) {
-        slateAttempted = true;
-        final transport = slateTransport as FantasySlateTransport;
-        final builder = FantasyMatchupSlateBuilder(
-          configStore: leagueConfigStore,
-          primaryStore: primaryStore,
-          loadSleeper: (config) async {
-            if (generation != _generation) {
-              throw StateError('Fantasy startup session changed.');
-            }
-            final snapshot = await _matchupLoader(config.leagueId);
-            return _enrichSleeperSafely(
-              snapshot.matchupForRoster(int.parse(config.teamId!)),
-              config.id,
-            );
-          },
-          loadEspn: (config) async {
-            if (generation != _generation) {
-              throw StateError('Fantasy startup session changed.');
-            }
-            return _espnMatchupLoader(
-              currentFantasySeason(),
-              config.leagueId,
-              config.teamId!,
-            );
-          },
-        );
-        final built = await builder.buildOutcome();
-        final entries = built.entries;
-        failures.addAll(
-          built.failures.entries.map((e) => '${e.key}: ${e.value}'),
-        );
-        if (generation != _generation || !isBleConnected()) {
-          return const FantasyStartupOutcome(
-            failures: ['Fantasy startup session changed.'],
-          );
-        }
-        // An intentional empty configuration clears Fantasy. Provider failure
-        // is unknown data and must not masquerade as an empty clear.
-        if (entries.isNotEmpty || built.failures.isEmpty) {
-          await _sendFantasySlateIfChanged(transport, entries, force: true);
-        }
-        slateSent = entries.isNotEmpty;
-      }
-    } finally {
-      if (generation == _generation && isBleConnected()) {
-        baseline = await _observe(
-          startupOnly: true,
-          sendAlerts: false,
-          syncPersistentMatchup: !slateAttempted,
-        );
-        if (baseline.error != null) {
-          failures.add('Fantasy: ${baseline.error}');
-        }
-        for (final entry in baseline.leagues.entries) {
-          if (entry.value.error != null) {
-            final error = '${entry.key}: ${entry.value.error}';
-            if (!failures.contains(error)) failures.add(error);
-          }
-        }
-      }
-    }
+    final result = await _observe(startupOnly: true, sendAlerts: false);
     if (generation != _generation || !isBleConnected()) {
       return const FantasyStartupOutcome(
         failures: ['Fantasy startup session changed.'],
       );
     }
     return FantasyStartupOutcome(
-      hasContent: slateAttempted
-          ? slateSent
-          : deviceSession.baseline != null &&
-                baseline?.leagues[_primaryId]?.succeeded == true,
-      failures: List.unmodifiable(failures),
+      hasContent:
+          deviceSession.baseline != null &&
+          result.leagues[_primaryId]?.succeeded == true,
+      failures: _startupFailures(result),
+    );
+  }
+
+  List<String> _startupFailures(FantasyObservationResult result) => [
+    if (result.error != null) 'Fantasy: ${result.error}',
+    for (final entry in result.leagues.entries)
+      if (entry.value.error != null) '${entry.key}: ${entry.value.error}',
+  ];
+
+  Future<PreparedFantasyStartup> prepareStartupCategory() async {
+    holdDeviceUpdatesForStartup();
+    PreparedFantasyStartup empty([List<String> failures = const []]) =>
+        PreparedFantasyStartup(
+          hasContent: false,
+          failures: failures,
+          commit: () async => FantasyStartupOutcome(failures: failures),
+        );
+    if (!_deviceContentEnabled) return empty();
+    final generation = _generation;
+    bool current() => generation == _generation && isBleConnected();
+    await _reconcile();
+    if (!current()) return empty(['Fantasy startup session changed.']);
+    final slateTransport = matchupTransport;
+    if (slateTransport is! FantasySlateTransport) {
+      throw UnsupportedError(
+        'Safe reconnect preparation requires fantasy-slate transport.',
+      );
+    }
+    final transport = slateTransport as FantasySlateTransport;
+    final builder = FantasyMatchupSlateBuilder(
+      configStore: leagueConfigStore,
+      primaryStore: primaryStore,
+      loadSleeper: (config) async {
+        if (!current()) throw StateError('Fantasy startup session changed.');
+        final snapshot = await _matchupLoader(config.leagueId);
+        return _enrichSleeperSafely(
+          snapshot.matchupForRoster(int.parse(config.teamId!)),
+          config.id,
+        );
+      },
+      loadEspn: (config) async {
+        if (!current()) throw StateError('Fantasy startup session changed.');
+        return _espnMatchupLoader(
+          currentFantasySeason(),
+          config.leagueId,
+          config.teamId!,
+        );
+      },
+    );
+    final built = await builder.buildOutcome();
+    if (!current()) return empty(['Fantasy startup session changed.']);
+    final entries = built.entries;
+    final failures = List<String>.unmodifiable(
+      built.failures.entries.map((e) => '${e.key}: ${e.value}'),
+    );
+    // Validate the whole immutable replacement before SYNC_START can clear RAM.
+    const serializer = FantasyMatchupPacketSerializer();
+    for (final entry in entries) {
+      serializer.serialize(entry.matchup, identity: entry.identity);
+    }
+    return PreparedFantasyStartup(
+      hasContent: entries.isNotEmpty,
+      failures: failures,
+      commit: () async {
+        if (!current()) {
+          return const FantasyStartupOutcome(
+            failures: ['Fantasy startup session changed.'],
+          );
+        }
+        final errors = failures.toList();
+        try {
+          if (entries.isNotEmpty || failures.isEmpty) {
+            await _sendFantasySlateIfChanged(transport, entries, force: true);
+          }
+        } finally {
+          if (current()) {
+            final baseline = await _observe(
+              startupOnly: true,
+              sendAlerts: false,
+              syncPersistentMatchup: false,
+            );
+            for (final error in _startupFailures(baseline)) {
+              if (!errors.contains(error)) errors.add(error);
+            }
+          }
+        }
+        if (!current()) {
+          return const FantasyStartupOutcome(
+            failures: ['Fantasy startup session changed.'],
+          );
+        }
+        if (errors.isEmpty) {
+          _startupReconciliationPending = false;
+          if (_projectionDisplayRefreshPending) {
+            _scheduleProjectionDisplayRefresh();
+          }
+        }
+        return FantasyStartupOutcome(
+          hasContent: entries.isNotEmpty,
+          failures: List.unmodifiable(errors),
+        );
+      },
     );
   }
 
@@ -1085,6 +1125,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     FantasySlateTransport transport,
     List<FantasyLeagueConfig> configs,
   ) async {
+    if (_startupReconciliationPending) return;
     final entries = <FantasyMatchupSlateEntry>[];
     for (final config in configs.where((config) => config.hasSelectedTeam)) {
       final display = switch (config.provider) {
@@ -1142,7 +1183,8 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     FantasyMatchupSnapshot? primaryEspnMatchup,
   }) async {
     final transport = matchupTransport;
-    if (transport is! FantasySlateTransport ||
+    if (_startupReconciliationPending ||
+        transport is! FantasySlateTransport ||
         !_deviceContentEnabled ||
         !isBleConnected()) {
       return;
@@ -1178,7 +1220,11 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       },
     );
     final slate = await builder.build();
-    if (generation != _generation || !isBleConnected()) return;
+    if (_startupReconciliationPending ||
+        generation != _generation ||
+        !isBleConnected()) {
+      return;
+    }
     for (final entry in slate.where(
       (entry) => entry.identity.startsWith('sleeper:'),
     )) {
@@ -1247,13 +1293,19 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
 
   void _scheduleProjectionDisplayRefresh() {
     _projectionDisplayRefreshPending = true;
-    if (_observing || _projectionDisplayRefreshInProgress != null) return;
+    if (_startupReconciliationPending ||
+        _observing ||
+        _projectionDisplayRefreshInProgress != null) {
+      return;
+    }
     late final Future<void> refresh;
     refresh = _drainProjectionDisplayRefreshes().whenComplete(() {
       if (identical(_projectionDisplayRefreshInProgress, refresh)) {
         _projectionDisplayRefreshInProgress = null;
       }
-      if (_projectionDisplayRefreshPending && !_observing) {
+      if (_projectionDisplayRefreshPending &&
+          !_observing &&
+          !_startupReconciliationPending) {
         _scheduleProjectionDisplayRefresh();
       }
     });
@@ -1261,7 +1313,9 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   }
 
   Future<void> _drainProjectionDisplayRefreshes() async {
-    while (_projectionDisplayRefreshPending && !_observing) {
+    while (_projectionDisplayRefreshPending &&
+        !_observing &&
+        !_startupReconciliationPending) {
       _projectionDisplayRefreshPending = false;
       _diagnose('Sleeper PROJ: post-capture slate refresh started');
       try {

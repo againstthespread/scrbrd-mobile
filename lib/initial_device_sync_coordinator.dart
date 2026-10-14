@@ -1,10 +1,14 @@
 import 'dart:async';
 
 import 'ble_device_state.dart';
+import 'game_data.dart';
+import 'golf_leaderboard.dart';
+import 'game_packet_serializer.dart';
+import 'golf_packet_serializer.dart';
 import 'fantasy_startup_outcome.dart';
+import 'fantasy_matchup_transport.dart';
 import 'session_aware_device_sender.dart';
 import 'sports_operation_gate.dart';
-import 'sports_league.dart';
 import 'sports_repository.dart';
 import 'favorite_game_prioritizer.dart';
 import 'favorite_team.dart';
@@ -26,11 +30,13 @@ class InitialSyncSnapshot {
     required this.status,
     this.successfullySyncedLeagueCount = 0,
     this.lastErrorSummary,
+    this.cachedContentMayBeStale = false,
   });
 
   final InitialSyncStatus status;
   final int successfullySyncedLeagueCount;
   final String? lastErrorSummary;
+  final bool cachedContentMayBeStale;
 }
 
 class InitialDeviceSyncCoordinator {
@@ -45,7 +51,7 @@ class InitialDeviceSyncCoordinator {
     this.onInitialSyncComplete,
     this.readFavorites,
     this.readContentPreferences,
-    this.syncFantasyCategory,
+    this.prepareFantasyCategory,
     this.onAuthoritativeSyncStarted,
     this.readCollegeFootballPreferences,
   }) : clock = clock ?? DateTime.now,
@@ -65,7 +71,7 @@ class InitialDeviceSyncCoordinator {
   final Future<void> Function()? onInitialSyncComplete;
   final Set<FavoriteTeam> Function()? readFavorites;
   final DeviceContentPreferences Function()? readContentPreferences;
-  final Future<FantasyStartupOutcome> Function()? syncFantasyCategory;
+  final Future<PreparedFantasyStartup> Function()? prepareFantasyCategory;
   final void Function()? onAuthoritativeSyncStarted;
   final CollegeFootballPreferences Function()? readCollegeFootballPreferences;
 
@@ -74,6 +80,11 @@ class InitialDeviceSyncCoordinator {
   );
   bool _connectionSessionActive = false;
   int _connectionGeneration = 0;
+  bool _needsRetry = false;
+  Future<void>? _runningSync;
+  int? _runningGeneration;
+
+  bool get needsRetry => _needsRetry;
 
   InitialSyncSnapshot get snapshot => _snapshot;
 
@@ -84,6 +95,7 @@ class InitialDeviceSyncCoordinator {
         _diagnose('Initial sync connection session ended');
       }
       _connectionSessionActive = false;
+      _needsRetry = false;
       _connectionGeneration++;
       return;
     }
@@ -91,6 +103,7 @@ class InitialDeviceSyncCoordinator {
       return;
     }
     _connectionSessionActive = true;
+    _needsRetry = false;
     final generation = _connectionGeneration;
     unawaited(_run(generation));
   }
@@ -101,8 +114,27 @@ class InitialDeviceSyncCoordinator {
     await _run(_connectionGeneration);
   }
 
-  Future<void> _run(int generation) async {
-    await operationGate.runInitialSync(() => _runOwned(generation));
+  Future<void> retryPendingSync() async {
+    if (!_needsRetry || !_isCurrent(_connectionGeneration)) return;
+    await _run(_connectionGeneration);
+  }
+
+  Future<void> _run(int generation) {
+    if (_runningGeneration == generation && _runningSync != null) {
+      return _runningSync!;
+    }
+    late final Future<void> run;
+    run = operationGate
+        .runInitialSync(() => _runOwned(generation))
+        .whenComplete(() {
+          if (identical(_runningSync, run)) {
+            _runningSync = null;
+            _runningGeneration = null;
+          }
+        });
+    _runningGeneration = generation;
+    _runningSync = run;
+    return run;
   }
 
   Future<void> _runOwned(int generation) async {
@@ -115,124 +147,153 @@ class InitialDeviceSyncCoordinator {
     final collegePreferences =
         readCollegeFootballPreferences?.call() ??
         CollegeFootballPreferences.defaults();
-    _setSnapshot(const InitialSyncSnapshot(status: InitialSyncStatus.syncing));
-    _diagnose('Initial sync started; date=${_dateText(today)}');
-
-    try {
-      await sender.sendControlCommand(syncStartCommand);
-      if (!_isCurrent(generation)) return;
-      onAuthoritativeSyncStarted?.call();
-      _diagnose('SYNC_START sent');
-    } on Object catch (error) {
-      if (!_isCurrent(generation)) return;
-      _diagnose('SYNC_START failed: $error');
-      _setSnapshot(
-        InitialSyncSnapshot(
-          status: InitialSyncStatus.failure,
-          lastErrorSummary: 'Unable to start device sync: $error',
-        ),
-      );
-      return;
-    }
-    if (!_isCurrent(generation)) return;
-
-    var sentCount = 0;
+    _setSnapshot(
+      const InitialSyncSnapshot(
+        status: InitialSyncStatus.syncing,
+        cachedContentMayBeStale: true,
+      ),
+    );
+    _diagnose('Initial sync preparing; date=${_dateText(today)}');
     final failures = <String>[];
+    final teams = <DeviceContentCategory, List<GameData>>{};
+    GolfLeaderboard? golf;
+    PreparedFantasyStartup? fantasy;
+
+    // No writes here: failed providers must not erase the received catalog.
     for (final category in preferences.enabledCategories) {
       if (!_isCurrent(generation)) return;
-      if (category == DeviceContentCategory.fantasy) {
-        try {
-          _diagnose('Fantasy sync started');
-          final result =
-              await syncFantasyCategory?.call() ??
-              const FantasyStartupOutcome();
-          failures.addAll(result.failures.map((error) => 'Fantasy: $error'));
-          if (result.hasContent) {
-            sentCount++;
-            _diagnose('Fantasy sent');
-          } else {
-            _diagnose(
-              result.isEmpty
-                  ? 'Fantasy empty; skipped'
-                  : 'Fantasy failed; no content loaded',
+      try {
+        if (category == DeviceContentCategory.fantasy) {
+          fantasy = await prepareFantasyCategory?.call();
+          if (fantasy != null) {
+            failures.addAll(fantasy.failures.map((e) => 'Fantasy: $e'));
+          }
+        } else if (category == DeviceContentCategory.pga) {
+          final fetched = await repository.fetchGolfLeaderboardForDate(today);
+          if (fetched != null && fetched.golfers.isNotEmpty) {
+            final snapshot = GolfLeaderboard(
+              tournamentId: fetched.tournamentId,
+              tournamentName: fetched.tournamentName,
+              golfers: List.unmodifiable(fetched.golfers),
+              isInProgress: fetched.isInProgress,
+              isOver: fetched.isOver,
+            );
+            const GolfPacketSerializer().buildTransfer(
+              snapshot,
+              transferId: 'startup-validation',
+            );
+            golf = snapshot;
+          }
+        } else {
+          final league = category.sportsLeague!;
+          final fetched = await repository.fetchGamesForDate(league, today);
+          final filtered = applyCollegeFootballFilter(
+            league,
+            fetched,
+            collegePreferences,
+          );
+          final games = List<GameData>.unmodifiable(
+            const FavoriteGamePrioritizer().prioritize(
+              league,
+              filtered,
+              favorites,
+            ),
+          );
+          if (games.isNotEmpty) {
+            const GamePacketSerializer().buildChunkedSlateTransfer(
+              games,
+              slateId: 'startup-validation',
             );
           }
-        } on Object catch (error) {
-          failures.add('Fantasy: $error');
-          _diagnose('Fantasy sync failed: $error');
+          teams[category] = games;
         }
-        continue;
+      } on Object catch (error) {
+        failures.add('${category.displayName}: $error');
+        _diagnose('${category.displayName} preparation failed: $error');
       }
-      final league = category.sportsLeague!;
-      if (league == SportsLeague.pga) {
-        try {
-          _diagnose('PGA fetch started');
-          final golf = await repository.fetchGolfLeaderboardForDate(today);
-          final golferCount = golf?.golfers.length ?? 0;
-          _diagnose('PGA golfers=$golferCount');
-          if (golf != null && golf.golfers.isNotEmpty) {
+    }
+    if (!_isCurrent(generation)) return;
+    final authoritative = failures.isEmpty;
+    if (authoritative) {
+      try {
+        // The existing destructive semantics are unchanged. All replacement
+        // data is now fetched and validated before this command is sent.
+        await sender.sendControlCommand(syncStartCommand);
+        if (!_isCurrent(generation)) return;
+        onAuthoritativeSyncStarted?.call();
+        _diagnose('SYNC_START sent after preparation');
+      } on Object catch (error) {
+        if (!_isCurrent(generation)) return;
+        _needsRetry = true;
+        _setSnapshot(
+          InitialSyncSnapshot(
+            status: InitialSyncStatus.failure,
+            cachedContentMayBeStale: true,
+            lastErrorSummary: 'Unable to start device sync: $error',
+          ),
+        );
+        return;
+      }
+    } else {
+      _diagnose(
+        'Provider unavailable; cached catalog retained without SYNC_START',
+      );
+    }
+
+    if (!authoritative &&
+        !preferences.isEnabled(DeviceContentCategory.fantasy) &&
+        sender.transport is FantasyMatchupTransport) {
+      try {
+        await sender.clearFantasyMatchup();
+      } on Object catch (error) {
+        failures.add('Fantasy removal: $error');
+      }
+    }
+    var sentCount = 0;
+    for (final category in preferences.enabledCategories) {
+      if (!_isCurrent(generation)) return;
+      try {
+        if (category == DeviceContentCategory.fantasy) {
+          // Fantasy is one atomic category. Omitting an unavailable league from
+          // a replacement slate would erase its cached matchup on old devices.
+          if (fantasy != null && fantasy.failures.isEmpty) {
+            final result = await fantasy.commit();
             if (!_isCurrent(generation)) return;
+            failures.addAll(result.failures.map((e) => 'Fantasy: $e'));
+            if (result.hasContent) sentCount++;
+          }
+        } else if (category == DeviceContentCategory.pga) {
+          if (golf != null) {
             await sender.sendGolf(golf, selectedDate: today);
             sentCount++;
-            _diagnose('PGA sent');
-          } else {
-            _diagnose('PGA empty; skipped');
           }
-        } on Object catch (error) {
-          failures.add('PGA: $error');
-          _diagnose('PGA fetch/send failed: $error');
+        } else {
+          final games = teams[category];
+          if (games != null && games.isNotEmpty) {
+            await sender.sendTeamSlate(games, selectedDate: today);
+            sentCount++;
+          }
         }
-        continue;
-      }
-      try {
-        _diagnose('${league.label} fetch started');
-        final providerGames = await repository.fetchGamesForDate(league, today);
-        final fetched = applyCollegeFootballFilter(
-          league,
-          providerGames,
-          collegePreferences,
-        );
-        final games = const FavoriteGamePrioritizer().prioritize(
-          league,
-          fetched,
-          favorites,
-        );
-        _diagnose('${league.label} games=${games.length}');
-        if (games.isEmpty) {
-          _diagnose('${league.label} games=0; skipped');
-          continue;
-        }
-        if (!_isCurrent(generation)) return;
-        await sender.sendTeamSlate(games, selectedDate: today);
-        sentCount++;
-        _diagnose('${league.label} sent');
       } on Object catch (error) {
-        failures.add('${league.label}: $error');
-        _diagnose('${league.label} fetch/send failed: $error');
-        if (!_isCurrent(generation)) return;
+        failures.add('${category.displayName}: $error');
+        _diagnose('${category.displayName} send failed: $error');
       }
     }
-
     if (!_isCurrent(generation)) return;
-    if (sentCount > 0) {
+    if (sentCount > 0 || authoritative) {
+      // Close an already-started attempt even after a write failure, so the
+      // next compatible SYNC_START is not suppressed as a duplicate.
+      final command = sentCount == 0 && failures.isEmpty
+          ? syncEmptyCommand
+          : syncCompleteCommand;
       try {
-        await sender.sendControlCommand(syncCompleteCommand);
-        _diagnose('SYNC_COMPLETE sent');
+        await sender.sendControlCommand(command);
       } on Object catch (error) {
-        failures.add('SYNC_COMPLETE: $error');
-        _diagnose('SYNC_COMPLETE failed: $error');
-      }
-    } else if (failures.isEmpty) {
-      try {
-        await sender.sendControlCommand(syncEmptyCommand);
-        _diagnose('SYNC_EMPTY sent');
-      } on Object catch (error) {
-        failures.add('SYNC_EMPTY: $error');
-        _diagnose('SYNC_EMPTY failed: $error');
+        failures.add('$command: $error');
       }
     }
-
     if (!_isCurrent(generation)) return;
+    _needsRetry = failures.isNotEmpty;
     final status = failures.isNotEmpty
         ? sentCount > 0
               ? InitialSyncStatus.partialFailure
@@ -244,6 +305,7 @@ class InitialDeviceSyncCoordinator {
       InitialSyncSnapshot(
         status: status,
         successfullySyncedLeagueCount: sentCount,
+        cachedContentMayBeStale: failures.isNotEmpty,
         lastErrorSummary: failures.isEmpty ? null : failures.join('; '),
       ),
     );
@@ -253,8 +315,7 @@ class InitialDeviceSyncCoordinator {
       _diagnose('Post-sync optional domain failed: $error');
     }
     _diagnose(
-      'Initial sync complete; leagues sent=$sentCount; '
-      'failures=${failures.length}',
+      'Initial sync complete; leagues sent=$sentCount; failures=${failures.length}',
     );
   }
 

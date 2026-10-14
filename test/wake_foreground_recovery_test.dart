@@ -25,6 +25,7 @@ void main() {
       final connection = StreamController<ConnectionStateUpdate>.broadcast();
       final wakes = <StreamController<List<int>>>[];
       final source = _Source();
+      final packets = <String>[];
       final initial = Completer<void>();
       source.block = initial;
       final transport = BluetoothDeviceTransport(
@@ -42,7 +43,9 @@ void main() {
           wakes.add(stream);
           return stream.stream;
         },
-        writeWithResponse: (_, {required value}) async {},
+        writeWithResponse: (_, {required value}) async {
+          packets.add(utf8.decode(value));
+        },
       );
       Future<void> settle() async {
         for (var i = 0; i < 12; i++) {
@@ -134,6 +137,7 @@ void main() {
       }
       await settle();
       expect(source.calls, 1); // Still owned by initial sync.
+      expect(packets, isNot(contains('SYNC_START')));
       initial.complete();
       await settle();
       expect(source.calls, 2); // Exactly one coalesced follow-up.
@@ -172,6 +176,42 @@ void main() {
       await settle();
       expect(source.calls, 4);
       expect(wakes, hasLength(3));
+      // F07: the retained phone/device catalog must survive an offline
+      // reconnect, then recover from one coalesced burst when the provider returns.
+      source.fail = true;
+      final resets = packets.where((p) => p == 'SYNC_START').length;
+      connection.add(
+        const ConnectionStateUpdate(
+          deviceId: 'esp2',
+          connectionState: DeviceConnectionState.connected,
+          failure: null,
+        ),
+      );
+      await settle();
+      expect(source.calls, 5);
+      expect(packets.where((p) => p == 'SYNC_START'), hasLength(resets));
+      expect(
+        find.text('Updates incomplete; cached data unverified'),
+        findsOneWidget,
+      );
+      final recovery = Completer<void>();
+      source.block = recovery;
+      for (var i = 0; i < 10; i++) {
+        wakes.last.add(utf8.encode('WAKE'));
+      }
+      await settle();
+      expect(source.calls, 6);
+      expect(packets.where((p) => p == 'SYNC_START'), hasLength(resets));
+      source.fail = false;
+      recovery.complete();
+      await settle();
+      expect(source.calls, 6);
+      expect(packets.where((p) => p == 'SYNC_START'), hasLength(resets + 1));
+      expect(packets.last, 'SYNC_COMPLETE');
+      expect(
+        find.text('Updates incomplete; cached data unverified'),
+        findsNothing,
+      );
       await tester.pumpWidget(const SizedBox.shrink());
       await settle();
       unawaited(
@@ -191,6 +231,7 @@ void main() {
 class _Source implements SportsDataSource {
   int calls = 0, active = 0, maxActive = 0;
   Completer<void>? block;
+  bool fail = false;
   @override
   Future<List<SportsGame>> fetchGamesForDate(
     SportsLeague league,
@@ -203,6 +244,7 @@ class _Source implements SportsDataSource {
     block = null;
     try {
       if (pending != null) await pending.future;
+      if (fail) throw StateError('Provider unavailable');
       return [
         const SportsGame(
           league: 'NFL',

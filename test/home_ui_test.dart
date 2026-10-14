@@ -94,6 +94,26 @@ void main() {
     expect(find.text('No sports loaded today'), findsNothing);
   });
 
+  testWidgets(
+    'F07 retained content is explicitly unverified after failed sync',
+    (tester) async {
+      await _pumpHome(
+        tester,
+        connectionState: BleConnectionState.connected,
+        sync: const InitialSyncSnapshot(
+          status: InitialSyncStatus.partialFailure,
+          successfullySyncedLeagueCount: 1,
+          cachedContentMayBeStale: true,
+        ),
+      );
+      expect(
+        find.text('Updates incomplete; cached data unverified'),
+        findsOneWidget,
+      );
+      expect(find.text('1 leagues synced'), findsNothing);
+    },
+  );
+
   testWidgets("Today's Sports reflects only TrackedDeviceSession content", (
     tester,
   ) async {

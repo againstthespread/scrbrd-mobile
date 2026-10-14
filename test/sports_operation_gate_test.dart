@@ -5,6 +5,7 @@ import 'package:sports_hub_mobile/device_transport.dart';
 import 'package:sports_hub_mobile/game_data.dart';
 import 'package:sports_hub_mobile/golf_data_source.dart';
 import 'package:sports_hub_mobile/golf_leaderboard.dart';
+import 'package:sports_hub_mobile/golf_packet_serializer.dart';
 import 'package:sports_hub_mobile/initial_device_sync_coordinator.dart';
 import 'package:sports_hub_mobile/live_refresh_coordinator.dart';
 import 'package:sports_hub_mobile/session_aware_device_sender.dart';
@@ -413,7 +414,10 @@ void main() {
       await initial.startForConnectionForTest();
 
       expect(gate.isInitialSyncActive, isFalse);
-      expect(transport.golf, [initialGolf]);
+      expect(
+        transport.golf.map(const GolfPacketSerializer().canonicalContent),
+        [initialGolf].map(const GolfPacketSerializer().canonicalContent),
+      );
       final baseline = session[SportsLeague.pga] as TrackedGolfLeaderboard;
       expect(baseline.leaderboard.tournamentId, 'pga-live-1');
       expect(baseline.leaderboard.tournamentName, 'Live Open');
@@ -422,7 +426,13 @@ void main() {
       expect(baseline.leaderboard.golfers.first.detail, 'THRU 4');
 
       await gate.requestLiveRefresh(live.refreshTrackedSessionOnce);
-      expect(transport.golf, [initialGolf, wakeOne]);
+      expect(
+        transport.golf.map(const GolfPacketSerializer().canonicalContent),
+        [
+          initialGolf,
+          wakeOne,
+        ].map(const GolfPacketSerializer().canonicalContent),
+      );
       expect(
         (session[SportsLeague.pga] as TrackedGolfLeaderboard)
             .leaderboard
@@ -433,10 +443,23 @@ void main() {
       );
 
       await gate.requestLiveRefresh(live.refreshTrackedSessionOnce);
-      expect(transport.golf, [initialGolf, wakeOne]);
+      expect(
+        transport.golf.map(const GolfPacketSerializer().canonicalContent),
+        [
+          initialGolf,
+          wakeOne,
+        ].map(const GolfPacketSerializer().canonicalContent),
+      );
 
       await gate.requestLiveRefresh(live.refreshTrackedSessionOnce);
-      expect(transport.golf, [initialGolf, wakeOne, wakeThree]);
+      expect(
+        transport.golf.map(const GolfPacketSerializer().canonicalContent),
+        [
+          initialGolf,
+          wakeOne,
+          wakeThree,
+        ].map(const GolfPacketSerializer().canonicalContent),
+      );
       expect(golf.requestedTournamentIds, [
         'pga-live-1',
         'pga-live-1',
@@ -510,7 +533,10 @@ void main() {
       transport.failNextGolf = true;
       await gate.requestLiveRefresh(live.refreshTrackedSessionOnce);
 
-      expect(transport.golf, [initialGolf]);
+      expect(
+        transport.golf.map(const GolfPacketSerializer().canonicalContent),
+        [initialGolf].map(const GolfPacketSerializer().canonicalContent),
+      );
       final baseline = session[SportsLeague.pga] as TrackedGolfLeaderboard;
       expect(baseline.leaderboard.golfers.first.score, 'E');
       expect(baseline.leaderboard.golfers.first.detail, 'THRU 4');

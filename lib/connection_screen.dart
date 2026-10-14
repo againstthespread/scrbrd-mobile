@@ -160,7 +160,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       readFavorites: _favoritesStore.readFavorites,
       readContentPreferences: () => _activeContentPreferences,
       readCollegeFootballPreferences: () => _activeCollegeFootballPreferences,
-      syncFantasyCategory: _fantasyCoordinator.syncStartupCategoryOutcome,
+      prepareFantasyCategory: _fantasyCoordinator.prepareStartupCategory,
       onAuthoritativeSyncStarted: _trackedSession.clear,
     );
     _deviceSnapshot = _transport.currentSnapshot;
@@ -182,6 +182,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
             DeviceContentCategory.fantasy,
           ),
         );
+        _fantasyCoordinator.holdDeviceUpdatesForStartup();
       } else if (wasConnected && !isConnected) {
         debugPrint('physical BLE connection ended');
         _fantasyCoordinator.endConnectionSession();
@@ -210,8 +211,9 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       'lifecycle=${_lifecycleState.name}; BLE connected=$connected',
     );
     await runBackgroundScoreRefresh(
-      refresh: () => _sportsOperationGate.requestLiveRefresh(
-        () => runIsolatedWakeDomains(
+      refresh: () => _requestAutomaticRefresh(
+        'FCM BACKGROUND SCORE REFRESH',
+        refresh: () => runIsolatedWakeDomains(
           refreshSports: () async {
             _recordBackgroundUpdaterDiagnostic(
               'FCM BACKGROUND SCORE REFRESH: sports refresh started',
@@ -271,7 +273,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         !_isDisposing &&
         _transport.currentSnapshot.state.isPhysicallyConnected) {
       unawaited(_transport.resumeWakeNotifications());
-      _requestAutomaticRefresh('APP RESUME');
+      unawaited(_requestAutomaticRefresh('APP RESUME'));
     }
   }
 
@@ -282,24 +284,40 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       'BLE connected=$connected; refresh permitted=$connected; '
       'payload=$payload',
     );
-    _requestAutomaticRefresh('BLE WAKE');
+    unawaited(_requestAutomaticRefresh('BLE WAKE'));
   }
 
-  void _requestAutomaticRefresh(String trigger) {
+  Future<void> _requestAutomaticRefresh(
+    String trigger, {
+    Future<void> Function()? refresh,
+  }) async {
     if (_isDisposing ||
         !_transport.currentSnapshot.state.isPhysicallyConnected) {
       return;
     }
-    unawaited(
-      _sportsOperationGate.requestLiveRefresh(
-        () => runIsolatedWakeDomains(
+    if (_initialSyncCoordinator.needsRetry) {
+      await _initialSyncCoordinator.retryPendingSync();
+      return;
+    }
+    await _sportsOperationGate.requestLiveRefresh(() async {
+      // A WAKE queued during the initial fetch must not overwrite retained
+      // Fantasy with a partial slate if that fetch subsequently fails.
+      if (_isDisposing ||
+          _initialSyncCoordinator.needsRetry ||
+          !_transport.currentSnapshot.state.isPhysicallyConnected) {
+        return;
+      }
+      if (refresh != null) {
+        await refresh();
+      } else {
+        await runIsolatedWakeDomains(
           refreshSports: _liveRefreshCoordinator.refreshTrackedSessionOnce,
           observeFantasy: _fantasyCoordinator.observe,
           onDiagnostic: _recordBackgroundUpdaterDiagnostic,
           triggerLabel: trigger,
-        ),
-      ),
-    );
+        );
+      }
+    });
   }
 
   void _recordBackgroundUpdaterDiagnostic(String message) {
@@ -682,6 +700,10 @@ class _ConnectionStatusCard extends StatelessWidget {
     }
     if (snapshot.errorMessage != null) {
       return ('Connected', snapshot.errorMessage);
+    }
+    if (syncSnapshot.cachedContentMayBeStale &&
+        syncSnapshot.status != InitialSyncStatus.syncing) {
+      return ('Connected', 'Updates incomplete; cached data unverified');
     }
     return switch (syncSnapshot.status) {
       InitialSyncStatus.syncing => (

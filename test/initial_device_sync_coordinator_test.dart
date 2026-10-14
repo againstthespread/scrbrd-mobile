@@ -17,6 +17,194 @@ import 'package:sports_hub_mobile/tracked_device_session.dart';
 import 'package:sports_hub_mobile/device_content_preferences.dart';
 
 void main() {
+  group('F07 cached reconnect', () {
+    void cached(_Harness harness) {
+      harness.session.recordTeamSlate(
+        league: SportsLeague.nfl,
+        selectedDate: DateTime(2026, 8, 21),
+        games: [_game('NFL')],
+      );
+      harness.transport.received.addAll(['NFL', 'NBA']);
+    }
+
+    test(
+      'pending provider fetch must not reset device or phone cache',
+      () async {
+        final pending = Completer<List<SportsGame>>();
+        final harness = _Harness(pendingFirstFetch: pending);
+        cached(harness);
+        final sync = harness.coordinator.startForConnectionForTest();
+        await harness.settle();
+        try {
+          expect(harness.transport.controls, isEmpty);
+          expect(harness.transport.received, {'NFL', 'NBA'});
+          expect(harness.session[SportsLeague.nfl], isNotNull);
+        } finally {
+          pending.complete([]);
+          await sync;
+        }
+      },
+    );
+
+    test(
+      'provider failure retains cached device and phone categories',
+      () async {
+        final harness = _Harness(fetchFailures: {SportsLeague.nfl});
+        cached(harness);
+        await harness.coordinator.startForConnectionForTest();
+        expect(harness.transport.controls, isNot(contains('SYNC_START')));
+        expect(harness.transport.received, {'NFL', 'NBA'});
+        expect(harness.session[SportsLeague.nfl], isNotNull);
+        expect(harness.coordinator.snapshot.status, InitialSyncStatus.failure);
+      },
+    );
+
+    test(
+      'partial provider success does not erase an unavailable category',
+      () async {
+        final harness = _Harness(
+          fetchFailures: {SportsLeague.nfl},
+          games: {
+            SportsLeague.mlb: [_game('MLB')],
+          },
+        );
+        cached(harness);
+        await harness.coordinator.startForConnectionForTest();
+        expect(harness.transport.controls, isNot(contains('SYNC_START')));
+        expect(harness.transport.received, {'NFL', 'NBA', 'MLB'});
+        expect(harness.session[SportsLeague.nfl], isNotNull);
+        expect(harness.session[SportsLeague.mlb], isNotNull);
+        expect(
+          harness.coordinator.snapshot.status,
+          InitialSyncStatus.partialFailure,
+        );
+      },
+    );
+
+    test(
+      'invalid replacement data is rejected before destructive reset',
+      () async {
+        final harness = _Harness(
+          games: {SportsLeague.nba: List.generate(73, (_) => _game('NBA'))},
+        );
+        cached(harness);
+        await harness.coordinator.startForConnectionForTest();
+        expect(harness.transport.controls, isNot(contains('SYNC_START')));
+        expect(harness.transport.received, {'NFL', 'NBA'});
+        expect(harness.coordinator.snapshot.status, InitialSyncStatus.failure);
+      },
+    );
+    test(
+      'recovery retries unavailable providers and removes known-empty cached categories safely',
+      () async {
+        final unavailable = <SportsLeague>{SportsLeague.nfl};
+        final harness = _Harness(
+          fetchFailures: unavailable,
+          games: {
+            SportsLeague.nfl: [_game('NFL')],
+          },
+        );
+        cached(harness);
+        await harness.coordinator.startForConnectionForTest();
+        expect(harness.coordinator.needsRetry, isTrue);
+        expect(harness.coordinator.snapshot.cachedContentMayBeStale, isTrue);
+        unavailable.clear();
+        await harness.coordinator.retryPendingSync();
+        expect(harness.transport.received, {'NFL'});
+        expect(harness.transport.controls, ['SYNC_START', 'SYNC_COMPLETE']);
+        expect(harness.coordinator.needsRetry, isFalse);
+        expect(harness.coordinator.snapshot.cachedContentMayBeStale, isFalse);
+        final count = harness.source.requested.length;
+        await harness.coordinator.retryPendingSync();
+        expect(harness.source.requested, hasLength(count));
+      },
+    );
+
+    test('simultaneous retry triggers share one fetch and one reset', () async {
+      final unavailable = <SportsLeague>{SportsLeague.nfl};
+      final harness = _Harness(fetchFailures: unavailable);
+      cached(harness);
+      await harness.coordinator.startForConnectionForTest();
+      unavailable.clear();
+      final pending = Completer<List<SportsGame>>();
+      harness.source.nextFetch = pending;
+      final priorRequests = harness.source.requested.length;
+      final attempts = [
+        for (var i = 0; i < 10; i++) harness.coordinator.retryPendingSync(),
+      ];
+      await harness.settle();
+      expect(harness.source.requested.length, priorRequests + 1);
+      expect(harness.transport.controls, isEmpty);
+      pending.complete([_sportsGame('NFL')]);
+      await Future.wait(attempts);
+      expect(harness.transport.controls, ['SYNC_START', 'SYNC_COMPLETE']);
+      expect(harness.transport.received, {'NFL'});
+    });
+
+    test(
+      'verified empty schedules intentionally remove old content on recovery',
+      () async {
+        final unavailable = <SportsLeague>{SportsLeague.nfl};
+        final harness = _Harness(fetchFailures: unavailable);
+        cached(harness);
+        await harness.coordinator.startForConnectionForTest();
+        expect(harness.transport.received, {'NFL', 'NBA'});
+        unavailable.clear();
+        await harness.coordinator.retryPendingSync();
+        expect(harness.transport.received, isEmpty);
+        expect(harness.session.snapshot(), isEmpty);
+        expect(harness.transport.controls, ['SYNC_START', 'SYNC_EMPTY']);
+        expect(harness.coordinator.snapshot.status, InitialSyncStatus.empty);
+      },
+    );
+
+    test(
+      'disabled sports are retained during uncertainty then intentionally removed',
+      () async {
+        final unavailable = <SportsLeague>{SportsLeague.nfl};
+        final harness = _Harness(
+          fetchFailures: unavailable,
+          games: {
+            SportsLeague.nfl: [_game('NFL')],
+          },
+          preferences: DeviceContentPreferences.defaults().withEnabled(
+            DeviceContentCategory.nba,
+            false,
+          ),
+        );
+        cached(harness);
+        await harness.coordinator.startForConnectionForTest();
+        expect(harness.source.requested, isNot(contains(SportsLeague.nba)));
+        expect(harness.transport.received, {'NFL', 'NBA'});
+        unavailable.clear();
+        await harness.coordinator.retryPendingSync();
+        expect(harness.transport.received, {'NFL'});
+        expect(harness.coordinator.snapshot.status, InitialSyncStatus.complete);
+      },
+    );
+
+    test(
+      'write failure remains retryable without discarding successful categories',
+      () async {
+        final rejected = <String>{'NFL'};
+        final harness = _Harness(
+          sendFailures: rejected,
+          games: {
+            SportsLeague.nfl: [_game('NFL')],
+            SportsLeague.mlb: [_game('MLB')],
+          },
+        );
+        await harness.coordinator.startForConnectionForTest();
+        expect(harness.transport.received, {'MLB'});
+        expect(harness.coordinator.needsRetry, isTrue);
+        rejected.clear();
+        await harness.coordinator.retryPendingSync();
+        expect(harness.transport.received, {'NFL', 'MLB'});
+        expect(harness.coordinator.snapshot.status, InitialSyncStatus.complete);
+      },
+    );
+  });
+
   test(
     'first connected transition syncs once and duplicates are suppressed',
     () async {
@@ -85,21 +273,28 @@ void main() {
       await harness.settle();
       expect(
         harness.transport.controls.where((c) => c == 'SYNC_START'),
-        hasLength(2),
+        hasLength(1),
       );
       expect(harness.transport.sent, ['NBA']);
       expect(harness.coordinator.snapshot.status, InitialSyncStatus.complete);
     },
   );
 
-  test('SYNC_START precedes fetch and all-empty sends SYNC_EMPTY', () async {
-    final events = <String>[];
-    final harness = _Harness(events: events);
-    await harness.coordinator.startForConnectionForTest();
-    expect(events.first, 'control:SYNC_START');
-    expect(harness.transport.controls, ['SYNC_START', 'SYNC_EMPTY']);
-    expect(harness.coordinator.snapshot.status, InitialSyncStatus.empty);
-  });
+  test(
+    'fetch precedes SYNC_START and genuine all-empty sends SYNC_EMPTY',
+    () async {
+      final events = <String>[];
+      final harness = _Harness(events: events);
+      await harness.coordinator.startForConnectionForTest();
+      expect(events.first, 'fetch:NFL');
+      expect(
+        events.indexOf('control:SYNC_START'),
+        greaterThan(events.indexOf('fetch:PGA')),
+      );
+      expect(harness.transport.controls, ['SYNC_START', 'SYNC_EMPTY']);
+      expect(harness.coordinator.snapshot.status, InitialSyncStatus.empty);
+    },
+  );
 
   test(
     'all four supported content types send in stable order and complete',
@@ -144,7 +339,7 @@ void main() {
         SportsLeague.nba,
         SportsLeague.mlb,
       ]);
-      expect(harness.transport.controls, ['SYNC_START']);
+      expect(harness.transport.controls, isEmpty);
       expect(harness.coordinator.snapshot.status, InitialSyncStatus.failure);
     },
   );
@@ -177,7 +372,7 @@ void main() {
       );
       pending.complete([_sportsGame('NFL')]);
       await harness.settle();
-      expect(harness.transport.controls, ['SYNC_START']);
+      expect(harness.transport.controls, isEmpty);
       expect(harness.transport.sent, isEmpty);
     },
   );
@@ -277,10 +472,13 @@ class _Harness {
       clock: () => DateTime(2026, 8, 21, 16, 30),
       readContentPreferences: () =>
           preferences ?? DeviceContentPreferences.defaults(),
-      syncFantasyCategory: () async {
-        if (fantasyAvailable) transport.sent.add('FANTASY');
-        return FantasyStartupOutcome(hasContent: fantasyAvailable);
-      },
+      prepareFantasyCategory: () async => PreparedFantasyStartup(
+        hasContent: fantasyAvailable,
+        commit: () async {
+          if (fantasyAvailable) transport.sent.add('FANTASY');
+          return FantasyStartupOutcome(hasContent: fantasyAvailable);
+        },
+      ),
       onAuthoritativeSyncStarted: session.clear,
     );
   }
@@ -306,6 +504,7 @@ class _Source implements SportsDataSource {
   final Set<SportsLeague> failures;
   final Completer<List<SportsGame>>? pending;
   final List<String>? events;
+  Completer<List<SportsGame>>? nextFetch;
   final requested = <SportsLeague>[];
   final dates = <DateTime>[];
 
@@ -317,6 +516,9 @@ class _Source implements SportsDataSource {
     requested.add(league);
     dates.add(date);
     events?.add('fetch:${league.label}');
+    final next = nextFetch;
+    nextFetch = null;
+    if (next != null) return next.future;
     if (pending != null && requested.length == 1) return pending!.future;
     if (failures.contains(league)) throw StateError('fetch failed');
     return (games[league] ?? const [])
@@ -346,11 +548,13 @@ class _Transport implements DeviceTransport {
   _Transport(this.failures, this.events);
   final Set<String> failures;
   final List<String>? events;
+  final received = <String>{};
   final controls = <String>[];
   final sent = <String>[];
   @override
   Future<void> sendControlCommand(String command) async {
     controls.add(command);
+    if (command == 'SYNC_START') received.clear();
     events?.add('control:$command');
   }
 
@@ -361,12 +565,14 @@ class _Transport implements DeviceTransport {
     final league = games.first.league;
     sent.add(league);
     if (failures.contains(league)) throw StateError('send failed');
+    received.add(league);
   }
 
   @override
   Future<void> sendGolfLeaderboard(GolfLeaderboard leaderboard) async {
     sent.add('PGA');
     if (failures.contains('PGA')) throw StateError('send failed');
+    received.add('PGA');
   }
 }
 

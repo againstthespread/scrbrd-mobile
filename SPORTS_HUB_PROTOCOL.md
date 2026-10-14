@@ -19,10 +19,12 @@ compact UTF-8 JSON
 
 Initial connection sync commands use the existing writable characteristic:
 
-- `SYNC_START`: sent immediately before the mobile app fetches today's supported sports.
-- `SYNC_COMPLETE`: sent after at least one complete league dataset was successfully transferred.
-- `SYNC_EMPTY`: sent only when NFL, NBA, MLB, and PGA were all checked successfully and all were genuinely empty for today.
-- A partial provider failure with zero transmitted leagues does not send `SYNC_EMPTY`, because absence of content is not known.
+- `SYNC_START`: sent only after all enabled replacement categories have been fetched and validated without provider errors. Its existing immediate catalog-clear semantics are unchanged.
+- `SYNC_COMPLETE`: sent after transferred content, or to close an already-started attempt after a transfer failure so a later retry can begin. It does not certify success for every enabled provider.
+- `SYNC_EMPTY`: sent only after every enabled category was checked successfully and all were genuinely empty, or all categories were intentionally disabled.
+- A provider/validation failure omits `SYNC_START`, retains the existing catalog and tracked baselines, and cannot produce `SYNC_EMPTY`. Complete nonempty sports/PGA categories can still replace their own content. Fantasy is replaced only when every configured provider is known, including an intentional empty slate; disabled Fantasy can use the existing clear packet. Empty/disabled sports removals wait for fully known reconciliation.
+- Failed synchronization is retried through the existing WAKE, foreground and FCM paths; concurrent triggers share one attempt. Updated firmware marks retained categories `CACHED / UNVERIFIED` until individually replaced; older version-1 firmware remains compatible but lacks that warning.
+- Whole-catalog replacement is not atomic: a BLE interruption after `SYNC_START` cannot roll back prior content under the existing protocol. See `F07_VALIDATION.md` for limits requiring separate protocol review.
 - These commands are backward-compatible short UTF-8 writes and do not change protocol version, UUIDs, or sports packet formats.
 
 Game packet:

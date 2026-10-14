@@ -115,10 +115,15 @@ void main() {
   tearDown(() => coordinator.dispose());
 
   group('F37 startup classification', () {
-    Future<InitialSyncSnapshot> start({bool sports = false}) async {
-      final initial = InitialDeviceSyncCoordinator(
+    late InitialDeviceSyncCoordinator initial;
+    Future<InitialSyncSnapshot> start({
+      bool sports = false,
+      bool sportsFailure = false,
+      bool fantasyEnabled = true,
+    }) async {
+      initial = InitialDeviceSyncCoordinator(
         repository: SportsRepository(
-          _EmptyStartupSportsSource(withGame: sports),
+          _EmptyStartupSportsSource(withGame: sports, fail: sportsFailure),
         ),
         sender: SessionAwareDeviceSender(
           transport: transport,
@@ -130,11 +135,12 @@ void main() {
             DeviceContentPreference(
               category: category,
               enabled:
-                  category == DeviceContentCategory.fantasy ||
-                  sports && category == DeviceContentCategory.nba,
+                  fantasyEnabled && category == DeviceContentCategory.fantasy ||
+                  (sports || sportsFailure) &&
+                      category == DeviceContentCategory.nba,
             ),
         ]),
-        syncFantasyCategory: coordinator.syncStartupCategoryOutcome,
+        prepareFantasyCategory: coordinator.prepareStartupCategory,
       );
       await initial.startForConnectionForTest();
       return initial.snapshot;
@@ -148,21 +154,21 @@ void main() {
         expect(result.status.name, 'failure');
         expect(result.successfullySyncedLeagueCount, 0);
         expect(result.lastErrorSummary, contains('sleeper:a'));
-        expect(transport.controls, ['SYNC_START']);
+        expect(transport.controls, isEmpty);
         expect(transport.slates, isEmpty);
       },
     );
 
     test(
-      'partial provider failure still sends content and reports partial',
+      'partial fantasy provider failure retains the atomic cached category',
       () async {
         failures.add('b');
         final result = await start();
-        expect(result.status, InitialSyncStatus.partialFailure);
-        expect(result.successfullySyncedLeagueCount, 1);
+        expect(result.status, InitialSyncStatus.failure);
+        expect(result.successfullySyncedLeagueCount, 0);
         expect(result.lastErrorSummary, contains('sleeper:b'));
-        expect(transport.controls, ['SYNC_START', 'SYNC_COMPLETE']);
-        expect(transport.slates.single.single.identity, 'sleeper:a');
+        expect(transport.controls, isEmpty);
+        expect(transport.slates, isEmpty);
       },
     );
 
@@ -174,10 +180,114 @@ void main() {
         expect(result.status, InitialSyncStatus.partialFailure);
         expect(result.successfullySyncedLeagueCount, 1);
         expect(result.lastErrorSummary, contains('sleeper:a'));
-        expect(transport.controls, ['SYNC_START', 'SYNC_COMPLETE']);
+        expect(transport.controls, ['SYNC_COMPLETE']);
         expect(transport.slates, isEmpty);
       },
     );
+
+    test(
+      'F07 failed fantasy reconnect retains every committed matchup and recovers',
+      () async {
+        await coordinator.syncStartupCategory();
+        expect(transport.committedFantasy.map((e) => e.identity), [
+          'sleeper:a',
+          'sleeper:b',
+        ]);
+        coordinator.endConnectionSession();
+        coordinator.beginConnectionSession();
+        coordinator.holdDeviceUpdatesForStartup();
+        failures.add('b');
+        points['a'] = 11;
+        final result = await start();
+        expect(result.status, InitialSyncStatus.failure);
+        expect(result.cachedContentMayBeStale, isTrue);
+        expect(initial.needsRetry, isTrue);
+        expect(transport.controls, isEmpty);
+        expect(transport.committedFantasy.map((e) => e.matchup.userScore), [
+          10,
+          20,
+        ]);
+        failures.clear();
+        await initial.retryPendingSync();
+        expect(transport.controls, ['SYNC_START', 'SYNC_COMPLETE']);
+        expect(transport.committedFantasy.map((e) => e.matchup.userScore), [
+          11,
+          20,
+        ]);
+        expect(transport.alerts, isEmpty);
+        expect(initial.needsRetry, isFalse);
+        expect(initial.snapshot.status, InitialSyncStatus.complete);
+      },
+    );
+
+    test(
+      'F07 preparation and projection completion cannot write partial fantasy data',
+      () async {
+        await coordinator.syncStartupCategory();
+        final deliveries = transport.slates.length;
+        coordinator.endConnectionSession();
+        coordinator.beginConnectionSession();
+        coordinator.holdDeviceUpdatesForStartup();
+        projectionEnricher.populateOnRefresh = true;
+        failures.add('b');
+        final prepared = await coordinator.prepareStartupCategory();
+        await Future<void>.delayed(Duration.zero);
+        expect(prepared.failures.single, contains('sleeper:b'));
+        expect(transport.slates, hasLength(deliveries));
+        expect(transport.committedFantasy, hasLength(2));
+        projectionEnricher.populateOnRefresh = false;
+        failures.clear();
+        await (await coordinator.prepareStartupCategory()).commit();
+        expect(transport.committedFantasy, hasLength(2));
+      },
+    );
+
+    test(
+      'F07 an in-flight display fetch cannot bypass a later startup hold',
+      () async {
+        await coordinator.syncStartupCategory();
+        final deliveries = transport.slates.length;
+        // A display refresh can already be awaiting a provider when recovery
+        // acquires startup ownership in the same BLE generation.
+        coordinator.beginConnectionSession();
+        loadGate = Completer<void>();
+        loadStarted = Completer<void>();
+        final selection = coordinator.setPrimaryLeague('sleeper:b');
+        await loadStarted!.future;
+        coordinator.holdDeviceUpdatesForStartup();
+        failures.add('b');
+        loadGate!.complete();
+        await selection;
+        expect(transport.slates, hasLength(deliveries));
+        expect(transport.committedFantasy, hasLength(2));
+        failures.clear();
+        await (await coordinator.prepareStartupCategory()).commit();
+        expect(transport.committedFantasy.first.identity, 'sleeper:b');
+      },
+    );
+
+    for (final removal in ['unconfigured', 'disabled']) {
+      test(
+        'F07 intentional $removal fantasy removal remains possible during sports failure',
+        () async {
+          await coordinator.syncStartupCategory();
+          expect(transport.committedFantasy, hasLength(2));
+          if (removal == 'unconfigured') await store.clear();
+          final result = await start(
+            sportsFailure: true,
+            fantasyEnabled: removal != 'disabled',
+          );
+          expect(result.status, InitialSyncStatus.failure);
+          expect(transport.controls, isEmpty);
+          expect(transport.committedFantasy, isEmpty);
+          if (removal == 'unconfigured') {
+            expect(transport.slates.last, isEmpty);
+          } else {
+            expect(transport.clearCount, 1);
+          }
+        },
+      );
+    }
 
     test(
       'ESPN failure is distinguished from unselected configurations',
@@ -189,7 +299,7 @@ void main() {
         final result = await start();
         expect(result.status.name, 'failure');
         expect(result.lastErrorSummary, contains('espn:c'));
-        expect(transport.controls, ['SYNC_START']);
+        expect(transport.controls, isEmpty);
       },
     );
 
@@ -1759,6 +1869,7 @@ class _Transport
   final alerts = <FantasyPointAlert>[];
   final matchups = <FantasyMatchupDisplayData>[];
   final slates = <List<FantasyMatchupSlateEntry>>[];
+  List<FantasyMatchupSlateEntry> committedFantasy = [];
   Completer<void>? projectedSlateSent;
 
   @override
@@ -1773,6 +1884,7 @@ class _Transport
   @override
   Future<void> sendControlCommand(String command) async {
     controls.add(command);
+    if (command == 'SYNC_START') committedFantasy = [];
   }
 
   @override
@@ -1792,6 +1904,7 @@ class _Transport
   Future<void> sendFantasySlate(List<FantasyMatchupSlateEntry> entries) async {
     if (failSlate) throw StateError('Fantasy slate send failed');
     slates.add(List.unmodifiable(entries));
+    committedFantasy = List.unmodifiable(entries);
     if (entries.any((entry) => entry.matchup.userProjectedScore != null)) {
       projectedSlateSent?.complete();
       projectedSlateSent = null;
@@ -1801,6 +1914,7 @@ class _Transport
   @override
   Future<void> clearFantasyMatchup() async {
     clearCount++;
+    committedFantasy = [];
   }
 }
 
@@ -2033,24 +2147,28 @@ SleeperFantasyPlayer _player(String id, {String? espnId}) =>
     );
 
 class _EmptyStartupSportsSource implements SportsDataSource {
-  _EmptyStartupSportsSource({this.withGame = false});
+  _EmptyStartupSportsSource({this.withGame = false, this.fail = false});
   final bool withGame;
+  final bool fail;
   @override
   Future<List<SportsGame>> fetchGamesForDate(
     SportsLeague league,
     DateTime date,
-  ) async => withGame
-      ? [
-          const SportsGame(
-            league: 'NBA',
-            eventId: 'one',
-            awayTeam: 'Away',
-            homeTeam: 'Home',
-            awayScore: 1,
-            homeScore: 0,
-            status: 'LIVE',
-            clock: 'Q1',
-          ),
-        ]
-      : [];
+  ) async {
+    if (fail) throw StateError('NBA unavailable');
+    return withGame
+        ? [
+            const SportsGame(
+              league: 'NBA',
+              eventId: 'one',
+              awayTeam: 'Away',
+              homeTeam: 'Home',
+              awayScore: 1,
+              homeScore: 0,
+              status: 'LIVE',
+              clock: 'Q1',
+            ),
+          ]
+        : [];
+  }
 }
