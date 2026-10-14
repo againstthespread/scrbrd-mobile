@@ -289,8 +289,11 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     }
   }
 
+  List<FantasyMatchupSlateEntry>? _lastSentFantasySlate;
+
   void beginConnectionSession({bool fantasyEnabled = true}) {
     _deviceContentEnabled = fantasyEnabled;
+    _lastSentFantasySlate = null;
     _generation++;
     for (final session in _sessions.values) {
       session.reset();
@@ -303,6 +306,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   }
 
   void endConnectionSession() {
+    _lastSentFantasySlate = null;
     _generation++;
     for (final session in _sessions.values) {
       session.reset();
@@ -478,7 +482,11 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
             config.teamId!,
           ),
         );
-        await transport.sendFantasySlate(await builder.build());
+        await _sendFantasySlateIfChanged(
+          transport,
+          await builder.build(),
+          force: true,
+        );
         slateSent = true;
       }
     } finally {
@@ -534,8 +542,8 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         activeSlateTransport = slateTransport as FantasySlateTransport;
       }
       final useSlateTransport = activeSlateTransport != null;
-      // A slate-capable device receives one atomic replacement after every
-      // observation. Legacy transports retain the Primary-only display update.
+      // Slate-capable devices receive a replacement only when ordered content
+      // changes. Legacy transports retain the Primary-only display update.
       final shouldSyncPersistentMatchup =
           syncPersistentMatchup && !useSlateTransport;
       final results = <String, FantasyObservationResult>{};
@@ -955,6 +963,33 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     }
   }
 
+  Future<bool> _sendFantasySlateIfChanged(
+    FantasySlateTransport transport,
+    List<FantasyMatchupSlateEntry> entries, {
+    bool force = false,
+  }) async {
+    final slate = List<FantasyMatchupSlateEntry>.unmodifiable(entries);
+    final previous = _lastSentFantasySlate;
+    if (!force &&
+        previous != null &&
+        previous.length == slate.length &&
+        Iterable<int>.generate(slate.length).every(
+          (index) =>
+              previous[index].identity == slate[index].identity &&
+              previous[index].matchup == slate[index].matchup,
+        )) {
+      _diagnose('Fantasy slate unchanged; transfer skipped.');
+      return false;
+    }
+    final generation = _generation;
+    await transport.sendFantasySlate(slate);
+    if (generation != _generation || !isBleConnected()) {
+      throw StateError('Fantasy slate session changed; baseline retained.');
+    }
+    _lastSentFantasySlate = slate;
+    return true;
+  }
+
   Future<void> _syncObservedFantasySlate(
     FantasySlateTransport transport,
     List<FantasyLeagueConfig> configs,
@@ -999,10 +1034,12 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
           'opponent=${entry.matchup.opponentProjectedScore ?? 'null'}',
         );
       }
-      await transport.sendFantasySlate(slate);
-      _diagnose(
-        'Fantasy slate sent after observation: ${slate.length} entries.',
-      );
+      final sent = await _sendFantasySlateIfChanged(transport, slate);
+      if (sent) {
+        _diagnose(
+          'Fantasy slate sent after observation: ${slate.length} entries.',
+        );
+      }
     } on Object catch (error) {
       _diagnose('Fantasy slate send failed after observation: $error');
     }
@@ -1061,7 +1098,10 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       );
     }
     try {
-      await (transport as FantasySlateTransport).sendFantasySlate(slate);
+      await _sendFantasySlateIfChanged(
+        transport as FantasySlateTransport,
+        slate,
+      );
     } on Object catch (error) {
       _diagnose('Fantasy display slate send failed: ${error.runtimeType}');
     }

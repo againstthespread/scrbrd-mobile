@@ -85,6 +85,7 @@ class BluetoothDeviceTransport
   bool _isWriting = false;
   int? _writingGeneration;
   int _connectionGeneration = 0;
+  int? _fantasySendingGeneration;
   int _scanGeneration = 0;
 
   Stream<BleDeviceSnapshot> get snapshots => _snapshotController.stream;
@@ -315,16 +316,43 @@ class BluetoothDeviceTransport
 
   @override
   Future<void> sendFantasySlate(List<FantasyMatchupSlateEntry> entries) async {
-    await _sendPacket(fantasyMatchupSerializer.serializeSlateStart());
-    for (final entry in entries) {
-      await _sendPacket(
+    if (entries.map((entry) => entry.identity).toSet().length >
+        FantasyMatchupPacketSerializer.maxSlateMatchups) {
+      throw const FormatException(
+        'Fantasy slate exceeds eight distinct matchups.',
+      );
+    }
+    // Prepare every packet before opening device staging. This also snapshots
+    // caller-owned lists so edits during an awaited write cannot change a slate.
+    final packets = [
+      fantasyMatchupSerializer.serializeSlateStart(),
+      for (final entry in entries)
         fantasyMatchupSerializer.serialize(
           entry.matchup,
           identity: entry.identity,
         ),
-      );
+      fantasyMatchupSerializer.serializeSlateEnd(),
+    ];
+    final generation = _connectionGeneration;
+    if (_fantasySendingGeneration == generation) {
+      throw StateError('A fantasy slate is already being sent.');
     }
-    await _sendPacket(fantasyMatchupSerializer.serializeSlateEnd());
+    _fantasySendingGeneration = generation;
+    try {
+      for (final packet in packets) {
+        if (generation != _connectionGeneration) {
+          throw StateError('Fantasy slate connection changed.');
+        }
+        await _sendPacket(packet);
+        if (generation != _connectionGeneration) {
+          throw StateError('Fantasy slate connection changed.');
+        }
+      }
+    } finally {
+      if (_fantasySendingGeneration == generation) {
+        _fantasySendingGeneration = null;
+      }
+    }
   }
 
   @override

@@ -176,3 +176,23 @@ be stored beneath it and are visible after the alert expires.
 - `points` is the authoritative Sleeper starter-point delta. Mobile does not infer or explain the scoring play.
 - Empty `headline` and `confidence: "none"` intentionally use the existing firmware fallback display.
 - Packets are compact UTF-8 JSON up to 512 bytes. `player` is at most 32 bytes and matchup names are at most 20 bytes.
+
+## Fantasy slate refresh and interruption handling
+
+The existing version-1 `fantasy_slate_start`, identified `fantasy_matchup`, and
+`fantasy_slate_end` packets remain unchanged. Mobile validates all packet bytes,
+identities and the eight-distinct-matchup limit before start, snapshots the inputs, prevents
+concurrent fantasy transfers, and stops the transaction when its BLE connection
+generation changes. Failed writes never send an end; firmware discards abandoned
+staging on timeout/new start/reset/disconnect.
+
+Ordered identity and display content (including projections) are compared with
+the last successfully written slate. Unchanged observations/display-only updates
+skip transfers while scoring/alerts continue. Startup forces a transfer after
+catalog reset; reconnect clears the baseline; failed sends remain retryable.
+Primary remains the first entry.
+
+These markers do not carry an entry count or transfer ID, and ATT write responses
+are not firmware commit acknowledgements. Silent middle-packet loss followed by
+end cannot be proven complete with this unchanged contract. Application receipts
+and completeness metadata require a separately reviewed protocol extension.

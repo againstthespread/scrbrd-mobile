@@ -608,6 +608,43 @@ void main() {
   });
 
   test(
+    'unchanged fantasy slates skip writes but changed data and reconnect resend',
+    () async {
+      await coordinator.observe();
+      await coordinator.observe();
+      expect(transport.slates, hasLength(1));
+      points['a'] = 11;
+      await coordinator.observe();
+      expect(transport.slates, hasLength(2));
+      await coordinator.observe();
+      expect(transport.slates, hasLength(2));
+      coordinator.endConnectionSession();
+      coordinator.beginConnectionSession();
+      await coordinator.observe();
+      expect(transport.slates, hasLength(3));
+    },
+  );
+
+  test(
+    'failed changed slate is retried and unchanged Primary selection skips writes',
+    () async {
+      await coordinator.observe();
+      await coordinator.setPrimaryLeague(coordinator.primaryLeagueId!);
+      expect(transport.slates, hasLength(1));
+      points['a'] = 11;
+      transport.failSlate = true;
+      await coordinator.observe();
+      expect(transport.slates, hasLength(1));
+      transport.failSlate = false;
+      await coordinator.observe();
+      expect(transport.slates, hasLength(2));
+      expect(transport.slates.last.first.matchup.userScore, 11);
+      await coordinator.observe();
+      expect(transport.slates, hasLength(2));
+    },
+  );
+
+  test(
     'regular observation refreshes the full slate without legacy sends',
     () async {
       await coordinator.syncStartupCategory();
@@ -647,6 +684,7 @@ void main() {
     points['espn'] = 25.5;
     await coordinator.setPrimaryLeague('sleeper:a');
     transport.slates.clear();
+    points['espn'] = 26.5;
 
     await coordinator.observe();
 
@@ -1006,6 +1044,7 @@ void main() {
       'selecting $primary preserves the full mixed-provider slate',
       () async {
         await save('c', provider: FantasyProvider.espn);
+        await coordinator.setPrimaryLeague('sleeper:a');
         await coordinator.syncStartupCategory();
         transport.slates.clear();
         loads.clear();
@@ -1187,11 +1226,8 @@ void main() {
         expect(fantasyRuns, 1);
         expect(completions, background ? 1 : 0);
         expect(loads, ['a', 'b']);
-        expect(transport.slates, hasLength(2));
-        expect(
-          transport.slates.last.map((e) => e.identity),
-          transport.slates.first.map((e) => e.identity),
-        );
+        // Unchanged WAKE data preserves the device slate without rewriting it.
+        expect(transport.slates, hasLength(1));
         expect(transport.slates.last, hasLength(3));
         expect(transport.matchups, isEmpty);
         expect(transport.alerts, isEmpty);

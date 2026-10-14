@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -6,6 +7,8 @@ import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:sports_hub_mobile/ble_device_state.dart';
 import 'package:sports_hub_mobile/bluetooth_device_transport.dart';
 import 'package:sports_hub_mobile/game_data.dart';
+import 'package:sports_hub_mobile/fantasy_matchup_display_data.dart';
+import 'package:sports_hub_mobile/fantasy_matchup_transport.dart';
 import 'package:sports_hub_mobile/golf_leaderboard.dart';
 import 'package:sports_hub_mobile/session_aware_device_sender.dart';
 import 'package:sports_hub_mobile/sports_league.dart';
@@ -13,6 +16,159 @@ import 'package:sports_hub_mobile/sports_hub_ble_protocol.dart';
 import 'package:sports_hub_mobile/tracked_device_session.dart';
 
 void main() {
+  Future<void> drainWrites(_WriteHarness harness, Future<void> send) async {
+    var done = false;
+    send.then((_) => done = true, onError: (Object _) => done = true);
+    for (var tick = 0; tick < 30 && !done; tick++) {
+      await Future<void>.delayed(Duration.zero);
+      for (final write in harness.writes) {
+        if (!write.isCompleted) write.complete();
+      }
+    }
+  }
+
+  test('fantasy slate prevalidates every entry before any write', () async {
+    final harness = await _WriteHarness.create();
+    final send = harness.transport.sendFantasySlate([
+      _fantasyEntry('A'),
+      _fantasyEntry('B', week: 0),
+    ]);
+    final failure = expectLater(send, throwsFormatException);
+    await drainWrites(harness, send);
+    await failure;
+    expect(harness.writeCount, 0);
+    await harness.dispose();
+  });
+
+  for (final identity in ['', 'x' * 49, 'é' * 25, 'bad\u0000id']) {
+    test(
+      'fantasy invalid identity is rejected before opening staging: $identity',
+      () async {
+        final harness = await _WriteHarness.create();
+        await expectLater(
+          harness.transport.sendFantasySlate([_fantasyEntry(identity)]),
+          throwsFormatException,
+        );
+        expect(harness.writeCount, 0);
+        await harness.dispose();
+      },
+    );
+  }
+
+  test(
+    'fantasy capacity and packet shapes retain version 1 contract',
+    () async {
+      final harness = await _WriteHarness.create();
+      await expectLater(
+        harness.transport.sendFantasySlate([
+          for (var i = 0; i < 9; i++) _fantasyEntry('$i'),
+        ]),
+        throwsFormatException,
+      );
+      expect(harness.writeCount, 0);
+      final entries = [_fantasyEntry('A'), _fantasyEntry('B')];
+      final send = harness.transport.sendFantasySlate(entries);
+      entries.clear(); // Prevalidation must snapshot caller-owned input.
+      await drainWrites(harness, send);
+      await send;
+      final packets = harness.packets
+          .map((packet) => jsonDecode(utf8.decode(packet)))
+          .toList();
+      expect(packets.map((packet) => packet['type']), [
+        'fantasy_slate_start',
+        'fantasy_matchup',
+        'fantasy_matchup',
+        'fantasy_slate_end',
+      ]);
+      expect(packets.every((packet) => packet['version'] == 1), isTrue);
+      expect(packets[1]['identity'], 'A');
+      expect(packets[2]['identity'], 'B');
+      expect(harness.packets.every((packet) => packet.length <= 512), isTrue);
+      await harness.dispose();
+    },
+  );
+
+  test(
+    'duplicate identities retain in-place replacement compatibility',
+    () async {
+      final harness = await _WriteHarness.create();
+      final send = harness.transport.sendFantasySlate([
+        for (var i = 0; i < 9; i++) _fantasyEntry('A'),
+      ]);
+      await drainWrites(harness, send);
+      await send;
+      expect(harness.writeCount, 11);
+      expect(
+        jsonDecode(utf8.decode(harness.packets.last))['type'],
+        'fantasy_slate_end',
+      );
+      await harness.dispose();
+    },
+  );
+
+  test(
+    'fantasy failed write sends no end and retry starts a fresh transaction',
+    () async {
+      final harness = await _WriteHarness.create();
+      final send = harness.transport.sendFantasySlate([_fantasyEntry('A')]);
+      final failure = expectLater(send, throwsA(isA<StateError>()));
+      await Future<void>.delayed(Duration.zero);
+      harness.completeWrite(0);
+      await Future<void>.delayed(Duration.zero);
+      harness.writes[1].completeError(StateError('injected write failure'));
+      await failure;
+      expect(harness.writeCount, 2);
+      harness.physicalDisconnect();
+      await Future<void>.delayed(Duration.zero);
+      harness.physicalReconnect();
+      await Future<void>.delayed(Duration.zero);
+      final retry = harness.transport.sendFantasySlate([_fantasyEntry('A')]);
+      final competing = harness.transport.sendFantasySlate([
+        _fantasyEntry('B'),
+      ]);
+      await expectLater(competing, throwsA(isA<StateError>()));
+      await drainWrites(harness, retry);
+      await retry;
+      expect(
+        jsonDecode(utf8.decode(harness.packets[2]))['type'],
+        'fantasy_slate_start',
+      );
+      expect(
+        jsonDecode(utf8.decode(harness.packets.last))['type'],
+        'fantasy_slate_end',
+      );
+      await harness.dispose();
+    },
+  );
+
+  for (var boundary = 0; boundary < 4; boundary++) {
+    test(
+      'fantasy interruption at packet $boundary cannot cross sessions',
+      () async {
+        final harness = await _WriteHarness.create();
+        final send = harness.transport.sendFantasySlate([
+          _fantasyEntry('A'),
+          _fantasyEntry('B'),
+        ]);
+        final failure = expectLater(send, throwsA(isA<StateError>()));
+        for (var index = 0; index < boundary; index++) {
+          await Future<void>.delayed(Duration.zero);
+          harness.completeWrite(index);
+        }
+        await Future<void>.delayed(Duration.zero);
+        harness.physicalDisconnect();
+        await Future<void>.delayed(Duration.zero);
+        harness.physicalReconnect();
+        await Future<void>.delayed(Duration.zero);
+        harness.completeWrite(boundary);
+        await drainWrites(harness, send);
+        await failure;
+        expect(harness.writeCount, boundary + 1);
+        await harness.dispose();
+      },
+    );
+  }
+
   test('sending remains a physically connected BLE state', () {
     expect(BleConnectionState.connected.isPhysicallyConnected, isTrue);
     expect(BleConnectionState.sending.isPhysicallyConnected, isTrue);
@@ -404,6 +560,7 @@ class _WriteHarness {
       writeWithResponse: (characteristic, {required value}) {
         final completion = Completer<void>();
         writes.add(completion);
+        packets.add(List<int>.of(value));
         return completion.future;
       },
     );
@@ -427,6 +584,7 @@ class _WriteHarness {
   final scan = StreamController<DiscoveredDevice>.broadcast();
   final connection = StreamController<ConnectionStateUpdate>.broadcast();
   final writes = <Completer<void>>[];
+  final packets = <List<int>>[];
   late final BluetoothDeviceTransport transport;
 
   int get writeCount => writes.length;
@@ -513,3 +671,17 @@ class _TestBleProtocol extends SportsHubBleProtocol {
   Uuid get wakeCharacteristicUuid =>
       Uuid.parse('00000002-0000-1000-8000-00805f9b34fb');
 }
+
+FantasyMatchupSlateEntry _fantasyEntry(String id, {int week = 1}) =>
+    FantasyMatchupSlateEntry(
+      identity: id,
+      matchup: FantasyMatchupDisplayData(
+        leagueName: 'League',
+        userName: 'User',
+        userScore: 10,
+        opponentName: 'Opponent',
+        opponentScore: 5,
+        week: week,
+        status: FantasyMatchupDisplayStatus.live,
+      ),
+    );

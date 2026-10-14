@@ -7,6 +7,8 @@ class FantasyMatchupPacketSerializer {
   const FantasyMatchupPacketSerializer();
 
   static const maxPacketBytes = 512;
+  static const maxSlateMatchups = 8;
+  static const maxIdentityBytes = 48;
   static const maxLeagueNameLength = 48;
   static const maxTeamNameLength = 20;
 
@@ -56,7 +58,16 @@ class FantasyMatchupPacketSerializer {
       'week': data.week,
       'status': data.status.wireValue,
     };
-    if (identity != null) packet['identity'] = identity;
+    if (identity != null) {
+      if (identity.trim().isEmpty ||
+          identity.contains('\u0000') ||
+          utf8.encode(identity).length > maxIdentityBytes) {
+        throw const FormatException(
+          'Fantasy identity must be 1–48 UTF-8 bytes.',
+        );
+      }
+      packet['identity'] = identity;
+    }
     final bytes = utf8.encode(jsonEncode(packet));
     if (bytes.length > maxPacketBytes) {
       throw const FormatException('Fantasy matchup packet exceeds 512 bytes.');
