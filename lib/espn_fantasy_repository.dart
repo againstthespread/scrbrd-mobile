@@ -1,6 +1,7 @@
 import 'espn_fantasy_client.dart';
 import 'fantasy_league_config.dart';
 import 'fantasy_provider_models.dart';
+import 'fantasy_matchup_status.dart';
 
 class EspnFantasyRepository {
   const EspnFantasyRepository(this.client);
@@ -165,6 +166,12 @@ FantasyMatchupSnapshot _parseMatchup(
       league: league,
       team: team,
       opponent: opponent,
+      // The result belongs to this matchup period, including multi-week rounds.
+      // Undecided/missing results do not prove either pregame or active play.
+      status: switch (schedule['winner']) {
+        'HOME' || 'AWAY' || 'TIE' => FantasyMatchupDisplayStatus.finalStatus,
+        _ => null,
+      },
     );
   } on EspnFantasyException {
     rethrow;

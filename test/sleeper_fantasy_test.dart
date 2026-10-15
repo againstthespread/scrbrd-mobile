@@ -3,11 +3,24 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:sports_hub_mobile/fantasy_matchup_display_data.dart';
 import 'package:sports_hub_mobile/sleeper_api_client.dart';
 import 'package:sports_hub_mobile/sleeper_fantasy_repository.dart';
 import 'package:sports_hub_mobile/sleeper_models.dart';
 
 void main() {
+  test(
+    'F21 Sleeper scores and defensive adjustments do not establish LIVE',
+    () {
+      final display = FantasyMatchupDisplayData.fromSleeper(
+        _snapshot().matchupForRoster(1),
+      );
+      expect(display.status, FantasyMatchupDisplayStatus.upcoming);
+      expect(display.userScore, 101.4);
+      expect(display.opponentScore, 98.2);
+    },
+  );
+
   group('Sleeper JSON parsing', () {
     test('parses league information and scoring settings', () {
       final league = SleeperLeague.fromJson({

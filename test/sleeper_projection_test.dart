@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:sports_hub_mobile/fantasy_matchup_display_data.dart';
 import 'package:sports_hub_mobile/sleeper_api_client.dart';
 import 'package:sports_hub_mobile/sleeper_models.dart';
 import 'package:sports_hub_mobile/sleeper_projection.dart';
@@ -32,6 +33,200 @@ void main() {
         metadata: metadata,
       );
     });
+
+    for (final phase in SleeperNflGamePhase.values) {
+      test('F21 Sleeper $phase lifecycle does not depend on points', () async {
+        _addPlayer(source, metadata, 'a', 'BUF', {'rush_yd': 10});
+        _addPlayer(source, metadata, 'b', 'KC', {'rush_yd': 20});
+        statuses.values.addAll({'BUF': phase, 'KC': phase});
+        final base = _matchup(
+          starters: ['a'],
+          scoring: {'rush_yd': 1},
+          actual: {'a': 0},
+        );
+        final opponent = _matchup(
+          starters: ['b'],
+          scoring: {'rush_yd': 1},
+          actual: {'b': 0},
+        ).team;
+        final matchup = SleeperFantasyMatchup(
+          league: base.league,
+          week: base.week,
+          team: base.team,
+          opponent: opponent,
+        );
+        final enriched = await _capture(service, matchup);
+        final display = FantasyMatchupDisplayData.fromSleeper(enriched);
+        expect(display.status, switch (phase) {
+          SleeperNflGamePhase.upcoming => FantasyMatchupDisplayStatus.upcoming,
+          SleeperNflGamePhase.live => FantasyMatchupDisplayStatus.live,
+          SleeperNflGamePhase.finalStatus =>
+            FantasyMatchupDisplayStatus.finalStatus,
+        });
+        expect(display.userScore, 0);
+      });
+    }
+
+    test(
+      'F21 lifecycle-only changes request redraw without recapturing projections',
+      () async {
+        _addPlayer(source, metadata, 'a', 'BUF', {'rush_yd': 10});
+        _addPlayer(source, metadata, 'b', 'KC', {'rush_yd': 20});
+        final base = _matchup(starters: ['a'], scoring: {'rush_yd': 1});
+        final opponent = _matchup(
+          starters: ['b'],
+          scoring: {'rush_yd': 1},
+        ).team;
+        final matchup = SleeperFantasyMatchup(
+          league: base.league,
+          week: base.week,
+          team: base.team,
+          opponent: opponent,
+        );
+        statuses.values.addAll({
+          'BUF': SleeperNflGamePhase.upcoming,
+          'KC': SleeperNflGamePhase.upcoming,
+        });
+        await service.refresh(matchup);
+        expect(await service.refresh(matchup), isFalse);
+        statuses.values['BUF'] = SleeperNflGamePhase.live;
+        expect(await service.refresh(matchup), isTrue);
+        expect(
+          FantasyMatchupDisplayData.fromSleeper(
+            await service.applyCached(matchup),
+          ).status,
+          FantasyMatchupDisplayStatus.live,
+        );
+        statuses.values.updateAll((_, _) => SleeperNflGamePhase.finalStatus);
+        expect(await service.refresh(matchup), isTrue);
+        final result = await service.applyCached(matchup);
+        expect(
+          FantasyMatchupDisplayData.fromSleeper(result).status,
+          FantasyMatchupDisplayStatus.finalStatus,
+        );
+        expect(
+          result
+              .withProjectedTotals(teamProjection: 0, opponentProjection: 0)
+              .status,
+          FantasyMatchupDisplayStatus.finalStatus,
+        );
+        expect(await service.refresh(matchup), isFalse);
+        expect(source.calls, {'a': 1, 'b': 1});
+      },
+    );
+    for (final scenario in [
+      'remaining',
+      'unknown',
+      'empty',
+      'bye',
+      'postponed',
+    ]) {
+      test(
+        'F21 partial FINAL with $scenario does not finish matchup',
+        () async {
+          _addPlayer(source, metadata, 'a', 'BUF', {'rush_yd': 10});
+          _addPlayer(source, metadata, 'b', 'KC', {'rush_yd': 20});
+          statuses.values['BUF'] = SleeperNflGamePhase.finalStatus;
+          if (scenario == 'remaining' || scenario == 'postponed') {
+            statuses.values['KC'] = SleeperNflGamePhase.upcoming;
+          }
+          final base = _matchup(
+            starters: ['a'],
+            scoring: {'rush_yd': 1},
+            actual: {'a': -2},
+          );
+          final opponent = _matchup(
+            starters: scenario == 'empty' ? [] : ['b'],
+            scoring: {'rush_yd': 1},
+          ).team;
+          final matchup = SleeperFantasyMatchup(
+            league: base.league,
+            week: base.week,
+            team: base.team,
+            opponent: opponent,
+          );
+          final display = FantasyMatchupDisplayData.fromSleeper(
+            await _capture(service, matchup),
+          );
+          expect(
+            display.status,
+            scenario == 'remaining' || scenario == 'postponed'
+                ? FantasyMatchupDisplayStatus.live
+                : FantasyMatchupDisplayStatus.upcoming,
+          );
+          expect(display.userScore, -2);
+        },
+      );
+    }
+    test(
+      'F21 missing phase update cannot silently reuse a final lifecycle',
+      () async {
+        _addPlayer(source, metadata, 'a', 'BUF', {'rush_yd': 10});
+        _addPlayer(source, metadata, 'b', 'KC', {'rush_yd': 20});
+        final base = _matchup(starters: ['a'], scoring: {'rush_yd': 1});
+        final matchup = SleeperFantasyMatchup(
+          league: base.league,
+          week: base.week,
+          team: base.team,
+          opponent: _matchup(starters: ['b'], scoring: {'rush_yd': 1}).team,
+        );
+        statuses.values.addAll({
+          'BUF': SleeperNflGamePhase.finalStatus,
+          'KC': SleeperNflGamePhase.finalStatus,
+        });
+        await service.refresh(matchup);
+        statuses.values.clear();
+        expect(await service.refresh(matchup), isTrue);
+        expect(
+          FantasyMatchupDisplayData.fromSleeper(
+            await service.applyCached(matchup),
+          ).status,
+          FantasyMatchupDisplayStatus.upcoming,
+        );
+      },
+    );
+
+    test(
+      'F21 week rollover and wrong-period projections cannot inherit FINAL',
+      () async {
+        _addPlayer(source, metadata, 'a', 'BUF', {'rush_yd': 10});
+        _addPlayer(source, metadata, 'b', 'KC', {'rush_yd': 20});
+        statuses.values.addAll({
+          'BUF': SleeperNflGamePhase.finalStatus,
+          'KC': SleeperNflGamePhase.finalStatus,
+        });
+        SleeperFantasyMatchup matchup(int week) {
+          final base = _matchup(
+            week: week,
+            starters: ['a'],
+            scoring: {'rush_yd': 1},
+          );
+          return SleeperFantasyMatchup(
+            league: base.league,
+            week: week,
+            team: base.team,
+            opponent: _matchup(
+              week: week,
+              starters: ['b'],
+              scoring: {'rush_yd': 1},
+            ).team,
+          );
+        }
+
+        expect(
+          FantasyMatchupDisplayData.fromSleeper(
+            await _capture(service, matchup(1)),
+          ).status,
+          FantasyMatchupDisplayStatus.finalStatus,
+        );
+        expect(
+          FantasyMatchupDisplayData.fromSleeper(
+            await _capture(service, matchup(2)),
+          ).status,
+          FantasyMatchupDisplayStatus.upcoming,
+        );
+      },
+    );
 
     test('pregame sums starters and excludes bench players', () async {
       _addPlayer(source, metadata, 'qb', 'BUF', {'pass_yd': 250});
@@ -1332,6 +1527,22 @@ void main() {
     },
   );
 
+  for (final reverse in [false, true]) {
+    test(
+      'F21 conflicting rescheduled game phases cannot overwrite pending with FINAL order=$reverse',
+      () async {
+        final source = SportsRepositorySleeperNflGameStatusSource(
+          SportsRepository(_RescheduledSource()),
+        );
+        final dates = [DateTime(2026, 9, 20), DateTime(2026, 9, 21)];
+        final statuses = await source.statusesForDates(
+          reverse ? dates.reversed : dates,
+        );
+        expect(statuses['BUF'], SleeperNflGamePhase.upcoming);
+      },
+    );
+  }
+
   test(
     'existing scoreboard status maps only explicit FINAL to final',
     () async {
@@ -1775,4 +1986,22 @@ class _SportsSource implements SportsDataSource {
       ),
     ];
   }
+}
+
+class _RescheduledSource implements SportsDataSource {
+  @override
+  Future<List<SportsGame>> fetchGamesForDate(
+    SportsLeague league,
+    DateTime date,
+  ) async => [
+    SportsGame(
+      league: 'NFL',
+      awayTeam: 'BUF',
+      homeTeam: 'MIA',
+      awayScore: 0,
+      homeScore: 0,
+      status: date.day == 20 ? 'FINAL' : 'UPCOMING',
+      clock: '',
+    ),
+  ];
 }

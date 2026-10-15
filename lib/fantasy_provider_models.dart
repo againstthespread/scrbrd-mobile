@@ -1,4 +1,5 @@
 import 'fantasy_league_config.dart';
+import 'fantasy_matchup_status.dart';
 
 /// Provider-independent output for a future shared observation runtime.
 class FantasyLeagueDetails {
@@ -62,7 +63,11 @@ class FantasyMatchupSnapshot {
     required this.league,
     required this.team,
     required this.opponent,
+    this.status,
   });
+
+  /// Null when the provider observation cannot establish lifecycle reliably.
+  final FantasyMatchupDisplayStatus? status;
   final FantasyLeagueDetails league;
   final FantasyScoringTeam team;
 

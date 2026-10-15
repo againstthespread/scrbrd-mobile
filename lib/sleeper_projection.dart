@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'sleeper_api_client.dart';
 import 'sleeper_models.dart';
+import 'fantasy_matchup_status.dart';
 import 'sports_league.dart';
 import 'sports_repository.dart';
 import 'team_catalog.dart';
@@ -47,9 +48,24 @@ class SportsRepositorySleeperNflGameStatusSource
       for (final date in uniqueDates)
         if (_needsRefresh(date)) _refreshDateSafely(date),
     ]);
-    return Map.unmodifiable({
-      for (final date in uniqueDates) ...?_cache[_dateKey(date)]?.statuses,
-    });
+    final merged = <String, SleeperNflGamePhase>{};
+    for (final date in uniqueDates) {
+      for (final entry
+          in (_cache[_dateKey(date)]?.statuses ??
+                  const <String, SleeperNflGamePhase>{})
+              .entries) {
+        final previous = merged[entry.key];
+        // Rescheduled games may put the same team on multiple requested dates.
+        // An earlier FINAL must not hide its still-pending game on another date.
+        merged[entry.key] = previous == null || previous == entry.value
+            ? entry.value
+            : previous == SleeperNflGamePhase.live ||
+                  entry.value == SleeperNflGamePhase.live
+            ? SleeperNflGamePhase.live
+            : SleeperNflGamePhase.upcoming;
+      }
+    }
+    return Map.unmodifiable(merged);
   }
 
   bool _needsRefresh(DateTime date) {
@@ -703,6 +719,7 @@ class SleeperSettlingProjectionService implements SleeperProjectionEnricher {
   final Map<String, DateTime> _projectionRetryAfter = {};
   final Map<String, String> _playerTeams = {};
   final Map<String, SleeperNflGamePhase> _teamStatuses = {};
+  final Map<String, FantasyMatchupDisplayStatus?> _matchupStatuses = {};
   final Set<String> _diagnosedProjectionOutcomes = {};
 
   @override
@@ -723,10 +740,12 @@ class SleeperSettlingProjectionService implements SleeperProjectionEnricher {
       'team=${teamProjection == null ? 'missing' : 'ready'} '
       'opponent=${opponentProjection == null ? 'missing' : 'ready'}',
     );
-    return matchup.withProjectedTotals(
-      teamProjection: teamProjection,
-      opponentProjection: opponentProjection,
-    );
+    return matchup
+        .withProjectedTotals(
+          teamProjection: teamProjection,
+          opponentProjection: opponentProjection,
+        )
+        .withLifecycleStatus(_matchupStatuses[_matchupStatusKey(matchup)]);
   }
 
   @override
@@ -798,7 +817,11 @@ class SleeperSettlingProjectionService implements SleeperProjectionEnricher {
     final dates = <DateTime>{
       for (final playerId in starterIds)
         if (existing[playerId] case final baseline?) baseline.gameDate,
-      for (final projection in raw.values) projection.gameDate,
+      for (final projection in raw.values)
+        if (projection.season == matchup.league.season &&
+            projection.week == matchup.week &&
+            projection.seasonType == matchup.seasonType.toLowerCase())
+          projection.gameDate,
     };
     Map<String, SleeperNflGamePhase> statuses;
     try {
@@ -814,6 +837,10 @@ class SleeperSettlingProjectionService implements SleeperProjectionEnricher {
       return false;
     }
     _teamStatuses.addAll(statuses);
+    final statusKey = _matchupStatusKey(matchup);
+    final matchupStatus = _statusFromGames(matchup, statuses);
+    final lifecycleChanged = _matchupStatuses[statusKey] != matchupStatus;
+    _matchupStatuses[statusKey] = matchupStatus;
 
     final nextPlayers = <String, SleeperProjectionBaseline>{...existing};
     var changed = false;
@@ -916,7 +943,8 @@ class SleeperSettlingProjectionService implements SleeperProjectionEnricher {
         'Sleeper PROJ: capture complete league=${matchup.league.leagueId} '
         'changed=false frozen=${nextPlayers.length}/${starterIds.length}',
       );
-      return false;
+      // Lifecycle-only transitions must also redraw an otherwise frozen slate.
+      return lifecycleChanged;
     }
     final latestLeague = _snapshot!.leagues[matchup.league.leagueId];
     final latestPlayers = latestLeague?.scoringSignature == signature
@@ -935,6 +963,44 @@ class SleeperSettlingProjectionService implements SleeperProjectionEnricher {
       'persisted=$persisted',
     );
     return true;
+  }
+
+  String _matchupStatusKey(SleeperFantasyMatchup matchup) {
+    final team = matchup.team.matchup.starters.join(',');
+    final opponent = matchup.opponent.matchup.starters.join(',');
+    return '${matchup.league.leagueId}:${matchup.team.roster.rosterId}:$team'
+        ':${matchup.opponent.roster.rosterId}:$opponent';
+  }
+
+  FantasyMatchupDisplayStatus? _statusFromGames(
+    SleeperFantasyMatchup matchup,
+    Map<String, SleeperNflGamePhase> statuses,
+  ) {
+    final lineups = [
+      matchup.team.matchup.starters,
+      matchup.opponent.matchup.starters,
+    ];
+    // An empty/absent lineup (or an all-empty-slot lineup) is not completion.
+    if (lineups.any((ids) => ids.where((id) => id != '0').isEmpty)) return null;
+    final phases = [
+      for (final ids in lineups)
+        for (final id in ids)
+          if (id != '0') statuses[_playerTeams[id]],
+    ];
+    if (phases.contains(SleeperNflGamePhase.live)) {
+      return FantasyMatchupDisplayStatus.live;
+    }
+    // A bye, missing metadata, or postponed/unreported game must block FINAL.
+    if (phases.contains(null)) return null;
+    if (phases.every((phase) => phase == SleeperNflGamePhase.finalStatus)) {
+      return FantasyMatchupDisplayStatus.finalStatus;
+    }
+    // Started and remaining games make an active weekly matchup, even between
+    // games. This is game-phase evidence, not a nonzero-score heuristic.
+    if (phases.contains(SleeperNflGamePhase.finalStatus)) {
+      return FantasyMatchupDisplayStatus.live;
+    }
+    return FantasyMatchupDisplayStatus.upcoming;
   }
 
   void _diagnoseStarterFailure(
@@ -1089,6 +1155,7 @@ class SleeperSettlingProjectionService implements SleeperProjectionEnricher {
     _projectionRetryAfter.clear();
     _playerTeams.clear();
     _teamStatuses.clear();
+    _matchupStatuses.clear();
     _diagnosedProjectionOutcomes.clear();
     await _persistSafely();
   }

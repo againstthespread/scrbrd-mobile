@@ -1,15 +1,9 @@
 import 'sleeper_models.dart';
 import 'fantasy_provider_models.dart';
 import 'utf8_display_text.dart';
+import 'fantasy_matchup_status.dart';
 
-enum FantasyMatchupDisplayStatus {
-  upcoming('UPCOMING'),
-  live('LIVE'),
-  finalStatus('FINAL');
-
-  const FantasyMatchupDisplayStatus(this.wireValue);
-  final String wireValue;
-}
+export 'fantasy_matchup_status.dart';
 
 class FantasyMatchupDisplayData {
   const FantasyMatchupDisplayData({
@@ -26,16 +20,9 @@ class FantasyMatchupDisplayData {
 
   factory FantasyMatchupDisplayData.fromSleeper(SleeperFantasyMatchup matchup) {
     final leagueStatus = matchup.league.status.trim().toLowerCase();
-    final hasScoring =
-        matchup.team.matchup.points != 0 ||
-        matchup.opponent.matchup.points != 0 ||
-        matchup.team.matchup.playerPoints.values.any((value) => value != 0) ||
-        matchup.opponent.matchup.playerPoints.values.any((value) => value != 0);
     final status = leagueStatus == 'complete'
         ? FantasyMatchupDisplayStatus.finalStatus
-        : hasScoring
-        ? FantasyMatchupDisplayStatus.live
-        : FantasyMatchupDisplayStatus.upcoming;
+        : matchup.status ?? FantasyMatchupDisplayStatus.upcoming;
     return FantasyMatchupDisplayData(
       leagueName: truncateUtf8DisplayText(matchup.league.name, 48),
       userName: truncateUtf8DisplayText(matchup.team.name, 20),
@@ -53,8 +40,6 @@ class FantasyMatchupDisplayData {
     FantasyMatchupSnapshot matchup,
   ) {
     final opponent = matchup.opponent;
-    final hasScoring =
-        matchup.team.totalPoints != 0 || (opponent?.totalPoints ?? 0) != 0;
     return FantasyMatchupDisplayData(
       leagueName: truncateUtf8DisplayText(matchup.league.name, 48),
       userName: truncateUtf8DisplayText(matchup.team.team.name, 20),
@@ -64,9 +49,7 @@ class FantasyMatchupDisplayData {
       userProjectedScore: matchup.team.projectedTotalPoints,
       opponentProjectedScore: opponent?.projectedTotalPoints,
       week: matchup.matchupPeriod,
-      status: hasScoring
-          ? FantasyMatchupDisplayStatus.live
-          : FantasyMatchupDisplayStatus.upcoming,
+      status: matchup.status ?? FantasyMatchupDisplayStatus.upcoming,
     );
   }
 

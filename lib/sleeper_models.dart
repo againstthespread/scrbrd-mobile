@@ -1,3 +1,5 @@
+import 'fantasy_matchup_status.dart';
+
 class SleeperLeague {
   const SleeperLeague({
     required this.leagueId,
@@ -285,8 +287,11 @@ class SleeperFantasyMatchup {
     required this.team,
     required this.opponent,
     this.seasonType = 'regular',
+    this.status,
   });
 
+  /// Derived from observed NFL game phases, never point totals or wall time.
+  final FantasyMatchupDisplayStatus? status;
   final SleeperLeague league;
   final int week;
   final String seasonType;
@@ -300,6 +305,7 @@ class SleeperFantasyMatchup {
     league: league,
     week: week,
     seasonType: seasonType,
+    status: status,
     team: SleeperFantasyTeam(
       roster: team.roster,
       user: team.user,
@@ -312,6 +318,17 @@ class SleeperFantasyMatchup {
       matchup: opponent.matchup,
       projectedTotalPoints: opponentProjection,
     ),
+  );
+
+  SleeperFantasyMatchup withLifecycleStatus(
+    FantasyMatchupDisplayStatus? value,
+  ) => SleeperFantasyMatchup(
+    league: league,
+    week: week,
+    seasonType: seasonType,
+    team: team,
+    opponent: opponent,
+    status: value,
   );
 }
 

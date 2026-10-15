@@ -10,6 +10,7 @@ import 'package:sports_hub_mobile/espn_fantasy_repository.dart';
 import 'package:sports_hub_mobile/fantasy_league_config.dart';
 import 'package:sports_hub_mobile/fantasy_point_delta_tracker.dart';
 import 'package:sports_hub_mobile/fantasy_provider_models.dart';
+import 'package:sports_hub_mobile/fantasy_matchup_display_data.dart';
 import 'package:sports_hub_mobile/fantasy_live_observation_coordinator.dart';
 import 'package:sports_hub_mobile/fantasy_primary_league_store.dart';
 
@@ -252,6 +253,88 @@ void main() {
         ]);
       },
     );
+
+    for (final winner in [
+      'HOME',
+      'AWAY',
+      'TIE',
+      'UNDECIDED',
+      'NONE_YET',
+      'unexpected',
+      null,
+    ]) {
+      test(
+        'F21 ESPN settled marker $winner controls display independent of points',
+        () async {
+          final schedule = (box['schedule'] as List)[1] as Map<String, dynamic>;
+          if (winner == null) {
+            schedule.remove('winner');
+          } else {
+            schedule['winner'] = winner;
+          }
+          final result = await repository.loadCurrentMatchup(
+            season: 2030,
+            leagueId: '12345',
+            teamId: '7',
+          );
+          final display = FantasyMatchupDisplayData.fromNormalized(result);
+          expect(
+            display.status,
+            const ['HOME', 'AWAY', 'TIE'].contains(winner)
+                ? FantasyMatchupDisplayStatus.finalStatus
+                : FantasyMatchupDisplayStatus.upcoming,
+          );
+          expect(display.userScore, 102.375);
+          expect(display.userProjectedScore, 126.7);
+        },
+      );
+    }
+    test('F21 ESPN zero-point settled matchup remains FINAL', () async {
+      final schedule = (box['schedule'] as List)[1] as Map<String, dynamic>;
+      schedule['winner'] = 'TIE';
+      (schedule['home'] as Map)['totalPointsLive'] = 0;
+      (schedule['away'] as Map)['totalPointsLive'] = 0;
+      final result = await repository.loadCurrentMatchup(
+        season: 2030,
+        leagueId: '12345',
+        teamId: '7',
+      );
+      expect(
+        FantasyMatchupDisplayData.fromNormalized(result).status,
+        FantasyMatchupDisplayStatus.finalStatus,
+      );
+    });
+    test(
+      'F21 ESPN scores, live projections and multi-week periods do not prove LIVE',
+      () async {
+        final schedule = (box['schedule'] as List)[1] as Map<String, dynamic>;
+        schedule['winner'] = 'UNDECIDED';
+        (schedule['home'] as Map)['totalPointsLive'] = -2.5;
+        final result = await repository.loadCurrentMatchup(
+          season: 2030,
+          leagueId: '12345',
+          teamId: '7',
+        );
+        final display = FantasyMatchupDisplayData.fromNormalized(result);
+        expect(result.scoringPeriod, 4);
+        expect(result.matchupPeriod, 3);
+        expect(display.status, FantasyMatchupDisplayStatus.upcoming);
+        expect(display.userScore, -2.5);
+      },
+    );
+
+    test('F21 ESPN bye with preassigned points is not LIVE', () async {
+      final schedule = (box['schedule'] as List)[1] as Map<String, dynamic>;
+      schedule.remove('away');
+      final result = await repository.loadCurrentMatchup(
+        season: 2030,
+        leagueId: '12345',
+        teamId: '7',
+      );
+      final display = FantasyMatchupDisplayData.fromNormalized(result);
+      expect(display.opponentName, 'BYE');
+      expect(display.status, FantasyMatchupDisplayStatus.upcoming);
+    });
 
     test('configured team and opponent resolve from current matchup', () async {
       final result = await repository.loadCurrentMatchup(
