@@ -1,4 +1,5 @@
 import 'sports_game.dart';
+import 'sports_score_validation.dart';
 import 'sports_league.dart';
 import 'team_catalog.dart';
 import 'power_four_team_catalog.dart';
@@ -57,6 +58,10 @@ SportsGame _parseEvent(SportsLeague league, Map<String, dynamic> event) {
   final statusJson = _map(competition['status']) ?? _map(event['status']);
   final type = _map(statusJson?['type']);
   final status = _canonicalStatus(type);
+  final allowMissingScores =
+      status == 'UPCOMING' &&
+      (_nonEmpty(type?['state'])?.toLowerCase() == 'pre' ||
+          _nonEmpty(type?['name'])?.toUpperCase() == 'STATUS_SCHEDULED');
   final start = DateTime.tryParse(
     _nonEmpty(competition['date']) ?? _nonEmpty(event['date']) ?? '',
   )?.toLocal();
@@ -69,8 +74,14 @@ SportsGame _parseEvent(SportsLeague league, Map<String, dynamic> event) {
     homeTeam: homeName,
     awayTeamKey: _teamKey(league, away),
     homeTeamKey: _teamKey(league, home),
-    awayScore: _score(away['score']),
-    homeScore: _score(home['score']),
+    awayScore: validatedSportsScore(
+      away['score'],
+      allowMissing: allowMissingScores,
+    ),
+    homeScore: validatedSportsScore(
+      home['score'],
+      allowMissing: allowMissingScores,
+    ),
     status: status,
     clock: _clock(league, statusJson, type, status, start),
     statusDetail: detail,
@@ -244,7 +255,6 @@ String _formatTime(DateTime value) {
   return '$hour:$minute ${value.hour >= 12 ? 'PM' : 'AM'}';
 }
 
-int _score(Object? value) => int.tryParse(value?.toString() ?? '') ?? 0;
 int? _integer(Object? value) => int.tryParse(value?.toString() ?? '');
 String? _nonEmpty(Object? value) {
   final text = value?.toString().trim();

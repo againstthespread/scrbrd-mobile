@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'sports_game.dart';
+import 'sports_score_validation.dart';
 import 'sports_league.dart';
 import 'team_catalog.dart';
 import 'power_four_team_catalog.dart';
@@ -38,7 +39,17 @@ class SportsDataIOGame {
     final homeTeam = _requiredString(json, 'HomeTeam');
     final statusDetail = _optionalString(json, 'Status');
     final status = _statusFromJson(json, statusDetail);
-    final scores = _scoresFromJson(league, json);
+    final allowMissingScores =
+        status == 'UPCOMING' &&
+        json['IsOver'] != true &&
+        json['IsInProgress'] != true &&
+        const {
+          'scheduled',
+          'created',
+          'pre-game',
+          'pregame',
+        }.contains(statusDetail?.trim().toLowerCase());
+    final scores = _scoresFromJson(league, json, allowMissingScores);
     final scheduledStartTime = _scheduledStartTimeFromJson(json);
     final eventId = _eventIdFromJson(json);
     final clock = _clockFromJson(json, league, status, scheduledStartTime);
@@ -96,6 +107,7 @@ class SportsDataIOGame {
   static _MappedScores _scoresFromJson(
     SportsLeague league,
     Map<String, dynamic> json,
+    bool allowMissingScores,
   ) {
     final fields = switch (league) {
       SportsLeague.nfl => ('AwayScore', 'HomeScore'),
@@ -106,8 +118,14 @@ class SportsDataIOGame {
     };
 
     return _MappedScores(
-      awayScore: _scoreOrZero(json[fields.$1]),
-      homeScore: _scoreOrZero(json[fields.$2]),
+      awayScore: validatedSportsScore(
+        json[fields.$1],
+        allowMissing: allowMissingScores,
+      ),
+      homeScore: validatedSportsScore(
+        json[fields.$2],
+        allowMissing: allowMissingScores,
+      ),
     );
   }
 
@@ -139,29 +157,6 @@ class SportsDataIOGame {
       distance: distance,
       isGoalToGo: json['IsGoalToGo'] == true || distance == 0,
     );
-  }
-
-  static int _scoreOrZero(Object? value) {
-    return _tryParseScore(value) ?? 0;
-  }
-
-  static int? _tryParseScore(Object? value) {
-    if (value is int && value >= 0) {
-      return value;
-    }
-
-    if (value is num && value >= 0) {
-      return value.toInt();
-    }
-
-    if (value is String) {
-      final parsedValue = int.tryParse(value);
-      if (parsedValue != null && parsedValue >= 0) {
-        return parsedValue;
-      }
-    }
-
-    return null;
   }
 
   static String? _optionalString(Map<String, dynamic> json, String key) {
