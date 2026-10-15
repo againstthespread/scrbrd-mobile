@@ -35,6 +35,7 @@ class ConnectionScreen extends StatefulWidget {
     super.key,
     required this.repository,
     this.transport,
+    this.clock,
     this.favoritesStore,
     this.contentPreferencesStore,
     this.collegeFootballPreferencesStore,
@@ -43,6 +44,7 @@ class ConnectionScreen extends StatefulWidget {
 
   final SportsRepository repository;
   final BluetoothDeviceTransport? transport;
+  final DateTime Function()? clock;
   final FavoritesStore? favoritesStore;
   final DeviceContentPreferencesStore? contentPreferencesStore;
   final CollegeFootballPreferencesStore? collegeFootballPreferencesStore;
@@ -150,6 +152,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       readCollegeFootballPreferences: () => _activeCollegeFootballPreferences,
     );
     _initialSyncCoordinator = InitialDeviceSyncCoordinator(
+      clock: widget.clock,
       repository: widget.repository,
       sender: _deviceSender,
       isBleConnected: () =>
@@ -161,6 +164,9 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       readContentPreferences: () => _activeContentPreferences,
       readCollegeFootballPreferences: () => _activeCollegeFootballPreferences,
       prepareFantasyCategory: _fantasyCoordinator.prepareStartupCategory,
+      prepareFantasyRefreshCategory: () =>
+          _fantasyCoordinator.prepareStartupCategory(establishBaseline: false),
+      canReplaceTeamSlate: _liveRefreshCoordinator.canReplaceTeamSlate,
       onAuthoritativeSyncStarted: _trackedSession.clear,
     );
     _deviceSnapshot = _transport.currentSnapshot;
@@ -299,6 +305,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       await _initialSyncCoordinator.retryPendingSync();
       return;
     }
+    if (await _initialSyncCoordinator.refreshDesiredContentIfDue()) return;
     await _sportsOperationGate.requestLiveRefresh(() async {
       // A WAKE queued during the initial fetch must not overwrite retained
       // Fantasy with a partial slate if that fetch subsequently fails.

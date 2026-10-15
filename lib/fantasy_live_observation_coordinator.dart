@@ -471,7 +471,8 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   Future<FantasyStartupOutcome> syncStartupCategoryOutcome() async {
     if (!_deviceContentEnabled) return const FantasyStartupOutcome();
     if (matchupTransport is FantasySlateTransport) {
-      return (await prepareStartupCategory()).commit();
+      final prepared = await prepareStartupCategory();
+      return (prepared.commitAfterReset ?? prepared.commit)();
     }
     // Preserve the legacy single-matchup API for existing callers. Reconnect
     // reconciliation uses the explicitly prepared slate path below.
@@ -496,7 +497,9 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       if (entry.value.error != null) '${entry.key}: ${entry.value.error}',
   ];
 
-  Future<PreparedFantasyStartup> prepareStartupCategory() async {
+  Future<PreparedFantasyStartup> prepareStartupCategory({
+    bool establishBaseline = true,
+  }) async {
     holdDeviceUpdatesForStartup();
     PreparedFantasyStartup empty([List<String> failures = const []]) =>
         PreparedFantasyStartup(
@@ -547,48 +550,51 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     for (final entry in entries) {
       serializer.serialize(entry.matchup, identity: entry.identity);
     }
+    Future<FantasyStartupOutcome> commit(bool force) async {
+      if (!current()) {
+        return const FantasyStartupOutcome(
+          failures: ['Fantasy startup session changed.'],
+        );
+      }
+      final errors = failures.toList();
+      try {
+        if (entries.isNotEmpty || failures.isEmpty) {
+          await _sendFantasySlateIfChanged(transport, entries, force: force);
+        }
+      } finally {
+        if (current()) {
+          final baseline = await _observe(
+            startupOnly: establishBaseline,
+            sendAlerts: !establishBaseline,
+            syncPersistentMatchup: false,
+          );
+          for (final error in _startupFailures(baseline)) {
+            if (!errors.contains(error)) errors.add(error);
+          }
+        }
+      }
+      if (!current()) {
+        return const FantasyStartupOutcome(
+          failures: ['Fantasy startup session changed.'],
+        );
+      }
+      if (errors.isEmpty) {
+        _startupReconciliationPending = false;
+        if (_projectionDisplayRefreshPending) {
+          _scheduleProjectionDisplayRefresh();
+        }
+      }
+      return FantasyStartupOutcome(
+        hasContent: entries.isNotEmpty,
+        failures: List.unmodifiable(errors),
+      );
+    }
+
     return PreparedFantasyStartup(
       hasContent: entries.isNotEmpty,
       failures: failures,
-      commit: () async {
-        if (!current()) {
-          return const FantasyStartupOutcome(
-            failures: ['Fantasy startup session changed.'],
-          );
-        }
-        final errors = failures.toList();
-        try {
-          if (entries.isNotEmpty || failures.isEmpty) {
-            await _sendFantasySlateIfChanged(transport, entries, force: true);
-          }
-        } finally {
-          if (current()) {
-            final baseline = await _observe(
-              startupOnly: true,
-              sendAlerts: false,
-              syncPersistentMatchup: false,
-            );
-            for (final error in _startupFailures(baseline)) {
-              if (!errors.contains(error)) errors.add(error);
-            }
-          }
-        }
-        if (!current()) {
-          return const FantasyStartupOutcome(
-            failures: ['Fantasy startup session changed.'],
-          );
-        }
-        if (errors.isEmpty) {
-          _startupReconciliationPending = false;
-          if (_projectionDisplayRefreshPending) {
-            _scheduleProjectionDisplayRefresh();
-          }
-        }
-        return FantasyStartupOutcome(
-          hasContent: entries.isNotEmpty,
-          failures: List.unmodifiable(errors),
-        );
-      },
+      commit: () => commit(false),
+      commitAfterReset: () => commit(true),
     );
   }
 

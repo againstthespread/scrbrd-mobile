@@ -15,10 +15,14 @@ class PreparedFantasyStartup {
   const PreparedFantasyStartup({
     required this.hasContent,
     required this.commit,
+    this.commitAfterReset,
     this.failures = const [],
   });
 
   final bool hasContent;
   final List<String> failures;
   final Future<FantasyStartupOutcome> Function() commit;
+
+  /// Restores unchanged content after the existing destructive SYNC_START.
+  final Future<FantasyStartupOutcome> Function()? commitAfterReset;
 }

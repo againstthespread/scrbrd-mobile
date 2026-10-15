@@ -1556,6 +1556,34 @@ void main() {
     },
   );
 
+  test(
+    'F08 discovery preserves scoring baselines, corrections and unchanged slate suppression',
+    () async {
+      metadata['shared-player'] = _player('shared-player');
+      await coordinator.syncStartupCategory();
+      points['a'] = 11;
+      points['b'] = 19;
+      final prepared = await coordinator.prepareStartupCategory(
+        establishBaseline: false,
+      );
+      await prepared.commit();
+      expect(transport.alerts.map((a) => a.delta.delta), [1, -1]);
+      expect(transport.alerts.map((a) => a.userScore), [11, 19]);
+      final writes = transport.slates.length;
+      await (await coordinator.prepareStartupCategory(
+        establishBaseline: false,
+      )).commit();
+      expect(transport.slates, hasLength(writes));
+      expect(transport.alerts, hasLength(2));
+      final replacement = await coordinator.prepareStartupCategory(
+        establishBaseline: false,
+      );
+      await replacement.commitAfterReset!();
+      expect(transport.slates, hasLength(writes + 1));
+      expect(transport.alerts, hasLength(2));
+    },
+  );
+
   test('ESPN primary display does not reset its alert baseline', () async {
     await save('c', provider: FantasyProvider.espn);
     await coordinator.observe();

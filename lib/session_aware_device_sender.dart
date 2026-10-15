@@ -60,6 +60,7 @@ class SessionAwareDeviceSender
   Future<void> sendTeamSlate(
     List<GameData> games, {
     required DateTime selectedDate,
+    bool followsCurrentDate = false,
   }) async {
     await transport.sendGameSlate(games);
     final league = _leagueFor(games.first.league);
@@ -68,6 +69,7 @@ class SessionAwareDeviceSender
       league: league,
       selectedDate: selectedDate,
       games: games,
+      followsCurrentDate: followsCurrentDate,
     );
   }
 
@@ -119,9 +121,14 @@ class SessionAwareDeviceSender
   Future<void> sendGolf(
     GolfLeaderboard leaderboard, {
     DateTime? selectedDate,
+    bool followsCurrentDate = false,
   }) async {
     await transport.sendGolfLeaderboard(leaderboard);
-    session.recordGolf(leaderboard, selectedDate: selectedDate);
+    session.recordGolf(
+      leaderboard,
+      selectedDate: selectedDate,
+      followsCurrentDate: followsCurrentDate,
+    );
   }
 
   SportsLeague? _leagueFor(String label) {

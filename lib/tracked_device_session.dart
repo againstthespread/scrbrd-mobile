@@ -7,9 +7,12 @@ import 'golf_leaderboard.dart';
 import 'sports_league.dart';
 
 sealed class TrackedLeagueContent {
-  const TrackedLeagueContent(this.league);
+  const TrackedLeagueContent(this.league, {this.followsCurrentDate = false});
 
   final SportsLeague league;
+
+  /// False for explicit Developer Tools dates/tournaments.
+  final bool followsCurrentDate;
 }
 
 class TrackedTeamSlate extends TrackedLeagueContent {
@@ -17,6 +20,7 @@ class TrackedTeamSlate extends TrackedLeagueContent {
     required SportsLeague league,
     required DateTime selectedDate,
     required List<GameData> games,
+    super.followsCurrentDate,
   }) : selectedDate = DateTime(
          selectedDate.year,
          selectedDate.month,
@@ -37,6 +41,7 @@ class TrackedGolfLeaderboard extends TrackedLeagueContent {
   TrackedGolfLeaderboard({
     required GolfLeaderboard leaderboard,
     this.selectedDate,
+    super.followsCurrentDate,
   }) : leaderboard = GolfLeaderboard(
          tournamentId: leaderboard.tournamentId,
          tournamentName: leaderboard.tournamentName,
@@ -62,19 +67,26 @@ class TrackedDeviceSession extends ChangeNotifier {
     required SportsLeague league,
     required DateTime selectedDate,
     required List<GameData> games,
+    bool followsCurrentDate = false,
   }) {
     _entries[league] = TrackedTeamSlate(
       league: league,
       selectedDate: selectedDate,
       games: games,
+      followsCurrentDate: followsCurrentDate,
     );
     notifyListeners();
   }
 
-  void recordGolf(GolfLeaderboard leaderboard, {DateTime? selectedDate}) {
+  void recordGolf(
+    GolfLeaderboard leaderboard, {
+    DateTime? selectedDate,
+    bool followsCurrentDate = false,
+  }) {
     _entries[SportsLeague.pga] = TrackedGolfLeaderboard(
       leaderboard: leaderboard,
       selectedDate: selectedDate,
+      followsCurrentDate: followsCurrentDate,
     );
     notifyListeners();
   }

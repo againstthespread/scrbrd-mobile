@@ -37,7 +37,8 @@ class LiveRefreshCoordinator {
   bool _cancelled = false;
   int _wakeRefreshCount = 0;
   int _pgaWakeRefreshCount = 0;
-  final Map<SportsLeague, Set<String>> _pendingTeamShrinkage = {};
+  final Map<SportsLeague, ({DateTime date, Set<String> ids})>
+  _pendingTeamShrinkage = {};
 
   Future<void> refreshTrackedSessionOnce() async {
     if (_isRefreshing) {
@@ -159,7 +160,7 @@ class LiveRefreshCoordinator {
         _diagnose('WAKE #$wakeNumber $label empty; baseline retained');
         return;
       }
-      if (!_teamMembershipChangeIsSafe(tracked, fresh)) return;
+      if (!canReplaceTeamSlate(tracked, fresh)) return;
       if (_bytesEqual(
         _gameSerializer.canonicalSlateContent(tracked.games),
         _gameSerializer.canonicalSlateContent(fresh),
@@ -181,13 +182,18 @@ class LiveRefreshCoordinator {
   Future<void> _sendTeam(List<GameData> games, TrackedTeamSlate tracked) async {
     final sender = transport;
     if (sender is SessionAwareDeviceSender) {
-      await sender.sendTeamSlate(games, selectedDate: tracked.selectedDate);
+      await sender.sendTeamSlate(
+        games,
+        selectedDate: tracked.selectedDate,
+        followsCurrentDate: tracked.followsCurrentDate,
+      );
     } else {
       await sender.sendGameSlate(games);
       session.recordTeamSlate(
         league: tracked.league,
         selectedDate: tracked.selectedDate,
         games: games,
+        followsCurrentDate: tracked.followsCurrentDate,
       );
     }
   }
@@ -237,10 +243,18 @@ class LiveRefreshCoordinator {
       _diagnose('PGA transfer started');
       final sender = transport;
       if (sender is SessionAwareDeviceSender) {
-        await sender.sendGolf(fresh, selectedDate: tracked.selectedDate);
+        await sender.sendGolf(
+          fresh,
+          selectedDate: tracked.selectedDate,
+          followsCurrentDate: tracked.followsCurrentDate,
+        );
       } else {
         await sender.sendGolfLeaderboard(fresh);
-        session.recordGolf(fresh, selectedDate: tracked.selectedDate);
+        session.recordGolf(
+          fresh,
+          selectedDate: tracked.selectedDate,
+          followsCurrentDate: tracked.followsCurrentDate,
+        );
       }
       _diagnose('WAKE #$wakeNumber PGA transfer succeeded');
       _diagnose('PGA transfer succeeded');
@@ -330,10 +344,9 @@ class LiveRefreshCoordinator {
     _diagnose('refresh cancellation requested; reason=$reason');
   }
 
-  bool _teamMembershipChangeIsSafe(
-    TrackedTeamSlate tracked,
-    List<GameData> fresh,
-  ) {
+  /// Shared by discovery and live polling so same-date shrinkage still needs
+  /// matching observations before replacing previously committed games.
+  bool canReplaceTeamSlate(TrackedTeamSlate tracked, List<GameData> fresh) {
     final trackedIds = _stableEventIds(tracked.games);
     final freshIds = _stableEventIds(fresh);
     final hasUsableIdentity =
@@ -362,7 +375,10 @@ class LiveRefreshCoordinator {
       return true;
     }
 
-    final candidate = _pendingTeamShrinkage[tracked.league];
+    final pending = _pendingTeamShrinkage[tracked.league];
+    final candidate = pending?.date == tracked.selectedDate
+        ? pending?.ids
+        : null;
     if (candidate != null &&
         candidate.length == missingIds.length &&
         candidate.containsAll(missingIds)) {
@@ -373,8 +389,9 @@ class LiveRefreshCoordinator {
       return true;
     }
 
-    _pendingTeamShrinkage[tracked.league] = Set<String>.unmodifiable(
-      missingIds,
+    _pendingTeamShrinkage[tracked.league] = (
+      date: tracked.selectedDate,
+      ids: Set<String>.unmodifiable(missingIds),
     );
     if (candidate == null) {
       _diagnose(

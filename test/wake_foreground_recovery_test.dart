@@ -25,6 +25,7 @@ void main() {
       final connection = StreamController<ConnectionStateUpdate>.broadcast();
       final wakes = <StreamController<List<int>>>[];
       final source = _Source();
+      var now = DateTime(2026, 10, 14, 12);
       final packets = <String>[];
       final initial = Completer<void>();
       source.block = initial;
@@ -82,6 +83,7 @@ void main() {
         MaterialApp(
           home: ConnectionScreen(
             repository: SportsRepository(source),
+            clock: () => now,
             transport: transport,
             pushNotificationService: const _NoPush(),
             contentPreferencesStore: MemoryDeviceContentPreferencesStore(
@@ -212,6 +214,20 @@ void main() {
         find.text('Updates incomplete; cached data unverified'),
         findsNothing,
       );
+      // F08: due discovery uses the same WAKE/foreground route and does not
+      // run an additional tracked fetch or reset unchanged membership.
+      now = DateTime(2026, 10, 15);
+      wakes.last.add(utf8.encode('WAKE'));
+      await settle();
+      expect(source.calls, 7);
+      expect(source.dates.last, DateTime(2026, 10, 15));
+      expect(packets.where((p) => p == 'SYNC_START'), hasLength(resets + 1));
+      now = DateTime(2026, 10, 16);
+      resume();
+      await settle();
+      expect(source.calls, 8);
+      expect(source.dates.last, DateTime(2026, 10, 16));
+      expect(packets.where((p) => p == 'SYNC_START'), hasLength(resets + 1));
       await tester.pumpWidget(const SizedBox.shrink());
       await settle();
       unawaited(
@@ -230,6 +246,7 @@ void main() {
 
 class _Source implements SportsDataSource {
   int calls = 0, active = 0, maxActive = 0;
+  final dates = <DateTime>[];
   Completer<void>? block;
   bool fail = false;
   @override
@@ -237,6 +254,7 @@ class _Source implements SportsDataSource {
     SportsLeague league,
     DateTime date,
   ) async {
+    dates.add(date);
     calls++;
     active++;
     if (active > maxActive) maxActive = active;
