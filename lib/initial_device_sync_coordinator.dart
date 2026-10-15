@@ -118,6 +118,7 @@ class InitialDeviceSyncCoordinator {
       _connectionSessionActive = false;
       _needsRetry = false;
       _connectionGeneration++;
+      operationGate.resetConnection();
       _diagnose('sync connection generation advanced; $diagnosticState');
       return;
     }
@@ -175,6 +176,17 @@ class InitialDeviceSyncCoordinator {
     late final Future<void> run;
     run = operationGate
         .runInitialSync(() => _runOwned(generation, reconcile: reconcile))
+        .catchError((Object error) {
+          if (!_isCurrent(generation)) return;
+          _needsRetry = true;
+          _setSnapshot(
+            InitialSyncSnapshot(
+              status: InitialSyncStatus.failure,
+              cachedContentMayBeStale: true,
+              lastErrorSummary: 'Device sync delivery deferred: $error',
+            ),
+          );
+        })
         .whenComplete(() {
           _diagnose(
             'sync.run ended originSyncG=$generation elapsedMs=${elapsed.elapsedMilliseconds}',
@@ -333,17 +345,8 @@ class InitialDeviceSyncCoordinator {
       }
     }
     if (!_isCurrent(generation)) return;
-    if (reconcile && !mapEquals(delivered, sender.session.snapshot())) {
-      // Developer Tools can intentionally send another date while discovery
-      // is awaiting a provider. Do not replace that newer explicit selection.
-      _lastDiscoveryDate = null;
-      _setSnapshot(
-        const InitialSyncSnapshot(
-          status: InitialSyncStatus.partialFailure,
-          cachedContentMayBeStale: true,
-          lastErrorSummary: 'Content selection changed; discovery deferred.',
-        ),
-      );
+    if (!mapEquals(delivered, sender.session.snapshot())) {
+      _deferChangedSelection();
       return;
     }
     final desiredOrder = [
@@ -366,141 +369,166 @@ class InitialDeviceSyncCoordinator {
     final resetCatalog =
         authoritative &&
         (!reconcile || !listEquals(_catalogOrder, desiredOrder));
-    if (resetCatalog) {
-      try {
-        // The existing destructive semantics are unchanged. All replacement
-        // data is now fetched and validated before this command is sent.
-        await sender.sendControlCommand(syncStartCommand);
-        if (!_isCurrent(generation)) return;
-        onAuthoritativeSyncStarted?.call();
-        _catalogOrder.clear();
-        _diagnose('SYNC_START sent after preparation');
-      } on Object catch (error) {
-        if (!_isCurrent(generation)) return;
-        _needsRetry = true;
-        _setSnapshot(
-          InitialSyncSnapshot(
-            status: InitialSyncStatus.failure,
-            cachedContentMayBeStale: true,
-            lastErrorSummary: 'Unable to start device sync: $error',
-          ),
-        );
+    var loadedCount = 0;
+    bool fantasyAttempted = false;
+    bool fantasyDelivered = false;
+    bool committed = false;
+    await sender.runTransaction(() async {
+      if (!_isCurrent(generation)) return;
+      // Re-check after queue admission: a manual send may have completed while
+      // this prepared discovery was waiting for transport ownership.
+      if (!mapEquals(delivered, sender.session.snapshot())) {
+        _deferChangedSelection();
         return;
       }
-    } else if (!authoritative) {
-      _diagnose(
-        'Incomplete discovery; cached catalog retained without SYNC_START',
-      );
-    }
-
-    if (!authoritative &&
-        !preferences.isEnabled(DeviceContentCategory.fantasy) &&
-        sender.transport is FantasyMatchupTransport) {
-      try {
-        await sender.clearFantasyMatchup();
-      } on Object catch (error) {
-        failures.add('Fantasy removal: $error');
-      }
-    }
-    var sentCount = 0;
-    var loadedCount = 0;
-    for (final category in categories) {
-      if (!_isCurrent(generation)) return;
-      if (held.contains(category)) continue;
-      final tracked = delivered[category.sportsLeague];
-      final followsToday =
-          !(reconcile && tracked != null && !tracked.followsCurrentDate);
-      try {
-        if (category == DeviceContentCategory.fantasy) {
-          // Fantasy is one atomic category. Omitting an unavailable league from
-          // a replacement slate would erase its cached matchup on old devices.
-          if (fantasy != null && fantasy.failures.isEmpty) {
-            final result = await (resetCatalog
-                ? fantasy.commitAfterReset ?? fantasy.commit
-                : fantasy.commit)();
-            if (!_isCurrent(generation)) return;
-            failures.addAll(result.failures.map((e) => 'Fantasy: $e'));
-            if (result.hasContent) {
-              loadedCount++;
-              sentCount++;
-              if (!_catalogOrder.contains(category)) {
-                _catalogOrder.add(category);
-              }
-            } else {
-              _catalogOrder.remove(category);
-            }
-          }
-        } else if (category == DeviceContentCategory.pga) {
-          if (golf != null) {
-            if (!reconcile ||
-                resetCatalog ||
-                tracked is! TrackedGolfLeaderboard ||
-                tracked.selectedDate != dates[category] ||
-                !listEquals(
-                  const GolfPacketSerializer().canonicalContent(
-                    tracked.leaderboard,
-                  ),
-                  const GolfPacketSerializer().canonicalContent(golf),
-                )) {
-              await sender.sendGolf(
-                golf,
-                selectedDate: dates[category],
-                followsCurrentDate: followsToday,
-                isCurrent: () => _isCurrent(generation),
-              );
-              sentCount++;
-              if (!_catalogOrder.contains(category)) {
-                _catalogOrder.add(category);
-              }
-            }
-            loadedCount++;
-          }
-        } else {
-          final games = teams[category];
-          if (games != null && games.isNotEmpty) {
-            if (!reconcile ||
-                resetCatalog ||
-                tracked is! TrackedTeamSlate ||
-                tracked.selectedDate != dates[category] ||
-                !listEquals(
-                  const GamePacketSerializer().canonicalSlateContent(
-                    tracked.games,
-                  ),
-                  const GamePacketSerializer().canonicalSlateContent(games),
-                )) {
-              await sender.sendTeamSlate(
-                games,
-                selectedDate: dates[category]!,
-                followsCurrentDate: followsToday,
-                isCurrent: () => _isCurrent(generation),
-              );
-              sentCount++;
-              if (!_catalogOrder.contains(category)) {
-                _catalogOrder.add(category);
-              }
-            }
-            loadedCount++;
-          }
+      if (resetCatalog) {
+        try {
+          // The existing destructive semantics are unchanged. All replacement
+          // data is now fetched and validated before this command is sent.
+          await sender.sendControlCommand(syncStartCommand);
+          if (!_isCurrent(generation)) return;
+          onAuthoritativeSyncStarted?.call();
+          _catalogOrder.clear();
+          _diagnose('SYNC_START sent after preparation');
+        } on Object catch (error) {
+          if (!_isCurrent(generation)) return;
+          _needsRetry = true;
+          _setSnapshot(
+            InitialSyncSnapshot(
+              status: InitialSyncStatus.failure,
+              cachedContentMayBeStale: true,
+              lastErrorSummary: 'Unable to start device sync: $error',
+            ),
+          );
+          return;
         }
-      } on Object catch (error) {
-        failures.add('${category.displayName}: $error');
+      } else if (!authoritative) {
         _diagnose(
-          'send.failed category=${category.name} type=${error.runtimeType}',
+          'Incomplete discovery; cached catalog retained without SYNC_START',
         );
       }
-    }
-    if (!_isCurrent(generation)) return;
-    if (resetCatalog || (!reconcile && sentCount > 0)) {
-      // Close an already-started attempt even after a write failure, so the
-      // next compatible SYNC_START is not suppressed as a duplicate.
-      final command = loadedCount == 0 && failures.isEmpty
-          ? syncEmptyCommand
-          : syncCompleteCommand;
-      try {
-        await sender.sendControlCommand(command);
-      } on Object catch (error) {
-        failures.add('$command: $error');
+
+      if (!authoritative &&
+          !preferences.isEnabled(DeviceContentCategory.fantasy) &&
+          sender.transport is FantasyMatchupTransport) {
+        try {
+          await sender.clearFantasyMatchup();
+        } on Object catch (error) {
+          failures.add('Fantasy removal: $error');
+        }
       }
+      var sentCount = 0;
+      loadedCount = 0;
+      for (final category in categories) {
+        if (!_isCurrent(generation)) return;
+        if (held.contains(category)) continue;
+        final tracked = delivered[category.sportsLeague];
+        final followsToday =
+            !(reconcile && tracked != null && !tracked.followsCurrentDate);
+        try {
+          if (category == DeviceContentCategory.fantasy) {
+            // Fantasy is one atomic category. Omitting an unavailable league from
+            // a replacement slate would erase its cached matchup on old devices.
+            if (fantasy != null && fantasy.failures.isEmpty) {
+              fantasyAttempted = true;
+              final write = fantasy.commitWrites;
+              final result = await (write != null
+                  ? write(resetCatalog)
+                  : (resetCatalog
+                        ? fantasy.commitAfterReset ?? fantasy.commit
+                        : fantasy.commit)());
+              fantasyDelivered = true;
+              if (!_isCurrent(generation)) return;
+              failures.addAll(result.failures.map((e) => 'Fantasy: $e'));
+              if (result.hasContent) {
+                loadedCount++;
+                sentCount++;
+                if (!_catalogOrder.contains(category)) {
+                  _catalogOrder.add(category);
+                }
+              } else {
+                _catalogOrder.remove(category);
+              }
+            }
+          } else if (category == DeviceContentCategory.pga) {
+            if (golf != null) {
+              if (!reconcile ||
+                  resetCatalog ||
+                  tracked is! TrackedGolfLeaderboard ||
+                  tracked.selectedDate != dates[category] ||
+                  !listEquals(
+                    const GolfPacketSerializer().canonicalContent(
+                      tracked.leaderboard,
+                    ),
+                    const GolfPacketSerializer().canonicalContent(golf),
+                  )) {
+                await sender.sendGolf(
+                  golf,
+                  selectedDate: dates[category],
+                  followsCurrentDate: followsToday,
+                  isCurrent: () => _isCurrent(generation),
+                );
+                sentCount++;
+                if (!_catalogOrder.contains(category)) {
+                  _catalogOrder.add(category);
+                }
+              }
+              loadedCount++;
+            }
+          } else {
+            final games = teams[category];
+            if (games != null && games.isNotEmpty) {
+              if (!reconcile ||
+                  resetCatalog ||
+                  tracked is! TrackedTeamSlate ||
+                  tracked.selectedDate != dates[category] ||
+                  !listEquals(
+                    const GamePacketSerializer().canonicalSlateContent(
+                      tracked.games,
+                    ),
+                    const GamePacketSerializer().canonicalSlateContent(games),
+                  )) {
+                await sender.sendTeamSlate(
+                  games,
+                  selectedDate: dates[category]!,
+                  followsCurrentDate: followsToday,
+                  isCurrent: () => _isCurrent(generation),
+                );
+                sentCount++;
+                if (!_catalogOrder.contains(category)) {
+                  _catalogOrder.add(category);
+                }
+              }
+              loadedCount++;
+            }
+          }
+        } on Object catch (error) {
+          failures.add('${category.displayName}: $error');
+          _diagnose(
+            'send.failed category=${category.name} type=${error.runtimeType}',
+          );
+        }
+      }
+      if (!_isCurrent(generation)) return;
+      if (resetCatalog || (!reconcile && sentCount > 0)) {
+        // Close an already-started attempt even after a write failure, so the
+        // next compatible SYNC_START is not suppressed as a duplicate.
+        final command = loadedCount == 0 && failures.isEmpty
+            ? syncEmptyCommand
+            : syncCompleteCommand;
+        try {
+          await sender.sendControlCommand(command);
+        } on Object catch (error) {
+          failures.add('$command: $error');
+        }
+      }
+      if (!_isCurrent(generation)) return;
+      committed = true;
+    }, isCurrent: () => _isCurrent(generation));
+    if (!_isCurrent(generation) || !committed) return;
+    if (fantasyAttempted && fantasy?.finishObservation != null) {
+      final observed = await fantasy!.finishObservation!(fantasyDelivered);
+      failures.addAll(observed.failures.map((e) => 'Fantasy: $e'));
     }
     if (!_isCurrent(generation)) return;
     _needsRetry = failures.isNotEmpty;
@@ -526,6 +554,21 @@ class InitialDeviceSyncCoordinator {
     }
     _diagnose(
       'Initial sync complete; categories loaded=$loadedCount; failures=${failures.length}',
+    );
+  }
+
+  void _deferChangedSelection() {
+    // Re-prepare from the newer manual selection, including its explicit date,
+    // instead of letting an older startup/catalog snapshot overwrite it.
+    _lastDiscoveryDate = null;
+    _needsRetry = true;
+    _retryIsReconciliation = true;
+    _setSnapshot(
+      const InitialSyncSnapshot(
+        status: InitialSyncStatus.partialFailure,
+        cachedContentMayBeStale: true,
+        lastErrorSummary: 'Content selection changed; discovery deferred.',
+      ),
     );
   }
 

@@ -8,6 +8,27 @@ class SportsOperationGate {
 
   final void Function(String message)? onDiagnostic;
 
+  int _epoch = 0;
+  final _connectionWaiters = <Completer<void>>{};
+
+  /// Called after connection-generation invalidation. Old operations retain
+  /// their own generation guards; they must not hold the next session's gate.
+  void resetConnection() {
+    _epoch++;
+
+    _initialSyncActive = false;
+    _queuedInitialSyncs = 0;
+    _initialSyncTail = Future<void>.value();
+    _liveRefreshFinished = null;
+    _liveRefreshActive = false;
+    clearDeferredWake();
+    for (final waiter in _connectionWaiters.toList()) {
+      waiter.complete();
+    }
+    _connectionWaiters.clear();
+    _diagnose('connection ownership reset');
+  }
+
   bool _initialSyncActive = false;
   int _queuedInitialSyncs = 0;
   Future<void> _initialSyncTail = Future<void>.value();
@@ -25,33 +46,42 @@ class SportsOperationGate {
   bool get isLiveRefreshActive => _liveRefreshActive;
 
   Future<void> runInitialSync(Future<void> Function() operation) async {
+    final epoch = _epoch;
+    final cancelled = Completer<void>();
+    _connectionWaiters.add(cancelled);
+    final ended = cancelled.future;
     final op = ++_diagnosticOperationId;
     final previous = _initialSyncTail;
     final finished = Completer<void>();
     _initialSyncTail = finished.future;
     _queuedInitialSyncs++;
     _diagnose('initial sync queued op=$op');
-    await previous;
-    // A reconnect's startup must not overlap an older refresh's final writes.
-    final liveFinished = _liveRefreshFinished;
-    if (liveFinished != null) {
-      _diagnose('initial sync waiting for live owner op=$op');
-      await liveFinished.future;
-    }
-    _initialSyncActive = true;
-    _diagnose('initial sync ownership acquired op=$op');
     try {
-      await operation();
+      await Future.any([previous, ended]);
+      if (epoch != _epoch) return;
+      // A reconnect's startup must not overlap an older refresh's final writes.
+      final liveFinished = _liveRefreshFinished;
+      if (liveFinished != null) {
+        _diagnose('initial sync waiting for live owner op=$op');
+        await Future.any([liveFinished.future, ended]);
+        if (epoch != _epoch) return;
+      }
+      _initialSyncActive = true;
+      _diagnose('initial sync ownership acquired op=$op');
+      await Future.any([Future<void>.sync(operation), ended]);
     } finally {
-      _initialSyncActive = false;
-      _queuedInitialSyncs--;
+      _connectionWaiters.remove(cancelled);
       finished.complete();
-      _diagnose('initial sync ownership released op=$op');
-      if (_queuedInitialSyncs == 0 && _refreshPending) {
-        final refresh = _takePendingRefresh();
-        if (refresh != null) {
-          _diagnose('post-sync deferred WAKE executed');
-          await requestLiveRefresh(refresh);
+      if (epoch == _epoch) {
+        _initialSyncActive = false;
+        _queuedInitialSyncs--;
+        _diagnose('initial sync ownership released op=$op');
+        if (_queuedInitialSyncs == 0 && _refreshPending) {
+          final refresh = _takePendingRefresh();
+          if (refresh != null) {
+            _diagnose('post-sync deferred WAKE executed');
+            await requestLiveRefresh(refresh);
+          }
         }
       }
     }
@@ -86,6 +116,10 @@ class SportsOperationGate {
   Future<void> _drainLiveRefreshes(
     Future<void> Function() initialRefresh,
   ) async {
+    final epoch = _epoch;
+    final cancelled = Completer<void>();
+    _connectionWaiters.add(cancelled);
+    final ended = cancelled.future;
     final op = ++_diagnosticOperationId;
     _liveRefreshActive = true;
     final finished = Completer<void>();
@@ -98,14 +132,14 @@ class SportsOperationGate {
       while (true) {
         _diagnose('WAKE received; live refresh started');
         try {
-          await refresh();
+          await Future.any([Future<void>.sync(refresh), ended]);
         } on Object catch (error, stackTrace) {
           firstError ??= error;
           firstStackTrace ??= stackTrace;
           _diagnose('live refresh failed type=${error.runtimeType}');
         }
 
-        if (_queuedInitialSyncs > 0) break;
+        if (epoch != _epoch || _queuedInitialSyncs > 0) break;
         final pendingRefresh = _takePendingRefresh();
         if (pendingRefresh == null) {
           _diagnose('live refresh completed; no deferred WAKE pending');
@@ -115,10 +149,13 @@ class SportsOperationGate {
         refresh = pendingRefresh;
       }
     } finally {
-      _liveRefreshActive = false;
-      _liveRefreshFinished = null;
+      _connectionWaiters.remove(cancelled);
       finished.complete();
-      _diagnose('live refresh ownership released op=$op');
+      if (epoch == _epoch) {
+        _liveRefreshActive = false;
+        _liveRefreshFinished = null;
+        _diagnose('live refresh ownership released op=$op');
+      }
     }
 
     if (firstError != null) {

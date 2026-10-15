@@ -17,6 +17,53 @@ import 'package:sports_hub_mobile/tracked_device_session.dart';
 import 'package:sports_hub_mobile/device_content_preferences.dart';
 
 void main() {
+  test('F29 reconnect does not wait for an obsolete provider future', () async {
+    final pending = Completer<List<SportsGame>>();
+    final harness = _Harness(
+      pendingFirstFetch: pending,
+      games: {
+        SportsLeague.nba: [_game('NBA')],
+      },
+    );
+    harness.coordinator.handleConnectionState(BleConnectionState.connected);
+    await harness.settle();
+    harness.coordinator.handleConnectionState(BleConnectionState.disconnected);
+    harness.coordinator.handleConnectionState(BleConnectionState.connected);
+    await harness.settle();
+    final completedBeforeOldFetch = harness.transport.sent.contains('NBA');
+    pending.complete([]);
+    await harness.settle();
+    expect(completedBeforeOldFetch, isTrue);
+    expect(harness.transport.sent, ['NBA']);
+  });
+
+  test(
+    'F29 startup preserves a manual send completed during provider preparation',
+    () async {
+      final pending = Completer<List<SportsGame>>();
+      final harness = _Harness(
+        pendingFirstFetch: pending,
+        games: {
+          SportsLeague.nba: [_game('NBA')],
+        },
+      );
+      final startup = harness.coordinator.startForConnectionForTest();
+      await harness.settle();
+      await harness.sender.sendTeamSlate([
+        _game('NFL'),
+      ], selectedDate: DateTime(2026, 8, 19));
+      pending.complete([]);
+      await startup;
+      expect(harness.transport.controls, isEmpty);
+      expect(
+        harness.coordinator.snapshot.status,
+        InitialSyncStatus.partialFailure,
+      );
+      expect(harness.coordinator.needsRetry, isTrue);
+      expect(harness.session[SportsLeague.nfl], isNotNull);
+    },
+  );
+
   group('F07 cached reconnect', () {
     void cached(_Harness harness) {
       harness.session.recordTeamSlate(

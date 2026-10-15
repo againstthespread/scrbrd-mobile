@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:sports_hub_mobile/logical_device_transaction.dart';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -100,6 +101,44 @@ void main() {
         expect(retry.succeeded, isTrue);
         expect(retry.pendingAlerts, 0);
         expect(transport.alerts, hasLength(1));
+      },
+    );
+
+    test(
+      'F29 an alert queued behind manual ownership retries after write failure',
+      () async {
+        final queued = _QueuedTransport();
+        final api = SleeperApiClient(
+          client: MockClient((_) async => throw 'unused'),
+        );
+        var snapshot = _snapshot();
+        final runtime = FantasyLiveObservationCoordinator(
+          configStore: config,
+          repository: SleeperFantasyRepository(api),
+          playerRepository: SleeperPlayerRepository(apiClient: api),
+          transport: queued,
+          isBleConnected: () => true,
+          matchupLoader: (_) async => snapshot,
+          metadataResolver: (_) async => {'user-player': _chase},
+        );
+        await runtime.observe();
+        final release = Completer<void>();
+        final manual = queued.runTransaction(() => release.future);
+        snapshot = _snapshot(userPoints: 10);
+        final operation = runtime.observe();
+        await Future<void>.delayed(Duration.zero);
+        expect(queued.alerts, isEmpty);
+        queued.fail = true;
+        release.complete();
+        await manual;
+        final failed = await operation;
+        expect(failed.succeeded, isFalse);
+        expect(failed.pendingAlerts, 1);
+        queued.fail = false;
+        expect((await runtime.observe()).succeeded, isTrue);
+        expect(queued.alerts, hasLength(1));
+        expect(runtime.status.pendingAlerts, 0);
+        runtime.dispose();
       },
     );
 
@@ -962,4 +1001,19 @@ class _RuntimeMemoryPlayerCache implements SleeperPlayerCache {
 
   @override
   Future<void> write(CachedSleeperPlayers cache) async => value = cache;
+}
+
+class _QueuedTransport extends _Transport implements LogicalDeviceTransport {
+  final queue = LogicalDeviceTransactionQueue();
+  @override
+  Future<T> runTransaction<T>(
+    Future<T> Function() operation, {
+    bool Function()? isCurrent,
+  }) => queue.run(operation, isCurrent: isCurrent);
+  @override
+  Future<void> sendFantasyAlert(FantasyPointAlert alert) =>
+      queue.run(() => super.sendFantasyAlert(alert));
+  @override
+  Future<void> sendFantasyMatchup(FantasyMatchupDisplayData matchup) =>
+      queue.run(() => super.sendFantasyMatchup(matchup));
 }

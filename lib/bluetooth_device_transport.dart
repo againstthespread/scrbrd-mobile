@@ -11,6 +11,7 @@ import 'acknowledged_wake_stream.dart';
 import 'ble_device_state.dart';
 import 'refresh_diagnostic_history.dart';
 import 'device_transport.dart';
+import 'logical_device_transaction.dart';
 import 'game_data.dart';
 import 'fantasy_alert_packet_serializer.dart';
 import 'fantasy_alert_transport.dart';
@@ -52,7 +53,8 @@ class BluetoothDeviceTransport
         DeviceTransport,
         FantasyAlertTransport,
         FantasyMatchupTransport,
-        FantasySlateTransport {
+        FantasySlateTransport,
+        LogicalDeviceTransport {
   BluetoothDeviceTransport({
     this.protocol = const SportsHubBleProtocol(),
     this.serializer = const GamePacketSerializer(),
@@ -61,6 +63,7 @@ class BluetoothDeviceTransport
     this.fantasyMatchupSerializer = const FantasyMatchupPacketSerializer(),
     this.scanTimeout = const Duration(seconds: 8),
     this.bleReadyTimeout = const Duration(seconds: 4),
+    this.writeTimeout = const Duration(seconds: 10),
     this.bleStatusProvider,
     this.bleStatusStreamProvider,
     this.scanStreamProvider,
@@ -82,6 +85,9 @@ class BluetoothDeviceTransport
   static int _nextDiagnosticId = 0;
   final int diagnosticId = ++_nextDiagnosticId;
   final RefreshDiagnosticHistory diagnosticHistory;
+  final Duration writeTimeout;
+  final _writeCancellations = <Completer<void>>{};
+
   int get connectionGeneration => _connectionGeneration;
   int _diagnosticWriteId = 0;
 
@@ -146,7 +152,24 @@ class BluetoothDeviceTransport
   bool _isWriting = false;
   int? _writingGeneration;
   int _connectionGeneration = 0;
-  int? _transferSendingGeneration;
+  late final _transactions = LogicalDeviceTransactionQueue(
+    onDiagnostic: _trace,
+  );
+  bool _disposed = false;
+
+  @override
+  Future<T> runTransaction<T>(
+    Future<T> Function() operation, {
+    bool Function()? isCurrent,
+  }) {
+    if (_disposed ||
+        _writableCharacteristic == null ||
+        !_snapshot.state.isPhysicallyConnected) {
+      return Future<T>.error(StateError('Sports Hub is not connected.'));
+    }
+    return _transactions.run(operation, isCurrent: isCurrent);
+  }
+
   int _scanGeneration = 0;
 
   WakeSubscriptionHealth get wakeSubscriptionHealth => _wakeHealth;
@@ -314,12 +337,12 @@ class BluetoothDeviceTransport
 
   @override
   Future<void> sendControlCommand(String command) async {
-    await _sendPacket(utf8.encode(command));
+    await _sendTransferPackets([utf8.encode(command)]);
   }
 
   @override
   Future<void> sendGameData(GameData gameData) async {
-    await _sendPacket(serializer.serialize(gameData));
+    await _sendTransferPackets([serializer.serialize(gameData)]);
   }
 
   @override
@@ -372,11 +395,11 @@ class BluetoothDeviceTransport
 
   @override
   Future<void> sendFantasyAlert(FantasyPointAlert alert) =>
-      _sendPacket(fantasyAlertSerializer.serialize(alert));
+      _sendTransferPackets([fantasyAlertSerializer.serialize(alert)]);
 
   @override
   Future<void> sendFantasyMatchup(FantasyMatchupDisplayData matchup) =>
-      _sendPacket(fantasyMatchupSerializer.serialize(matchup));
+      _sendTransferPackets([fantasyMatchupSerializer.serialize(matchup)]);
 
   @override
   Future<void> sendFantasySlate(List<FantasyMatchupSlateEntry> entries) async {
@@ -400,41 +423,23 @@ class BluetoothDeviceTransport
     await _sendTransferPackets(packets);
   }
 
-  Future<void> _sendTransferPackets(List<List<int>> packets) async {
-    final generation = _connectionGeneration;
-    if (_transferSendingGeneration == generation) {
-      throw StateError('A slate transfer is already being sent.');
-    }
-    _transferSendingGeneration = generation;
-    try {
-      for (final packet in packets) {
-        if (generation != _connectionGeneration) {
-          throw StateError('Slate transfer connection changed.');
+  Future<void> _sendTransferPackets(List<List<int>> packets) =>
+      runTransaction(() async {
+        for (final packet in packets) {
+          _transactions.checkOwnership();
+          await _sendPacket(packet);
+          _transactions.checkOwnership();
         }
-        await _sendPacket(packet, transferGeneration: generation);
-        if (generation != _connectionGeneration) {
-          throw StateError('Slate transfer connection changed.');
-        }
-      }
-    } finally {
-      if (_transferSendingGeneration == generation) {
-        _transferSendingGeneration = null;
-      }
-    }
-  }
+      });
 
   @override
   Future<void> clearFantasyMatchup() =>
-      _sendPacket(fantasyMatchupSerializer.serializeClear());
+      _sendTransferPackets([fantasyMatchupSerializer.serializeClear()]);
 
-  Future<void> _sendPacket(List<int> packet, {int? transferGeneration}) async {
+  Future<void> _sendPacket(List<int> packet) async {
     final writeId = ++_diagnosticWriteId;
     _trace('write.attempt id=$writeId bytes=${packet.length}');
-    if (_transferSendingGeneration == _connectionGeneration &&
-        transferGeneration != _connectionGeneration) {
-      _trace('write.rejected id=$writeId reason=transfer-owned');
-      throw StateError('A slate transfer owns the connection.');
-    }
+    _transactions.checkOwnership();
     final characteristic = _writableCharacteristic;
     if (characteristic == null ||
         _snapshot.state == BleConnectionState.disconnected ||
@@ -456,8 +461,27 @@ class BluetoothDeviceTransport
     final elapsed = Stopwatch()..start();
     _trace('write.start id=$writeId originG=$generation');
 
+    final cancelled = Completer<void>();
+    _writeCancellations.add(cancelled);
     try {
-      await _writeCharacteristicWithResponse(characteristic, value: packet);
+      final timedOut = Completer<void>();
+      final timer = Timer(
+        writeTimeout,
+        () => timedOut.completeError(
+          TimeoutException('Bluetooth write timed out.', writeTimeout),
+        ),
+      );
+      try {
+        await Future.any<void>([
+          _writeCharacteristicWithResponse(characteristic, value: packet),
+          timedOut.future,
+          cancelled.future.then(
+            (_) => throw StateError('BLE write cancelled; connection changed.'),
+          ),
+        ]);
+      } finally {
+        timer.cancel();
+      }
       if (!_writeCanRestoreConnected(generation, characteristic)) {
         throw StateError('BLE write cancelled; connection changed.');
       }
@@ -479,6 +503,7 @@ class BluetoothDeviceTransport
       }
       rethrow;
     } finally {
+      _writeCancellations.remove(cancelled);
       if (_writingGeneration == generation) {
         _isWriting = false;
         _writingGeneration = null;
@@ -490,6 +515,8 @@ class BluetoothDeviceTransport
   }
 
   Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
     _trace('transport.dispose');
     await disconnect();
     await _wakeNotificationController.close();
@@ -516,12 +543,21 @@ class BluetoothDeviceTransport
       _snapshot.state != BleConnectionState.disconnected &&
       _snapshot.state != BleConnectionState.error;
 
+  void _cancelPendingWrites() {
+    for (final cancelled in _writeCancellations.toList()) {
+      if (!cancelled.isCompleted) cancelled.complete();
+    }
+    _writeCancellations.clear();
+  }
+
   void _invalidatePhysicalConnection(String reason) {
     final previousGeneration = _connectionGeneration;
     final wasActive =
         _writableCharacteristic != null ||
         _snapshot.state.isPhysicallyConnected;
     _connectionGeneration++;
+    _transactions.reset(reason);
+    _cancelPendingWrites();
     _trace(
       'connection.generation $previousGeneration->$_connectionGeneration reason=$reason',
     );
@@ -960,6 +996,8 @@ class BluetoothDeviceTransport
 
   void _emitError(String message) {
     _trace('connection.error');
+    _transactions.reset('transport error');
+    _cancelPendingWrites();
     unawaited(_cancelWakeNotificationSubscription());
     _emit(
       _snapshot.copyWith(

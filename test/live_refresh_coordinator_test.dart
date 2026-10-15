@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:sports_hub_mobile/logical_device_transaction.dart';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sports_hub_mobile/device_transport.dart';
@@ -14,6 +15,52 @@ import 'package:sports_hub_mobile/sports_repository.dart';
 import 'package:sports_hub_mobile/tracked_device_session.dart';
 
 void main() {
+  test(
+    'F29 cancelled provider work cannot block or overwrite a new refresh',
+    () async {
+      final pending = Completer<List<GameData>>();
+      final source = _Source({
+        SportsLeague.mlb: [_game('MLB', 'A', 3)],
+      })..pending = pending;
+      final transport = _Transport();
+      final session = _teamSession(SportsLeague.mlb, [_game('MLB', 'A', 1)]);
+      final coordinator = _coordinator(
+        source,
+        _GolfSource(_golf('-1')),
+        session,
+        transport,
+      );
+      final old = coordinator.refreshTrackedSessionOnce();
+      await Future<void>.delayed(Duration.zero);
+      coordinator.cancelCurrentRefresh('reconnect');
+      source.pending = null;
+      final fresh = await coordinator.refreshTrackedSessionOnce();
+      pending.complete([_game('MLB', 'A', 2)]);
+      final stale = await old;
+      expect(fresh.skipped, isFalse);
+      expect(stale.cancelled, isTrue);
+      expect(transport.slates, hasLength(1));
+      expect(transport.slates.single.single.awayScore, 3);
+    },
+  );
+
+  test(
+    'F29 rejected ownership cannot report a successful empty refresh',
+    () async {
+      final source = _Source({
+        SportsLeague.mlb: [_game('MLB', 'A', 2)],
+      });
+      final result = await _coordinator(
+        source,
+        _GolfSource(_golf('-1')),
+        _teamSession(SportsLeague.mlb, [_game('MLB', 'A', 1)]),
+        _RejectingOwner(),
+      ).refreshTrackedSessionOnce();
+      expect(result.succeeded, isFalse);
+      expect(result.leagues[SportsLeague.mlb], SportsRefreshOutcome.failed);
+    },
+  );
+
   for (final league in [SportsLeague.nfl, SportsLeague.nba, SportsLeague.mlb]) {
     test('${league.label} shrink requires two matching observations', () async {
       final tracked = [
@@ -545,38 +592,41 @@ void main() {
     },
   );
 
-  test('later league comparison uses the original stable snapshot', () async {
-    final session = TrackedDeviceSession()
-      ..recordTeamSlate(
-        league: SportsLeague.nfl,
-        selectedDate: _date,
-        games: [_game('NFL', '1', 1)],
-      )
-      ..recordTeamSlate(
-        league: SportsLeague.mlb,
-        selectedDate: _date,
-        games: [_game('MLB', '1', 1)],
-      );
-    final transport = _MutatingTransport(session);
+  test(
+    'F29 later league refresh preserves a newer explicit baseline',
+    () async {
+      final session = TrackedDeviceSession()
+        ..recordTeamSlate(
+          league: SportsLeague.nfl,
+          selectedDate: _date,
+          games: [_game('NFL', '1', 1)],
+        )
+        ..recordTeamSlate(
+          league: SportsLeague.mlb,
+          selectedDate: _date,
+          games: [_game('MLB', '1', 1)],
+        );
+      final transport = _MutatingTransport(session);
 
-    await LiveRefreshCoordinator(
-      repository: SportsRepository(
-        _ConcurrentSource({
-          SportsLeague.nfl: Future.value([
-            _sportsGameFrom(_game('NFL', '1', 2)),
-          ]),
-          SportsLeague.mlb: Future.value([
-            _sportsGameFrom(_game('MLB', '1', 2)),
-          ]),
-        }),
-      ),
-      transport: transport,
-      session: session,
-      isBleConnected: () => true,
-    ).refreshTrackedSessionOnce();
+      await LiveRefreshCoordinator(
+        repository: SportsRepository(
+          _ConcurrentSource({
+            SportsLeague.nfl: Future.value([
+              _sportsGameFrom(_game('NFL', '1', 2)),
+            ]),
+            SportsLeague.mlb: Future.value([
+              _sportsGameFrom(_game('MLB', '1', 2)),
+            ]),
+          }),
+        ),
+        transport: transport,
+        session: session,
+        isBleConnected: () => true,
+      ).refreshTrackedSessionOnce();
 
-    expect(transport.attempted, ['NFL', 'MLB']);
-  });
+      expect(transport.attempted, ['NFL']);
+    },
+  );
 
   test('disconnect after first send suppresses remaining sends', () async {
     var connected = true;
@@ -1224,4 +1274,12 @@ class _MutatingTransport implements DeviceTransport {
 
   @override
   Future<void> sendGolfLeaderboard(GolfLeaderboard leaderboard) async {}
+}
+
+class _RejectingOwner extends _Transport implements LogicalDeviceTransport {
+  @override
+  Future<T> runTransaction<T>(
+    Future<T> Function() operation, {
+    bool Function()? isCurrent,
+  }) async => throw StateError('queue full');
 }

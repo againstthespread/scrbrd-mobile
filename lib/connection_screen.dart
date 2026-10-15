@@ -417,6 +417,10 @@ class _ConnectionScreenState extends State<ConnectionScreen>
                 }
               },
               observeFantasy: () async {
+                if (_isDisposing ||
+                    originG != _transport.connectionGeneration) {
+                  return;
+                }
                 _trace('refresh', 'fantasy.enter id=$id', generation: originG);
                 try {
                   final result = await _fantasyCoordinator.observe();

@@ -1,4 +1,14 @@
 import 'dart:async';
+import 'package:sports_hub_mobile/fantasy_point_alert.dart';
+import 'package:sports_hub_mobile/fantasy_point_delta_tracker.dart';
+import 'package:sports_hub_mobile/live_refresh_coordinator.dart';
+import 'package:sports_hub_mobile/initial_device_sync_coordinator.dart';
+import 'package:sports_hub_mobile/fantasy_startup_outcome.dart';
+import 'package:sports_hub_mobile/sports_operation_gate.dart';
+import 'package:sports_hub_mobile/sports_repository.dart';
+import 'package:sports_hub_mobile/sports_data_source.dart';
+import 'package:sports_hub_mobile/sports_game.dart';
+
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -846,6 +856,250 @@ void main() {
     }
   }
 
+  test(
+    'F29 simultaneous sports, manual and fantasy transfers are serialized',
+    () async {
+      final harness = await _WriteHarness.create();
+      final errors = <Object>[];
+      Future<void> capture(Future<void> send) async {
+        try {
+          await send;
+        } on Object catch (error) {
+          errors.add(error);
+        }
+      }
+
+      final sports = capture(
+        harness.transport.sendGameSlate([_game(score: 1)]),
+      );
+      final manual = capture(harness.transport.sendControlCommand('MANUAL'));
+      final fantasy = capture(
+        harness.transport.sendFantasySlate([_fantasyEntry('A')]),
+      );
+      final all = Future.wait([sports, manual, fantasy]);
+      await drainWrites(harness, all.then((_) {}));
+      await all;
+      expect(errors, isEmpty);
+      final types = harness.packets.map((p) {
+        final text = utf8.decode(p);
+        return text == 'MANUAL' ? text : (jsonDecode(text) as Map)['type'];
+      }).toList();
+      expect(types, [
+        'slate_start',
+        'slate_chunk',
+        'slate_end',
+        'MANUAL',
+        'fantasy_slate_start',
+        'fantasy_matchup',
+        'fantasy_slate_end',
+      ]);
+      await harness.dispose();
+    },
+  );
+
+  test(
+    'F29 disconnect releases callers without waiting for a native write',
+    () async {
+      final harness = await _WriteHarness.create();
+      var settled = false;
+      final send = harness.transport
+          .sendControlCommand('OLD')
+          .then<void>(
+            (_) {},
+            onError: (Object _) {
+              settled = true;
+            },
+          );
+      await Future<void>.delayed(Duration.zero);
+      await harness.transport.disconnect();
+      await Future<void>.delayed(Duration.zero);
+      final releasedBeforeNativeCompletion = settled;
+      harness.completeWrite(0);
+      await send;
+      expect(releasedBeforeNativeCompletion, isTrue);
+      await harness.dispose();
+    },
+  );
+
+  test(
+    'F29 native write timeout releases active and pending deliveries',
+    () async {
+      final harness = await _WriteHarness.create(
+        writeTimeout: const Duration(milliseconds: 50),
+      );
+      final active = harness.transport.sendGameSlate([_game(score: 1)]);
+      final failed = expectLater(active, throwsStateError);
+      final queued = harness.transport.sendControlCommand('MANUAL');
+      final cancelled = expectLater(queued, throwsStateError);
+      await Future.wait([failed, cancelled]);
+      expect(harness.writeCount, 1);
+      expect(harness.transport.currentSnapshot.state, BleConnectionState.error);
+      harness.completeWrite(0);
+      await Future<void>.delayed(Duration.zero);
+      expect(harness.writeCount, 1);
+      expect(harness.transport.currentSnapshot.state, BleConnectionState.error);
+      await harness.dispose();
+    },
+  );
+
+  test(
+    'F29 automatic bursts, manual send, alert and projection share whole transfers',
+    () async {
+      final harness = await _WriteHarness.create();
+      final session = TrackedDeviceSession()
+        ..recordTeamSlate(
+          league: SportsLeague.mlb,
+          selectedDate: _date,
+          games: [_game(score: 1)],
+        );
+      final sender = SessionAwareDeviceSender(
+        transport: harness.transport,
+        session: session,
+      );
+      final source = _F29Source();
+      final refresh = LiveRefreshCoordinator(
+        repository: SportsRepository(source),
+        transport: sender,
+        session: session,
+        isBleConnected: () => true,
+      );
+      final gate = SportsOperationGate();
+      final auto = gate.requestLiveRefresh(() async {
+        await refresh.refreshTrackedSessionOnce();
+      });
+      await Future<void>.delayed(Duration.zero);
+      final manual = sender.sendGameData(_game(score: 3));
+      final alert = sender.sendFantasyAlert(
+        const FantasyPointAlert(
+          delta: FantasyPointDelta(
+            playerId: 'player',
+            side: FantasyMatchupSide.user,
+            previousPoints: 1,
+            currentPoints: 2,
+            delta: 1,
+          ),
+          player: null,
+          playerName: 'Player',
+          userName: 'User',
+          userScore: 2,
+          opponentName: 'Opponent',
+          opponentScore: 1,
+        ),
+      );
+      final projection = sender.sendFantasySlate([_fantasyEntry('A')]);
+      for (var i = 0; i < 20; i++) {
+        await gate.requestLiveRefresh(() async {
+          await refresh.refreshTrackedSessionOnce();
+        });
+      }
+      final all = Future.wait([auto, manual, alert, projection]);
+      await drainWrites(harness, all.then((_) {}));
+      await all;
+      expect(source.calls, 2); // One active pass, one coalesced pass.
+      final types = harness.packets
+          .map((p) => (jsonDecode(utf8.decode(p)) as Map)['type'])
+          .toList();
+      expect(types.take(3), ['slate_start', 'slate_chunk', 'slate_end']);
+      expect(types.sublist(3, 5), ['game', 'fantasy_alert']);
+      expect(types.sublist(5, 8), [
+        'fantasy_slate_start',
+        'fantasy_matchup',
+        'fantasy_slate_end',
+      ]);
+      expect(
+        types.skip(8),
+        isEmpty,
+      ); // Superseded by the completed manual send.
+      expect(
+        (session[SportsLeague.mlb] as TrackedTeamSlate).games.single.awayScore,
+        3,
+      );
+      await harness.dispose();
+      session.dispose();
+    },
+  );
+
+  test(
+    'F29 startup catalog stays atomic and fantasy observation releases transport',
+    () async {
+      final harness = await _WriteHarness.create();
+      final session = TrackedDeviceSession();
+      final sender = SessionAwareDeviceSender(
+        transport: harness.transport,
+        session: session,
+      );
+      final observed = Completer<void>();
+      final finish = Completer<void>();
+      final coordinator = InitialDeviceSyncCoordinator(
+        repository: SportsRepository(_F29Source()),
+        sender: sender,
+        isBleConnected: () => true,
+        clock: () => _date,
+        prepareFantasyCategory: () async => PreparedFantasyStartup(
+          hasContent: true,
+          commit: () async => throw StateError('use split writes'),
+          commitWrites: (_) async {
+            await sender.sendFantasySlate([_fantasyEntry('A')]);
+            return const FantasyStartupOutcome(hasContent: true);
+          },
+          finishObservation: (_) async {
+            observed.complete();
+            await finish.future;
+            return const FantasyStartupOutcome(hasContent: true);
+          },
+        ),
+      );
+      final startup = coordinator.startForConnectionForTest();
+      await Future<void>.delayed(Duration.zero);
+      final manual = sender.sendControlCommand('MANUAL');
+      await drainWrites(harness, manual);
+      await manual;
+      await observed.future;
+      final text = harness.packets.map(utf8.decode).toList();
+      expect(text.first, 'SYNC_START');
+      expect(text[text.length - 2], 'SYNC_COMPLETE');
+      expect(text.last, 'MANUAL');
+      finish.complete();
+      await startup;
+      expect(coordinator.snapshot.status, InitialSyncStatus.complete);
+      await harness.dispose();
+      session.dispose();
+    },
+  );
+
+  test(
+    'F29 startup queued behind a manual send defers with terminal status',
+    () async {
+      final harness = await _WriteHarness.create();
+      final session = TrackedDeviceSession();
+      final sender = SessionAwareDeviceSender(
+        transport: harness.transport,
+        session: session,
+      );
+      final manual = sender.sendGameData(_game(score: 3));
+      final coordinator = InitialDeviceSyncCoordinator(
+        repository: SportsRepository(_F29Source()),
+        sender: sender,
+        isBleConnected: () => true,
+        clock: () => _date,
+      );
+      final startup = coordinator.startForConnectionForTest();
+      await Future<void>.delayed(Duration.zero);
+      final all = Future.wait([manual, startup]);
+      await drainWrites(harness, all.then((_) {}));
+      await all;
+      expect(harness.packets.map(utf8.decode), isNot(contains('SYNC_START')));
+      expect(coordinator.snapshot.status, InitialSyncStatus.partialFailure);
+      expect(coordinator.needsRetry, isTrue);
+      expect(
+        (session[SportsLeague.mlb] as TrackedTeamSlate).games.single.awayScore,
+        3,
+      );
+      await harness.dispose();
+      session.dispose();
+    },
+  );
+
   test('fantasy slate prevalidates every entry before any write', () async {
     final harness = await _WriteHarness.create();
     final send = harness.transport.sendFantasySlate([
@@ -945,9 +1199,9 @@ void main() {
       final competing = harness.transport.sendFantasySlate([
         _fantasyEntry('B'),
       ]);
-      await expectLater(competing, throwsA(isA<StateError>()));
-      await drainWrites(harness, retry);
-      await retry;
+      final both = Future.wait([retry, competing]);
+      await drainWrites(harness, both.then((_) {}));
+      await both;
       expect(
         jsonDecode(utf8.decode(harness.packets[2]))['type'],
         'fantasy_slate_start',
@@ -1079,13 +1333,14 @@ void main() {
         harness.transport.currentSnapshot.state,
         BleConnectionState.sending,
       );
-      await expectLater(
-        harness.transport.sendFantasySlate([_fantasyEntry('A')]),
-        throwsA(isA<StateError>()),
-      );
-      await drainWrites(harness, fresh);
-      await fresh;
-      expect(harness.writeCount, 4);
+      final competing = harness.transport.sendFantasySlate([
+        _fantasyEntry('A'),
+      ]);
+      expect(harness.writeCount, 2);
+      final both = Future.wait([fresh, competing]);
+      await drainWrites(harness, both.then((_) {}));
+      await both;
+      expect(harness.writeCount, 7);
       await harness.dispose();
     },
   );
@@ -1300,12 +1555,12 @@ void main() {
       final transfer = sender.sendTeamSlate([
         _game(score: 2),
       ], selectedDate: _date);
+      final failure = expectLater(transfer, throwsA(isA<StateError>()));
       await Future<void>.delayed(Duration.zero);
       harness.physicalDisconnect();
       await Future<void>.delayed(Duration.zero);
       harness.completeWrite(0);
-
-      await expectLater(transfer, throwsA(isA<StateError>()));
+      await failure;
       expect(harness.writeCount, 1);
       expect(
         (session[SportsLeague.mlb] as TrackedTeamSlate).games.single.awayScore,
@@ -1327,12 +1582,12 @@ void main() {
       );
 
       final transfer = sender.sendGolf(_golf('-2'), selectedDate: _date);
+      final failure = expectLater(transfer, throwsA(isA<StateError>()));
       await Future<void>.delayed(Duration.zero);
       harness.physicalDisconnect();
       await Future<void>.delayed(Duration.zero);
       harness.completeWrite(0);
-
-      await expectLater(transfer, throwsA(isA<StateError>()));
+      await failure;
       expect(harness.writeCount, 1);
       expect(
         (session[SportsLeague.pga] as TrackedGolfLeaderboard)
@@ -1501,12 +1756,14 @@ class _WriteHarness {
     RefreshDiagnosticHistory? diagnosticHistory,
     Duration? wakeSilenceTimeout,
     Duration? wakeCancellationTimeout,
+    Duration? writeTimeout,
   }) {
     transport = BluetoothDeviceTransport(
       diagnosticHistory: diagnosticHistory,
       wakeSilenceTimeout: wakeSilenceTimeout ?? const Duration(seconds: 75),
       wakeCancellationTimeout:
           wakeCancellationTimeout ?? const Duration(seconds: 3),
+      writeTimeout: writeTimeout ?? const Duration(seconds: 10),
       scanTimeout: const Duration(milliseconds: 10),
       bleStatusProvider: () => BleStatus.ready,
       scanStreamProvider: () => scan.stream,
@@ -1539,6 +1796,7 @@ class _WriteHarness {
     RefreshDiagnosticHistory? diagnosticHistory,
     Duration? wakeSilenceTimeout,
     Duration? wakeCancellationTimeout,
+    Duration? writeTimeout,
   }) async {
     final harness = _WriteHarness._(
       wakeStreamProvider: wakeStreamProvider,
@@ -1546,6 +1804,7 @@ class _WriteHarness {
       diagnosticHistory: diagnosticHistory,
       wakeSilenceTimeout: wakeSilenceTimeout,
       wakeCancellationTimeout: wakeCancellationTimeout,
+      writeTimeout: writeTimeout,
     );
     final scanAttempt = harness.transport.scanForDevice();
     await Future<void>.delayed(Duration.zero);
@@ -1690,5 +1949,30 @@ class _LateStream<T> extends Stream<T> {
       onDone: onDone,
       cancelOnError: cancelOnError,
     );
+  }
+}
+
+class _F29Source implements SportsDataSource {
+  int calls = 0;
+  @override
+  Future<List<SportsGame>> fetchGamesForDate(
+    SportsLeague league,
+    DateTime date,
+  ) async {
+    if (league != SportsLeague.mlb) return [];
+    calls++;
+    return [
+      SportsGame(
+        league: 'MLB',
+        eventId: 'mlb-1',
+        awayTeam: 'NYY',
+        homeTeam: 'BOS',
+        awayScore: 2,
+        homeScore: 0,
+        status: 'LIVE',
+        clock: 'Top 5th',
+        scheduledStartTime: date,
+      ),
+    ];
   }
 }

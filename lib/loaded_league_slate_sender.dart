@@ -1,4 +1,5 @@
 import 'device_transport.dart';
+import 'logical_device_transaction.dart';
 import 'game_data.dart';
 import 'golf_leaderboard.dart';
 import 'sports_league.dart';
@@ -25,37 +26,44 @@ class LoadedLeagueSlateSender {
     Map<SportsLeague, List<GameData>> loadedGames, {
     GolfLeaderboard? loadedGolf,
     required Map<SportsLeague, DateTime> selectedDates,
-  }) async {
-    var sentLeagueCount = 0;
-    for (final league in SportsLeague.values) {
-      final games = loadedGames[league];
-      try {
-        if (league == SportsLeague.pga) {
-          if (loadedGolf == null || loadedGolf.golfers.isEmpty) continue;
-          final sender = transport;
-          if (sender is SessionAwareDeviceSender) {
-            await sender.sendGolf(
-              loadedGolf,
-              selectedDate: selectedDates[SportsLeague.pga],
-            );
+  }) {
+    loadedGames = {
+      for (final entry in loadedGames.entries)
+        entry.key: List.unmodifiable(entry.value),
+    };
+    selectedDates = Map.unmodifiable(selectedDates);
+    return runDeviceTransaction(transport, () async {
+      var sentLeagueCount = 0;
+      for (final league in SportsLeague.values) {
+        final games = loadedGames[league];
+        try {
+          if (league == SportsLeague.pga) {
+            if (loadedGolf == null || loadedGolf.golfers.isEmpty) continue;
+            final sender = transport;
+            if (sender is SessionAwareDeviceSender) {
+              await sender.sendGolf(
+                loadedGolf,
+                selectedDate: selectedDates[SportsLeague.pga],
+              );
+            } else {
+              await sender.sendGolfLeaderboard(loadedGolf);
+            }
           } else {
-            await sender.sendGolfLeaderboard(loadedGolf);
+            if (games == null || games.isEmpty) continue;
+            final sender = transport;
+            final selectedDate = selectedDates[league];
+            if (sender is SessionAwareDeviceSender && selectedDate != null) {
+              await sender.sendTeamSlate(games, selectedDate: selectedDate);
+            } else {
+              await sender.sendGameSlate(games);
+            }
           }
-        } else {
-          if (games == null || games.isEmpty) continue;
-          final sender = transport;
-          final selectedDate = selectedDates[league];
-          if (sender is SessionAwareDeviceSender && selectedDate != null) {
-            await sender.sendTeamSlate(games, selectedDate: selectedDate);
-          } else {
-            await sender.sendGameSlate(games);
-          }
+          sentLeagueCount++;
+        } on Object catch (error) {
+          throw LeagueSlateSendException(league, error);
         }
-        sentLeagueCount++;
-      } on Object catch (error) {
-        throw LeagueSlateSendException(league, error);
       }
-    }
-    return sentLeagueCount;
+      return sentLeagueCount;
+    });
   }
 }

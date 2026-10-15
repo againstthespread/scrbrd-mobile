@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:sports_hub_mobile/logical_device_transaction.dart';
 
 import 'package:sports_hub_mobile/device_content_preferences.dart';
 
@@ -794,6 +795,41 @@ void main() {
       },
     );
   }
+
+  test(
+    'F29 superseded queued fantasy display sends only the latest slate',
+    () async {
+      final queued = _QueuedSlateTransport();
+      final api = SleeperApiClient(
+        client: MockClient((_) async => throw StateError('unused')),
+      );
+      final runtime = FantasyLiveObservationCoordinator(
+        leagueConfigStore: store,
+        repository: SleeperFantasyRepository(api),
+        playerRepository: SleeperPlayerRepository(apiClient: api),
+        transport: queued,
+        isBleConnected: () => true,
+        matchupLoader: (id) async => _snapshot(id, points[id]!),
+        metadataResolver: (_) async => {},
+        sleeperProjectionEnricher: projectionEnricher,
+      );
+      await runtime.observe();
+      expect(queued.slates, hasLength(1));
+      final release = Completer<void>();
+      final manual = queued.runTransaction(() => release.future);
+      projectionEnricher.userProjections['a'] = 123;
+      final older = runtime.setPrimaryLeague('sleeper:b');
+      await Future<void>.delayed(Duration.zero);
+      final newer = runtime.setPrimaryLeague('sleeper:a');
+      await Future<void>.delayed(Duration.zero);
+      release.complete();
+      await Future.wait([manual, older, newer]);
+      expect(queued.slates, hasLength(2));
+      expect(queued.slates.last.first.identity, 'sleeper:a');
+      expect(queued.slates.last.first.matchup.userProjectedScore, 123);
+      runtime.dispose();
+    },
+  );
 
   test(
     'completed baseline capture triggers a subsequent projected slate',
@@ -1810,6 +1846,25 @@ void main() {
   );
 
   test(
+    'F29 new fantasy session does not wait for an obsolete observation',
+    () async {
+      final oldGate = loadGate = Completer<void>();
+      loadStarted = Completer<void>();
+      final old = coordinator.observe();
+      await loadStarted!.future;
+      coordinator.endConnectionSession();
+      coordinator.beginConnectionSession();
+      loadGate = null;
+      final fresh = await coordinator.observe();
+      oldGate.complete();
+      final stale = await old;
+      expect(fresh.skipped, isFalse);
+      expect(stale.cancelled, isTrue);
+      expect(transport.slates, hasLength(1));
+    },
+  );
+
+  test(
     'old observation cannot send a slate into a replacement connection',
     () async {
       loadGate = Completer<void>();
@@ -2276,4 +2331,17 @@ class _EmptyStartupSportsSource implements SportsDataSource {
           ]
         : [];
   }
+}
+
+class _QueuedSlateTransport extends _Transport
+    implements LogicalDeviceTransport {
+  final queue = LogicalDeviceTransactionQueue();
+  @override
+  Future<T> runTransaction<T>(
+    Future<T> Function() operation, {
+    bool Function()? isCurrent,
+  }) => queue.run(operation, isCurrent: isCurrent);
+  @override
+  Future<void> sendFantasySlate(List<FantasyMatchupSlateEntry> entries) =>
+      queue.run(() => super.sendFantasySlate(entries));
 }
