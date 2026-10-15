@@ -7,3 +7,8 @@ abstract class SportsDataSource {
     DateTime selectedDate,
   );
 }
+
+/// Optional lifetime contract for sources owning network resources.
+abstract interface class DisposableSportsDataSource {
+  void close();
+}

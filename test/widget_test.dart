@@ -3,9 +3,24 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sports_hub_mobile/game_editor.dart';
 import 'package:sports_hub_mobile/main.dart';
+import 'package:sports_hub_mobile/connection_screen.dart';
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
+
+  testWidgets('F29 root rebuild retains the runtime repository', (
+    tester,
+  ) async {
+    await tester.pumpWidget(const SportsHubApp());
+    final stable = tester
+        .widget<ConnectionScreen>(find.byType(ConnectionScreen))
+        .repository;
+    await tester.pumpWidget(SportsHubApp());
+    expect(
+      tester.widget<ConnectionScreen>(find.byType(ConnectionScreen)).repository,
+      same(stable),
+    );
+  });
 
   testWidgets('launches the SCRBRD Home screen', (tester) async {
     await tester.pumpWidget(const SportsHubApp());

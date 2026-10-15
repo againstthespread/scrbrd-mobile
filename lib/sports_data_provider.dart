@@ -31,7 +31,11 @@ SportsRepository createSportsRepository({SportsDataProvider? provider}) {
   return switch (selected) {
     SportsDataProvider.sportsDataIO => SportsRepository(
       SportsDataIODataSource(),
+      ownsSources: true,
     ),
-    SportsDataProvider.espn => SportsRepository(EspnDataSource()),
+    SportsDataProvider.espn => SportsRepository(
+      EspnDataSource(),
+      ownsSources: true,
+    ),
   };
 }

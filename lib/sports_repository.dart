@@ -10,6 +10,7 @@ class SportsRepository {
   SportsRepository(
     this._dataSource, {
     GolfDataSource? golfDataSource,
+    this.ownsSources = false,
     RefreshDiagnosticHistory? diagnosticHistory,
   }) : diagnosticHistory =
            diagnosticHistory ?? RefreshDiagnosticHistory.session,
@@ -18,6 +19,23 @@ class SportsRepository {
            (_dataSource is GolfDataSource
                ? _dataSource as GolfDataSource
                : null);
+
+  /// Injected sources are borrowed unless ownership is explicitly transferred.
+  final bool ownsSources;
+  bool _disposed = false;
+
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    if (!ownsSources) return;
+    final sources = <Object>{
+      _dataSource,
+      if (_golfDataSource != null) _golfDataSource,
+    };
+    for (final source in sources) {
+      if (source is DisposableSportsDataSource) source.close();
+    }
+  }
 
   final RefreshDiagnosticHistory diagnosticHistory;
   final SportsDataSource _dataSource;

@@ -7,6 +7,7 @@ import 'connection_screen.dart';
 import 'firebase_options.dart';
 import 'push_notification_service.dart';
 import 'sports_data_provider.dart';
+import 'sports_repository.dart';
 import 'favorites_store.dart';
 import 'device_content_preferences_store.dart';
 import 'college_football_preferences_store.dart';
@@ -52,21 +53,42 @@ Future<void> main() async {
   );
 }
 
-class SportsHubApp extends StatelessWidget {
+class SportsHubApp extends StatefulWidget {
   const SportsHubApp({
     super.key,
+    this.repositoryFactory,
     this.favoritesStore,
     this.contentPreferencesStore,
     this.collegeFootballPreferencesStore,
   });
+
+  /// The runtime owns and closes the repository produced by this factory.
+  final SportsRepository Function()? repositoryFactory;
   final FavoritesStore? favoritesStore;
   final DeviceContentPreferencesStore? contentPreferencesStore;
   final CollegeFootballPreferencesStore? collegeFootballPreferencesStore;
 
   @override
-  Widget build(BuildContext context) {
-    final sportsRepository = createSportsRepository();
+  State<SportsHubApp> createState() => _SportsHubAppState();
+}
 
+class _SportsHubAppState extends State<SportsHubApp> {
+  late final SportsRepository _repository;
+
+  @override
+  void initState() {
+    super.initState();
+    _repository = (widget.repositoryFactory ?? createSportsRepository)();
+  }
+
+  @override
+  void dispose() {
+    _repository.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return MaterialApp(
       title: 'SCRBRD',
       debugShowCheckedModeBanner: false,
@@ -90,10 +112,10 @@ class SportsHubApp extends StatelessWidget {
         useMaterial3: true,
       ),
       home: ConnectionScreen(
-        repository: sportsRepository,
-        favoritesStore: favoritesStore,
-        contentPreferencesStore: contentPreferencesStore,
-        collegeFootballPreferencesStore: collegeFootballPreferencesStore,
+        repository: _repository,
+        favoritesStore: widget.favoritesStore,
+        contentPreferencesStore: widget.contentPreferencesStore,
+        collegeFootballPreferencesStore: widget.collegeFootballPreferencesStore,
       ),
     );
   }

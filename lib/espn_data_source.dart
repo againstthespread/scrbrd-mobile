@@ -19,15 +19,27 @@ class EspnDataException implements Exception {
   String toString() => message;
 }
 
-class EspnDataSource implements SportsDataSource, GolfDataSource {
+class EspnDataSource
+    implements SportsDataSource, GolfDataSource, DisposableSportsDataSource {
   EspnDataSource({http.Client? client, int Function()? epochMilliseconds})
     : _client = client ?? http.Client(),
+      _ownsClient = client == null,
       _epochMilliseconds =
           epochMilliseconds ?? (() => DateTime.now().millisecondsSinceEpoch);
 
   static const _host = 'site.api.espn.com';
   static const _timeout = Duration(seconds: 10);
   final http.Client _client;
+  final bool _ownsClient;
+  bool _closed = false;
+
+  @override
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    if (_ownsClient) _client.close();
+  }
+
   final int Function() _epochMilliseconds;
   final Map<String, DateTime> _golfTournamentDates = {};
   int _lastCacheBuster = -1;

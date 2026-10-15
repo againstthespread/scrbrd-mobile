@@ -233,6 +233,18 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   Future<void>? _projectionDisplayRefreshInProgress;
   bool _deviceContentEnabled = true;
   int _generation = 0;
+  bool _disposed = false;
+
+  @override
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    _deviceContentEnabled = false;
+    _projectionDisplayRefreshPending = false;
+    endConnectionSession();
+    super.dispose();
+  }
+
   int _observationSequence = 0;
   bool _startupReconciliationPending = false;
 
@@ -1430,8 +1442,9 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     SleeperFantasyMatchup matchup,
     String configId,
   ) async {
+    final generation = _generation;
     final enricher = sleeperProjectionEnricher;
-    if (enricher == null) return matchup;
+    if (_disposed || enricher == null) return matchup;
     var enriched = matchup;
     try {
       enriched = await enricher.applyCached(matchup);
@@ -1441,6 +1454,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         '${error.runtimeType}',
       );
     }
+    if (_disposed || generation != _generation) return enriched;
     try {
       unawaited(
         enricher
@@ -1450,7 +1464,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
                 'Sleeper PROJ: capture returned config=$configId '
                 'changed=$changed',
               );
-              if (!changed) return;
+              if (!changed || _disposed || generation != _generation) return;
               _diagnose(
                 'Sleeper PROJ: capture complete; scheduling slate refresh '
                 'config=$configId',
@@ -1474,6 +1488,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   }
 
   void _scheduleProjectionDisplayRefresh() {
+    if (_disposed) return;
     _projectionDisplayRefreshPending = true;
     if (_startupReconciliationPending ||
         _observing ||
@@ -1612,6 +1627,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   }
 
   void _updateStatus(String summary) {
+    if (_disposed) return;
     final sleeperEligible = _sessions.values
         .where((session) => session.config.teamId != null)
         .toList();

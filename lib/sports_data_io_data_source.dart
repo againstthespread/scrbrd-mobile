@@ -30,9 +30,11 @@ class SportsDataException implements Exception {
   String toString() => message;
 }
 
-class SportsDataIODataSource implements SportsDataSource, GolfDataSource {
+class SportsDataIODataSource
+    implements SportsDataSource, GolfDataSource, DisposableSportsDataSource {
   SportsDataIODataSource({http.Client? client, String? apiKey})
     : _client = client ?? http.Client(),
+      _ownsClient = client == null,
       _apiKey = apiKey ?? _configuredApiKey;
 
   static const _configuredApiKey = String.fromEnvironment(
@@ -44,6 +46,16 @@ class SportsDataIODataSource implements SportsDataSource, GolfDataSource {
   static const _timeout = Duration(seconds: 10);
 
   final http.Client _client;
+  final bool _ownsClient;
+  bool _closed = false;
+
+  @override
+  void close() {
+    if (_closed) return;
+    _closed = true;
+    if (_ownsClient) _client.close();
+  }
+
   final String _apiKey;
 
   @override

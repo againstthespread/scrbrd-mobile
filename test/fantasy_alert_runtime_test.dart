@@ -103,6 +103,29 @@ void main() {
       },
     );
 
+    test('F29 disposed observation cannot send or notify', () async {
+      final api = SleeperApiClient(
+        client: MockClient((_) async => throw 'unused'),
+      );
+      final loaded = Completer<SleeperLeagueSnapshot>();
+      final runtime = FantasyLiveObservationCoordinator(
+        configStore: config,
+        repository: SleeperFantasyRepository(api),
+        playerRepository: SleeperPlayerRepository(apiClient: api),
+        transport: transport,
+        isBleConnected: () => transport.connected,
+        matchupLoader: (_) => loaded.future,
+        metadataResolver: (_) async => {},
+      );
+      final operation = runtime.observe();
+      await Future<void>.delayed(Duration.zero);
+      runtime.dispose();
+      loaded.complete(_snapshot());
+      final result = await operation;
+      expect(result.succeeded, isFalse);
+      expect(transport.matchups, isEmpty);
+    });
+
     test('F20 cancelled observation cannot report success', () async {
       final api = SleeperApiClient(
         client: MockClient((_) async => throw 'unused'),

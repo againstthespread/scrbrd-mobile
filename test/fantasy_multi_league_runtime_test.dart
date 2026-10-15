@@ -775,6 +775,26 @@ void main() {
     expect(actualChange.alerts.single.delta.delta, 1);
   });
 
+  for (final disposed in [false, true]) {
+    test(
+      'F29 late projection ignores ${disposed ? 'disposed' : 'replaced'} runtime',
+      () async {
+        projectionEnricher.refreshGate = Completer<bool>();
+        await coordinator.observe();
+        final sent = transport.slates.length;
+        if (disposed) {
+          coordinator.dispose();
+        } else {
+          coordinator.endConnectionSession();
+          coordinator.beginConnectionSession();
+        }
+        projectionEnricher.refreshGate!.complete(true);
+        await Future<void>.delayed(Duration.zero);
+        expect(transport.slates, hasLength(sent));
+      },
+    );
+  }
+
   test(
     'completed baseline capture triggers a subsequent projected slate',
     () async {
@@ -2019,6 +2039,7 @@ class _ProjectionEnricher implements SleeperProjectionEnricher {
   bool failApply = false;
   bool failRefresh = false;
   bool populateOnRefresh = false;
+  Completer<bool>? refreshGate;
 
   @override
   Future<SleeperFantasyMatchup> applyCached(
@@ -2034,6 +2055,7 @@ class _ProjectionEnricher implements SleeperProjectionEnricher {
   @override
   Future<bool> refresh(SleeperFantasyMatchup matchup) async {
     if (failRefresh) throw StateError('projection API unavailable');
+    if (refreshGate != null) return refreshGate!.future;
     if (!populateOnRefresh) return false;
     userProjections[matchup.league.leagueId] = 123;
     opponentProjections[matchup.league.leagueId] = 99;

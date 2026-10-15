@@ -82,6 +82,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   var _lifecycleState = AppLifecycleState.resumed;
   late final RefreshDiagnosticHistory _backgroundRefreshDiagnostics;
   int _diagnosticRefreshId = 0;
+  late final SportsRepository _repository;
   bool _isDisposing = false;
   InitialSyncSnapshot _initialSyncSnapshot = const InitialSyncSnapshot(
     status: InitialSyncStatus.idle,
@@ -95,6 +96,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   @override
   void initState() {
     super.initState();
+    _repository = widget.repository;
     WidgetsBinding.instance.addObserver(this);
     _lifecycleState =
         WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed;
@@ -132,9 +134,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       projectionSource: SleeperApiProjectionSource(_sleeperApiClient),
       metadataResolver:
           _sleeperPlayerRepository.resolvePlayersWithRefreshSafely,
-      gameStatusSource: SportsRepositorySleeperNflGameStatusSource(
-        widget.repository,
-      ),
+      gameStatusSource: SportsRepositorySleeperNflGameStatusSource(_repository),
       onDiagnostic: _recordBackgroundUpdaterDiagnostic,
     );
     _fantasyCoordinator = FantasyLiveObservationCoordinator(
@@ -151,7 +151,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     _fantasyCoordinator.addListener(_handleFantasyStatusChanged);
     unawaited(_fantasyCoordinator.loadConfigurationStatus());
     _liveRefreshCoordinator = LiveRefreshCoordinator(
-      repository: widget.repository,
+      repository: _repository,
       transport: _deviceSender,
       session: _trackedSession,
       isBleConnected: () =>
@@ -162,7 +162,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     );
     _initialSyncCoordinator = InitialDeviceSyncCoordinator(
       clock: widget.clock,
-      repository: widget.repository,
+      repository: _repository,
       sender: _deviceSender,
       isBleConnected: () =>
           _transport.currentSnapshot.state.isPhysicallyConnected,
@@ -274,6 +274,9 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     _isDisposing = true;
     WidgetsBinding.instance.removeObserver(this);
     _liveRefreshCoordinator.cancelCurrentRefresh('connection screen disposed');
+    _initialSyncCoordinator.handleConnectionState(
+      BleConnectionState.disconnected,
+    );
     _sportsOperationGate.clearDeferredWake();
     _scoreRefreshSubscription?.cancel();
     _wakeNotificationSubscription?.cancel();
@@ -390,6 +393,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         try {
           // A deferred WAKE must not overwrite retained Fantasy after startup failure.
           if (_isDisposing ||
+              originG != _transport.connectionGeneration ||
               _initialSyncCoordinator.needsRetry ||
               !_transport.currentSnapshot.state.isPhysicallyConnected) {
             execution = 'skipped-disposed-retry-or-disconnected';
@@ -515,7 +519,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => LiveGamesScreen(
-          repository: widget.repository,
+          repository: _repository,
           transport: _deviceSender,
           trackedSession: _trackedSession,
           favoritesStore: _favoritesStore,
@@ -529,7 +533,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => SettingsScreen(
-          repository: widget.repository,
+          repository: _repository,
           transport: _deviceSender,
           trackedSession: _trackedSession,
           providerLabel: selectSportsDataProvider().label,
