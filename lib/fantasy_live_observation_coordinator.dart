@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import 'refresh_diagnostic_history.dart';
 import 'espn_fantasy_credentials.dart';
 import 'espn_league_observation_session.dart';
 import 'espn_fantasy_setup.dart';
@@ -44,15 +45,18 @@ int currentFantasySeason() {
   return now.month < 3 ? now.year - 1 : now.year;
 }
 
-Future<void> runIsolatedWakeDomains({
+Future<bool> runIsolatedWakeDomains({
   required Future<void> Function() refreshSports,
   required Future<void> Function() observeFantasy,
+  bool Function()? domainsSucceeded,
   void Function(String message)? onDiagnostic,
   String triggerLabel = 'BLE WAKE',
 }) async {
+  var succeeded = true;
   try {
     await refreshSports();
   } on Object catch (error) {
+    succeeded = false;
     onDiagnostic?.call(
       '$triggerLabel: sports failed; fantasy continues: ${error.runtimeType}',
     );
@@ -60,10 +64,18 @@ Future<void> runIsolatedWakeDomains({
   try {
     await observeFantasy();
   } on Object catch (error) {
+    succeeded = false;
     onDiagnostic?.call(
       '$triggerLabel: fantasy failed; sports unaffected: ${error.runtimeType}',
     );
   }
+  return succeeded && (domainsSucceeded?.call() ?? true);
+}
+
+class _FantasyDeliveryDeferred implements Exception {
+  const _FantasyDeliveryDeferred();
+  @override
+  String toString() => 'BLE delivery queued; session or startup unavailable.';
 }
 
 class FantasyObservationResult {
@@ -77,6 +89,9 @@ class FantasyObservationResult {
     this.error,
     this.deliveryError,
     this.pendingAlerts = 0,
+    this.cancelled = false,
+    this.skipped = false,
+    this.deliveryState = 'not-requested',
   });
 
   final bool configured;
@@ -90,8 +105,17 @@ class FantasyObservationResult {
   final Object? error;
   final Object? deliveryError;
   final int pendingAlerts;
-  bool get succeeded =>
+  final bool cancelled;
+  final bool skipped;
+  final String deliveryState;
+  bool get providerSucceeded =>
       error == null &&
+      !cancelled &&
+      !skipped &&
+      leagues.values.every((r) => r.providerSucceeded);
+  bool get succeeded =>
+      providerSucceeded &&
+      deliveryState != 'queued' &&
       deliveryError == null &&
       leagues.values.every((r) => r.succeeded);
   int get alertCount => alerts.length;
@@ -134,7 +158,10 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     EspnMatchupLoader? espnMatchupLoader,
     this.sleeperProjectionEnricher,
     this.onDiagnostic,
-  }) : assert(configStore != null || leagueConfigStore != null),
+    RefreshDiagnosticHistory? diagnosticHistory,
+  }) : diagnosticHistory =
+           diagnosticHistory ?? RefreshDiagnosticHistory.session,
+       assert(configStore != null || leagueConfigStore != null),
        leagueConfigStore =
            leagueConfigStore ??
            LegacySleeperConfigCollectionAdapter(configStore!),
@@ -164,6 +191,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
              SecureEspnFantasyCredentialsStore(),
            ).loadMatchup;
 
+  final RefreshDiagnosticHistory diagnosticHistory;
   final SleeperFantasyConfigStore configStore;
   final FantasyLeagueConfigStore leagueConfigStore;
   final FantasyPrimaryLeagueStore primaryStore;
@@ -256,10 +284,10 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     );
     if (matches.isEmpty) return null;
     final config = matches.single;
-    final matchup = await _espnMatchupLoader(
-      currentFantasySeason(),
-      config.leagueId,
-      config.teamId!,
+    final generation = _generation;
+    final matchup = await _loadEspnMatchup(
+      config,
+      () => generation == _generation && _primaryId == id,
     );
     if (_primaryId != id) return matchup;
     final transport = matchupTransport;
@@ -274,7 +302,12 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
           '${matchup.opponent?.team.id ?? 'bye'}';
       final display = FantasyMatchupDisplayData.fromNormalized(matchup);
       if (!deviceSession.matches(display, context)) {
-        await transport.sendFantasyMatchup(display);
+        await diagnosticHistory.trackDelivery(
+          'fantasy:matchup',
+          () => transport.sendFantasyMatchup(display),
+          isCurrent: () =>
+              generation == _generation && _primaryId == id && isBleConnected(),
+        );
         if (_primaryId == id) deviceSession.record(display, context);
       }
     }
@@ -435,29 +468,34 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
   Future<bool> sendTestAlert() async {
     if (!isBleConnected()) return false;
     final matchup = _sessions[_primaryId]?.latestMatchup;
-    await transport.sendFantasyAlert(
-      FantasyPointAlert(
-        delta: const FantasyPointDelta(
-          playerId: 'sample-player',
-          side: FantasyMatchupSide.user,
-          previousPoints: 0,
-          currentPoints: 12,
-          delta: 12,
+    final generation = _generation;
+    await diagnosticHistory.trackDelivery(
+      'fantasy:alerts',
+      () => transport.sendFantasyAlert(
+        FantasyPointAlert(
+          delta: const FantasyPointDelta(
+            playerId: 'sample-player',
+            side: FantasyMatchupSide.user,
+            previousPoints: 0,
+            currentPoints: 12,
+            delta: 12,
+          ),
+          player: const SleeperFantasyPlayer(
+            sleeperPlayerId: 'sample-player',
+            fullName: "Ja'Marr Chase",
+            firstName: "Ja'Marr",
+            lastName: 'Chase',
+            position: 'WR',
+            nflTeam: 'CIN',
+            espnPlayerId: null,
+          ),
+          userName: matchup?.team.name ?? 'YOUR TEAM',
+          userScore: matchup?.team.matchup.points ?? 104.7,
+          opponentName: matchup?.opponent.name ?? 'OPPONENT',
+          opponentScore: matchup?.opponent.matchup.points ?? 97.2,
         ),
-        player: const SleeperFantasyPlayer(
-          sleeperPlayerId: 'sample-player',
-          fullName: "Ja'Marr Chase",
-          firstName: "Ja'Marr",
-          lastName: 'Chase',
-          position: 'WR',
-          nflTeam: 'CIN',
-          espnPlayerId: null,
-        ),
-        userName: matchup?.team.name ?? 'YOUR TEAM',
-        userScore: matchup?.team.matchup.points ?? 104.7,
-        opponentName: matchup?.opponent.name ?? 'OPPONENT',
-        opponentScore: matchup?.opponent.matchup.points ?? 97.2,
       ),
+      isCurrent: () => generation == _generation && isBleConnected(),
     );
     return true;
   }
@@ -500,6 +538,9 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
 
   List<String> _startupFailures(FantasyObservationResult result) => [
     if (result.error != null) 'Fantasy: ${result.error}',
+    if (result.deliveryError != null) 'Fantasy BLE: ${result.deliveryError}',
+    if (result.cancelled || result.skipped)
+      'Fantasy operation cancelled or deferred.',
     for (final entry in result.leagues.entries)
       if (entry.value.error != null) '${entry.key}: ${entry.value.error}',
   ];
@@ -531,19 +572,11 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       primaryStore: primaryStore,
       loadSleeper: (config) async {
         if (!current()) throw StateError('Fantasy startup session changed.');
-        final snapshot = await _matchupLoader(config.leagueId);
-        return _enrichSleeperSafely(
-          snapshot.matchupForRoster(int.parse(config.teamId!)),
-          config.id,
-        );
+        return _loadSleeperMatchup(config, current);
       },
       loadEspn: (config) async {
         if (!current()) throw StateError('Fantasy startup session changed.');
-        return _espnMatchupLoader(
-          currentFantasySeason(),
-          config.leagueId,
-          config.teamId!,
-        );
+        return _loadEspnMatchup(config, current);
       },
     );
     final built = await builder.buildOutcome();
@@ -639,9 +672,11 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         baselineReset: false,
         alerts: const [],
         summary: 'Skipped: fantasy observation already active.',
+        skipped: true,
       );
     }
     _observing = true;
+    final deliveryStart = diagnosticHistory.freshnessRevision;
     final observation = ++_observationSequence;
     final generation = _generation;
     try {
@@ -658,6 +693,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       final shouldSyncPersistentMatchup =
           syncPersistentMatchup && !useSlateTransport;
       final results = <String, FantasyObservationResult>{};
+      Object? deliveryError;
       for (final config in configs) {
         if (generation != _generation) break;
         if (config.teamId == null) {
@@ -694,27 +730,95 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       if (_primaryId == null ||
           (_sessions[_primaryId]?.config.teamId == null &&
               _espnSessions[_primaryId]?.config.teamId == null)) {
-        if (!useSlateTransport) await _clearPersistentFantasy();
+        if (!useSlateTransport) deliveryError = await _clearPersistentFantasy();
       }
       if (useSlateTransport &&
+          syncPersistentMatchup &&
           !startupOnly &&
-          generation == _generation &&
-          isBleConnected()) {
-        await _syncObservedFantasySlate(activeSlateTransport, configs);
+          generation == _generation) {
+        deliveryError = await _syncObservedFantasySlate(
+          activeSlateTransport,
+          configs,
+        );
       }
       final alerts = [for (final result in results.values) ...result.alerts];
+      if (alerts.isNotEmpty) {
+        diagnosticHistory.deliveryState('fantasy:alerts', 'queued');
+      }
       if (sendAlerts && !startupOnly) {
-        await _drainPendingAlertsAcrossSessions(generation);
+        final alertError = await _drainPendingAlertsAcrossSessions(generation);
+        deliveryError ??= alertError;
+      }
+      for (final entry in results.entries.toList()) {
+        final pendingCount =
+            (_sessions[entry.key]?.pendingStore ??
+                    _espnSessions[entry.key]?.pendingStore)
+                ?.length ??
+            0;
+        final r = entry.value;
+        results[entry.key] = FantasyObservationResult(
+          configured: r.configured,
+          baselineReset: r.baselineReset,
+          alerts: r.alerts,
+          summary: r.summary,
+          matchup: r.matchup,
+          error: r.error,
+          deliveryError: r.deliveryError,
+          cancelled: r.cancelled,
+          skipped: r.skipped,
+          pendingAlerts: pendingCount,
+          deliveryState: pendingCount > 0 ? 'queued' : r.deliveryState,
+        );
       }
       final failures = results.values
           .where((result) => !result.succeeded)
           .length;
-      final summary = results.length == 1
+      final cancelled =
+          generation != _generation || results.values.any((r) => r.cancelled);
+      final pending =
+          _sessions.values.fold(0, (n, s) => n + s.pendingStore.length) +
+          _espnSessions.values.fold(0, (n, s) => n + s.pendingStore.length);
+      deliveryError ??= results.values
+          .map((r) => r.deliveryError)
+          .whereType<Object>()
+          .firstOrNull;
+      final observationSummary = results.length == 1
           ? results.values.single.summary
           : 'Observed ${results.length} fantasy leagues; '
                 '${alerts.length} alerts; $failures failures.';
+      final deliveryStates = diagnosticHistory.freshness.entries
+          .where(
+            (e) =>
+                e.key.startsWith('fantasy:') &&
+                e.value.deliveryToken > deliveryStart,
+          )
+          .map((e) => e.value.deliveryState)
+          .toSet();
+      final deliveryState = cancelled
+          ? 'cancelled'
+          : deliveryError is _FantasyDeliveryDeferred
+          ? 'queued'
+          : deliveryError != null
+          ? 'failed'
+          : pending > 0
+          ? 'queued'
+          : deliveryStates.contains('written')
+          ? 'written'
+          : deliveryStates.contains('unchanged')
+          ? 'unchanged'
+          : 'not-requested';
+      final summary = cancelled
+          ? 'Fantasy observation cancelled; BLE state unverified.'
+          : deliveryError != null
+          ? '$observationSummary BLE delivery failed/deferred; $pending alerts queued.'
+          : pending > 0
+          ? '$observationSummary $pending alerts queued; BLE delivery pending.'
+          : observationSummary;
       _updateStatus(summary);
       return FantasyObservationResult(
+        deliveryError: deliveryError,
+        cancelled: cancelled,
+        deliveryState: deliveryState,
         configured: results.values.any((result) => result.configured),
         baselineReset: results.values.any((result) => result.baselineReset),
         alerts: List.unmodifiable(alerts),
@@ -757,6 +861,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         generation == _generation &&
         identical(_sessions[config.id], session) &&
         revision == session.revision;
+    Object? deliveryError;
     try {
       _diagnose(
         'Sleeper PROJ: observation league=${config.leagueId} '
@@ -769,13 +874,14 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
             config.id == _primaryId &&
             matchup != null &&
             context != null) {
-          await _syncPersistentMatchup(
+          deliveryError = await _syncPersistentMatchup(
             matchup,
             context,
             () => isCurrent() && config.id == _primaryId,
           );
         }
         return FantasyObservationResult(
+          deliveryError: deliveryError,
           configured: true,
           baselineReset: false,
           alerts: const [],
@@ -783,11 +889,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
           summary: 'Baseline already established.',
         );
       }
-      final snapshot = await _matchupLoader(config.leagueId);
-      final matchup = await _enrichSleeperSafely(
-        snapshot.matchupForRoster(int.parse(config.teamId!)),
-        config.id,
-      );
+      final matchup = await _loadSleeperMatchup(config, isCurrent);
       _diagnose(
         'Sleeper PROJ: observation enriched league=${config.leagueId} '
         'team=${matchup.team.projectedTotalPoints ?? 'null'} '
@@ -796,12 +898,12 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       if (!isCurrent()) return _connectionChangedResult();
       session.latestMatchup = matchup;
       final context =
-          '${config.leagueId}|${snapshot.week}|'
+          '${config.leagueId}|${matchup.week}|'
           '${matchup.team.roster.rosterId}|'
           '${matchup.opponent.roster.rosterId}|'
           '${matchup.team.matchup.matchupId}';
       if (syncPersistentMatchup && config.id == _primaryId) {
-        await _syncPersistentMatchup(
+        deliveryError = await _syncPersistentMatchup(
           matchup,
           context,
           () => isCurrent() && config.id == _primaryId,
@@ -817,6 +919,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       if (!config.alertsEnabled) {
         pendingStore.clear();
         return FantasyObservationResult(
+          deliveryError: deliveryError,
           configured: true,
           baselineReset: deltaResult.baselineReset,
           alerts: const [],
@@ -855,7 +958,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
             observation: observation,
             id: fantasyTransitionId(
               leagueId: config.leagueId,
-              week: snapshot.week,
+              week: matchup.week,
               matchup: matchup,
               delta: alert.delta,
             ),
@@ -864,6 +967,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         );
       }
       return FantasyObservationResult(
+        deliveryError: deliveryError,
         configured: true,
         baselineReset: deltaResult.baselineReset,
         alerts: List.unmodifiable(alerts),
@@ -876,8 +980,10 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         pendingAlerts: pendingStore.length,
       );
     } on Object catch (error) {
+      if (!isCurrent()) return _connectionChangedResult();
       _diagnose('Fantasy observation failed for ${config.id}: $error');
       return FantasyObservationResult(
+        deliveryError: deliveryError,
         configured: true,
         baselineReset: false,
         alerts: const [],
@@ -901,37 +1007,35 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         generation == _generation &&
         identical(_espnSessions[config.id], session) &&
         revision == session.revision;
+    Object? deliveryError;
     try {
       if (startupOnly && session.baselineEstablished) {
         final matchup = session.latestMatchup;
         if (syncPersistentMatchup &&
             config.id == _primaryId &&
             matchup != null) {
-          await _syncPersistentNormalizedMatchup(
+          deliveryError = await _syncPersistentNormalizedMatchup(
             matchup,
             session.observationContext!,
             () => isCurrent() && config.id == _primaryId,
           );
         }
         return FantasyObservationResult(
+          deliveryError: deliveryError,
           configured: true,
           baselineReset: false,
           alerts: const [],
           summary: 'Baseline already established.',
         );
       }
-      final matchup = await _espnMatchupLoader(
-        currentFantasySeason(),
-        config.leagueId,
-        config.teamId!,
-      );
+      final matchup = await _loadEspnMatchup(config, isCurrent);
       if (!isCurrent()) return _connectionChangedResult();
       session.latestMatchup = matchup;
       final context =
           '${config.id}|${matchup.scoringPeriod}|${matchup.matchupPeriod}|'
           '${matchup.team.team.id}|${matchup.opponent?.team.id ?? 'bye'}';
       if (syncPersistentMatchup && config.id == _primaryId) {
-        await _syncPersistentNormalizedMatchup(
+        deliveryError = await _syncPersistentNormalizedMatchup(
           matchup,
           context,
           () => isCurrent() && config.id == _primaryId,
@@ -947,6 +1051,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       if (!config.alertsEnabled) {
         session.pendingStore.clear();
         return FantasyObservationResult(
+          deliveryError: deliveryError,
           configured: true,
           baselineReset: deltaResult.baselineReset,
           alerts: const [],
@@ -987,6 +1092,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         );
       }
       return FantasyObservationResult(
+        deliveryError: deliveryError,
         configured: true,
         baselineReset: deltaResult.baselineReset,
         alerts: List.unmodifiable(alerts),
@@ -998,8 +1104,10 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         pendingAlerts: session.pendingStore.length,
       );
     } on Object catch (error) {
+      if (!isCurrent()) return _connectionChangedResult();
       _diagnose('Fantasy observation failed for ${config.id}: $error');
       return FantasyObservationResult(
+        deliveryError: deliveryError,
         configured: true,
         baselineReset: false,
         alerts: const [],
@@ -1016,6 +1124,8 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         baselineReset: false,
         alerts: [],
         summary: 'Connection or configuration changed; baseline deferred.',
+        cancelled: true,
+        deliveryState: 'cancelled',
       );
 
   String _sleeperCanonicalPlayerId(
@@ -1028,7 +1138,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         : 'espn-player:$espnId';
   }
 
-  Future<void> _drainPendingAlertsAcrossSessions(int generation) async {
+  Future<Object?> _drainPendingAlertsAcrossSessions(int generation) async {
     // Keep observation order across retries. Canonical identity alone cannot
     // establish that transitions from separate refreshes are the same event.
     final pending = <_PendingAlertReference>[
@@ -1071,7 +1181,10 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
             for (final item in group) [item],
       ];
       for (final group in deliveries) {
-        if (!isBleConnected() || generation != _generation) return;
+        if (!isBleConnected() || generation != _generation) {
+          diagnosticHistory.deliveryState('fantasy:alerts', 'queued');
+          return const _FantasyDeliveryDeferred();
+        }
         final first = group.first.pending.alert;
         final leagueCount = group.map((item) => item.leagueId).toSet().length;
         final presentation = leagueCount == 1
@@ -1088,7 +1201,24 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
                 opponentScore: first.opponentScore,
               );
         try {
-          await transport.sendFantasyAlert(presentation);
+          bool current() =>
+              generation == _generation &&
+              group.every(
+                (item) =>
+                    identical(
+                      _sessions[item.leagueId]?.pendingStore ??
+                          _espnSessions[item.leagueId]?.pendingStore,
+                      item.store,
+                    ) &&
+                    item.store.items.any(
+                      (pending) => identical(pending, item.pending),
+                    ),
+              );
+          await diagnosticHistory.trackDelivery(
+            'fantasy:alerts',
+            () => transport.sendFantasyAlert(presentation),
+            isCurrent: current,
+          );
           for (final item in group) {
             item.store.markDelivered(
               item.pending.id,
@@ -1096,15 +1226,18 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
             );
           }
           _diagnose(
-            'Fantasy alert delivered: $leagueCount league(s); '
+            'Fantasy alert BLE write completed; ESP unconfirmed: $leagueCount league(s); '
             'observation=$observation',
           );
         } on Object catch (error) {
-          _diagnose('Fantasy alert group retained after BLE failure: $error');
-          return;
+          _diagnose(
+            'Fantasy alert group retained after BLE failure: ${error.runtimeType}',
+          );
+          return error;
         }
       }
     }
+    return null;
   }
 
   Future<bool> _sendFantasySlateIfChanged(
@@ -1122,11 +1255,16 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
               previous[index].identity == slate[index].identity &&
               previous[index].matchup == slate[index].matchup,
         )) {
+      diagnosticHistory.deliveryState('fantasy:slate', 'unchanged');
       _diagnose('Fantasy slate unchanged; transfer skipped.');
       return false;
     }
     final generation = _generation;
-    await transport.sendFantasySlate(slate);
+    await diagnosticHistory.trackDelivery(
+      'fantasy:slate',
+      () => transport.sendFantasySlate(slate),
+      isCurrent: () => generation == _generation && isBleConnected(),
+    );
     if (generation != _generation || !isBleConnected()) {
       throw StateError('Fantasy slate session changed; baseline retained.');
     }
@@ -1134,11 +1272,14 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     return true;
   }
 
-  Future<void> _syncObservedFantasySlate(
+  Future<Object?> _syncObservedFantasySlate(
     FantasySlateTransport transport,
     List<FantasyLeagueConfig> configs,
   ) async {
-    if (_startupReconciliationPending) return;
+    if (_startupReconciliationPending || !isBleConnected()) {
+      diagnosticHistory.deliveryState('fantasy:slate', 'queued');
+      return const _FantasyDeliveryDeferred();
+    }
     final entries = <FantasyMatchupSlateEntry>[];
     for (final config in configs.where((config) => config.hasSelectedTeam)) {
       final display = switch (config.provider) {
@@ -1186,13 +1327,17 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         );
       }
     } on Object catch (error) {
-      _diagnose('Fantasy slate send failed after observation: $error');
+      _diagnose(
+        'Fantasy slate send failed after observation: ${error.runtimeType}',
+      );
+      return error;
     }
+    return null;
   }
 
   /// Display-only UI updates reuse known matchups and load only missing peers.
   /// This does not observe scores, advance baselines, or drain pending alerts.
-  Future<void> _syncConfiguredFantasySlate({
+  Future<Object?> _syncConfiguredFantasySlate({
     FantasyMatchupSnapshot? primaryEspnMatchup,
   }) async {
     final transport = matchupTransport;
@@ -1200,7 +1345,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         transport is! FantasySlateTransport ||
         !_deviceContentEnabled ||
         !isBleConnected()) {
-      return;
+      return const _FantasyDeliveryDeferred();
     }
     final generation = _generation;
     await _reconcile();
@@ -1214,10 +1359,9 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
           final enricher = sleeperProjectionEnricher;
           return enricher == null ? known : enricher.applyCached(known);
         }
-        final snapshot = await _matchupLoader(config.leagueId);
-        return _enrichSleeperSafely(
-          snapshot.matchupForRoster(int.parse(config.teamId!)),
-          config.id,
+        return _loadSleeperMatchup(
+          config,
+          () => generation == _generation && !_startupReconciliationPending,
         );
       },
       loadEspn: (config) async {
@@ -1225,10 +1369,9 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
           return primaryEspnMatchup;
         }
         return _espnSessions[config.id]?.latestMatchup ??
-            await _espnMatchupLoader(
-              currentFantasySeason(),
-              config.leagueId,
-              config.teamId!,
+            await _loadEspnMatchup(
+              config,
+              () => generation == _generation && !_startupReconciliationPending,
             );
       },
     );
@@ -1236,7 +1379,7 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     if (_startupReconciliationPending ||
         generation != _generation ||
         !isBleConnected()) {
-      return;
+      return const _FantasyDeliveryDeferred();
     }
     for (final entry in slate.where(
       (entry) => entry.identity.startsWith('sleeper:'),
@@ -1254,8 +1397,34 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       );
     } on Object catch (error) {
       _diagnose('Fantasy display slate send failed: ${error.runtimeType}');
+      return error;
     }
+    return null;
   }
+
+  Future<SleeperFantasyMatchup> _loadSleeperMatchup(
+    FantasyLeagueConfig config,
+    bool Function() isCurrent,
+  ) => diagnosticHistory.trackProvider('fantasy:${config.id}', () async {
+    final snapshot = await _matchupLoader(config.leagueId);
+    return _enrichSleeperSafely(
+      snapshot.matchupForRoster(int.parse(config.teamId!)),
+      config.id,
+    );
+  }, isCurrent: isCurrent);
+
+  Future<FantasyMatchupSnapshot> _loadEspnMatchup(
+    FantasyLeagueConfig config,
+    bool Function() isCurrent,
+  ) => diagnosticHistory.trackProvider(
+    'fantasy:${config.id}',
+    () => _espnMatchupLoader(
+      currentFantasySeason(),
+      config.leagueId,
+      config.teamId!,
+    ),
+    isCurrent: isCurrent,
+  );
 
   Future<SleeperFantasyMatchup> _enrichSleeperSafely(
     SleeperFantasyMatchup matchup,
@@ -1332,8 +1501,12 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
       _projectionDisplayRefreshPending = false;
       _diagnose('Sleeper PROJ: post-capture slate refresh started');
       try {
-        await _syncConfiguredFantasySlate();
-        _diagnose('Sleeper PROJ: post-capture slate refresh completed');
+        final error = await _syncConfiguredFantasySlate();
+        _diagnose(
+          error == null
+              ? 'Sleeper PROJ: post-capture slate refresh completed'
+              : 'Sleeper PROJ: post-capture slate refresh failed/deferred',
+        );
       } on Object catch (error) {
         _diagnose(
           'Sleeper projection display refresh unavailable: '
@@ -1343,62 +1516,98 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
     }
   }
 
-  Future<void> _syncPersistentMatchup(
+  Future<Object?> _syncPersistentMatchup(
     SleeperFantasyMatchup matchup,
     String context,
     bool Function() isCurrent,
   ) async {
     final persistentTransport = matchupTransport;
-    if (persistentTransport == null || !isBleConnected()) return;
+    if (persistentTransport == null) return null;
+    if (!isBleConnected()) {
+      diagnosticHistory.deliveryState('fantasy:matchup', 'queued');
+      return const _FantasyDeliveryDeferred();
+    }
     final display = FantasyMatchupDisplayData.fromSleeper(matchup);
     if (deviceSession.matches(display, context)) {
       _diagnose('Fantasy matchup unchanged; persistent send skipped.');
-      return;
+      diagnosticHistory.deliveryState('fantasy:matchup', 'unchanged');
+      return null;
     }
     try {
-      await persistentTransport.sendFantasyMatchup(display);
+      await diagnosticHistory.trackDelivery(
+        'fantasy:matchup',
+        () => persistentTransport.sendFantasyMatchup(display),
+        isCurrent: () => isCurrent() && isBleConnected(),
+      );
       if (isCurrent()) deviceSession.record(display, context);
-      _diagnose('Fantasy matchup sent; persistent baseline advanced.');
+      _diagnose('Fantasy matchup BLE writes completed; ESP unconfirmed.');
+      return null;
     } on Object catch (error) {
       _diagnose(
         'FANTASY: persistent matchup send failed; baseline retained: $error',
       );
+      return error;
     }
   }
 
-  Future<void> _syncPersistentNormalizedMatchup(
+  Future<Object?> _syncPersistentNormalizedMatchup(
     FantasyMatchupSnapshot matchup,
     String context,
     bool Function() isCurrent,
   ) async {
     final persistentTransport = matchupTransport;
-    if (persistentTransport == null || !isBleConnected()) return;
+    if (persistentTransport == null) return null;
+    if (!isBleConnected()) {
+      diagnosticHistory.deliveryState('fantasy:matchup', 'queued');
+      return const _FantasyDeliveryDeferred();
+    }
     final display = FantasyMatchupDisplayData.fromNormalized(matchup);
-    if (deviceSession.matches(display, context)) return;
+    if (deviceSession.matches(display, context)) {
+      diagnosticHistory.deliveryState('fantasy:matchup', 'unchanged');
+      return null;
+    }
     try {
-      await persistentTransport.sendFantasyMatchup(display);
+      await diagnosticHistory.trackDelivery(
+        'fantasy:matchup',
+        () => persistentTransport.sendFantasyMatchup(display),
+        isCurrent: () => isCurrent() && isBleConnected(),
+      );
       if (isCurrent()) deviceSession.record(display, context);
-      _diagnose('Fantasy matchup sent; persistent baseline advanced.');
+      _diagnose('Fantasy matchup BLE writes completed; ESP unconfirmed.');
+      return null;
     } on Object catch (error) {
       _diagnose(
         'FANTASY: persistent matchup send failed; baseline retained: $error',
       );
+      return error;
     }
   }
 
-  Future<void> _clearPersistentFantasy() async {
+  Future<Object?> _clearPersistentFantasy() async {
     final persistentTransport = matchupTransport;
     if (persistentTransport is FantasySlateTransport) {
-      await _syncConfiguredFantasySlate();
-      return;
+      return _syncConfiguredFantasySlate();
     }
-    if (persistentTransport == null || !isBleConnected()) return;
+    if (persistentTransport == null) return null;
+    if (!isBleConnected()) {
+      diagnosticHistory.deliveryState('fantasy:clear', 'queued');
+      return const _FantasyDeliveryDeferred();
+    }
     try {
-      await persistentTransport.clearFantasyMatchup();
+      final generation = _generation;
+      await diagnosticHistory.trackDelivery(
+        'fantasy:clear',
+        persistentTransport.clearFantasyMatchup,
+        isCurrent: () => generation == _generation && isBleConnected(),
+      );
       deviceSession.reset();
-      _diagnose('Persistent Fantasy content cleared.');
+      _diagnose('Fantasy clear BLE write completed; ESP unconfirmed.');
+      return null;
     } on Object catch (error) {
-      _diagnose('Fantasy clear deferred after BLE failure: $error');
+      _diagnose(
+        'Fantasy clear deferred after BLE failure: ${error.runtimeType}',
+      );
+      return error;
     }
   }
 

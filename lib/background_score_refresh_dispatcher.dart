@@ -52,7 +52,8 @@ class BackgroundScoreRefreshDispatcher {
   }
 }
 
-/// Acknowledges completion of the combined sports and fantasy refresh.
+/// Acknowledges handling of a refresh request. Work may be queued/coalesced;
+/// this is not provider, BLE-write, or ESP-display success. See diagnostics.
 class BackgroundScoreRefreshRequest {
   BackgroundScoreRefreshRequest._(this._completionPort);
 

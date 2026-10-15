@@ -4,6 +4,29 @@ import 'package:sports_hub_mobile/fantasy_live_observation_coordinator.dart';
 
 void main() {
   test(
+    'F20 combined outcome reports failure without skipping the other domain',
+    () async {
+      var fantasyRan = false;
+      final result = await runIsolatedWakeDomains(
+        refreshSports: () async {},
+        observeFantasy: () async {
+          fantasyRan = true;
+        },
+        domainsSucceeded: () => false,
+      );
+      expect(result, isFalse);
+      expect(fantasyRan, isTrue);
+      expect(
+        await runIsolatedWakeDomains(
+          refreshSports: () async => throw StateError('failed'),
+          observeFantasy: () async {},
+        ),
+        isFalse,
+      );
+    },
+  );
+
+  test(
     'background score refresh runs sports and fantasy once then completes',
     () async {
       var sportsRuns = 0;

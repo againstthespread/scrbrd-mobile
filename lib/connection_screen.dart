@@ -118,6 +118,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     _deviceSender = SessionAwareDeviceSender(
       transport: _transport,
       session: _trackedSession,
+      diagnosticHistory: _backgroundRefreshDiagnostics,
     );
     _sportsOperationGate = SportsOperationGate(
       onDiagnostic: (message) => _trace('gate', message),
@@ -145,6 +146,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           _transport.currentSnapshot.state.isPhysicallyConnected,
       sleeperProjectionEnricher: _sleeperProjectionService,
       onDiagnostic: _recordBackgroundUpdaterDiagnostic,
+      diagnosticHistory: _backgroundRefreshDiagnostics,
     );
     _fantasyCoordinator.addListener(_handleFantasyStatusChanged);
     unawaited(_fantasyCoordinator.loadConfigurationStatus());
@@ -230,6 +232,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       'FCM BACKGROUND SCORE REFRESH: received; '
       'lifecycle=${_lifecycleState.name}; BLE connected=$connected',
     );
+    var domainsSucceeded = true;
     await runBackgroundScoreRefresh(
       refresh: () => _requestAutomaticRefresh(
         'FCM BACKGROUND SCORE REFRESH',
@@ -238,10 +241,12 @@ class _ConnectionScreenState extends State<ConnectionScreen>
             _recordBackgroundUpdaterDiagnostic(
               'FCM BACKGROUND SCORE REFRESH: sports refresh started',
             );
-            await _liveRefreshCoordinator.refreshTrackedSessionOnce();
+            final result = await _liveRefreshCoordinator
+                .refreshTrackedSessionOnce();
             _recordBackgroundUpdaterDiagnostic(
-              'FCM BACKGROUND SCORE REFRESH: sports refresh completed',
+              'FCM BACKGROUND SCORE REFRESH: sports operation ended; success=${result.succeeded}',
             );
+            domainsSucceeded = domainsSucceeded && result.succeeded;
           },
           observeFantasy: () async {
             _recordBackgroundUpdaterDiagnostic(
@@ -250,9 +255,11 @@ class _ConnectionScreenState extends State<ConnectionScreen>
             final result = await _fantasyCoordinator.observe();
             _recordBackgroundUpdaterDiagnostic(
               'FCM BACKGROUND SCORE REFRESH: fantasy observation completed; '
-              'alerts=${result.alertCount}; pending=${result.pendingAlerts}',
+              'success=${result.succeeded}; alerts=${result.alertCount}; pending=${result.pendingAlerts}',
             );
+            domainsSucceeded = domainsSucceeded && result.succeeded;
           },
+          domainsSucceeded: () => domainsSucceeded,
           onDiagnostic: _recordBackgroundUpdaterDiagnostic,
           triggerLabel: 'FCM BACKGROUND SCORE REFRESH',
         ),
@@ -316,7 +323,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
 
   Future<void> _requestAutomaticRefresh(
     String trigger, {
-    Future<void> Function()? refresh,
+    Future<bool> Function()? refresh,
   }) async {
     final id = ++_diagnosticRefreshId;
     final originG = _transport.connectionGeneration;
@@ -388,14 +395,19 @@ class _ConnectionScreenState extends State<ConnectionScreen>
             execution = 'skipped-disposed-retry-or-disconnected';
             return;
           }
+          bool succeeded;
           if (refresh != null) {
-            await refresh();
+            succeeded = await refresh();
           } else {
-            await runIsolatedWakeDomains(
+            var domainsSucceeded = true;
+            succeeded = await runIsolatedWakeDomains(
+              domainsSucceeded: () => domainsSucceeded,
               refreshSports: () async {
                 _trace('refresh', 'sports.enter id=$id', generation: originG);
                 try {
-                  await _liveRefreshCoordinator.refreshTrackedSessionOnce();
+                  final result = await _liveRefreshCoordinator
+                      .refreshTrackedSessionOnce();
+                  domainsSucceeded = domainsSucceeded && result.succeeded;
                 } finally {
                   _trace('refresh', 'sports.exit id=$id', generation: originG);
                 }
@@ -403,7 +415,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
               observeFantasy: () async {
                 _trace('refresh', 'fantasy.enter id=$id', generation: originG);
                 try {
-                  await _fantasyCoordinator.observe();
+                  final result = await _fantasyCoordinator.observe();
+                  domainsSucceeded = domainsSucceeded && result.succeeded;
                 } finally {
                   _trace('refresh', 'fantasy.exit id=$id', generation: originG);
                 }
@@ -412,7 +425,9 @@ class _ConnectionScreenState extends State<ConnectionScreen>
               triggerLabel: trigger,
             );
           }
-          execution = 'completed';
+          execution = succeeded
+              ? 'completed'
+              : 'completed-with-failures-or-retained-data';
         } finally {
           _trace(
             'refresh',

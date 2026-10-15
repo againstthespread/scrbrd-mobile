@@ -155,7 +155,10 @@ void main() {
         );
       }
 
+      await history.trackProvider('sports:mlb', () async => 1);
       await open();
+      expect(find.byKey(const ValueKey('data-freshness')), findsOneWidget);
+      expect(find.textContaining('lastSuccessfulFetch='), findsOneWidget);
       expect(find.textContaining('[ble T1 G2] wake.raw'), findsOneWidget);
       await tester.pageBack();
       await tester.pumpAndSettle();
@@ -185,7 +188,7 @@ void main() {
         find.text('Could not copy. Select the diagnostic text instead.'),
         findsOneWidget,
       );
-      expect(history.entries, hasLength(2));
+      expect(history.entries, hasLength(3));
       await tester.tap(find.byKey(const ValueKey('clear-refresh-diagnostics')));
       await tester.pump();
       expect(find.text('No refresh diagnostics yet.'), findsOneWidget);

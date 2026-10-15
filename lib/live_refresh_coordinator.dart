@@ -12,6 +12,34 @@ import 'favorite_team.dart';
 import 'college_football.dart';
 import 'power_four_game_filter.dart';
 
+enum SportsRefreshOutcome {
+  unchanged,
+  written,
+  retained,
+  failed,
+  cancelled,
+  skipped,
+}
+
+class SportsRefreshResult {
+  const SportsRefreshResult({
+    this.leagues = const {},
+    this.cancelled = false,
+    this.skipped = false,
+  });
+  final Map<SportsLeague, SportsRefreshOutcome> leagues;
+  final bool cancelled;
+  final bool skipped;
+  bool get succeeded =>
+      !cancelled &&
+      !skipped &&
+      leagues.values.every(
+        (s) =>
+            s == SportsRefreshOutcome.unchanged ||
+            s == SportsRefreshOutcome.written,
+      );
+}
+
 class LiveRefreshCoordinator {
   LiveRefreshCoordinator({
     required this.repository,
@@ -40,16 +68,22 @@ class LiveRefreshCoordinator {
   final Map<SportsLeague, ({DateTime date, Set<String> ids})>
   _pendingTeamShrinkage = {};
 
-  Future<void> refreshTrackedSessionOnce() async {
+  Future<SportsRefreshResult> refreshTrackedSessionOnce() async {
     if (_isRefreshing) {
       _diagnose('refresh skipped because another refresh is in progress');
-      return;
+      return const SportsRefreshResult(skipped: true);
     }
     _isRefreshing = true;
     _cancelled = false;
     final wakeNumber = ++_wakeRefreshCount;
+    final outcomes = <SportsLeague, SportsRefreshOutcome>{};
     try {
-      if (!_canContinue()) return;
+      if (!_canContinue()) {
+        return SportsRefreshResult(
+          leagues: Map.unmodifiable(outcomes),
+          cancelled: true,
+        );
+      }
       final snapshot = session.snapshot();
       final favorites = readFavorites?.call() ?? const <FavoriteTeam>{};
       final collegePreferences =
@@ -69,14 +103,29 @@ class LiveRefreshCoordinator {
           _fetch(wakeNumber, content, favorites, collegePreferences),
       ]);
       _diagnose('WAKE REFRESH #$wakeNumber fetch phase complete');
-      if (!_canContinue()) return;
+      if (!_canContinue()) {
+        return SportsRefreshResult(
+          leagues: Map.unmodifiable(outcomes),
+          cancelled: true,
+        );
+      }
 
       _diagnose('WAKE REFRESH #$wakeNumber send phase started');
       for (final result in results) {
         if (!_canContinue()) break;
-        await _compareAndSend(wakeNumber, result);
+        outcomes[result.tracked.league] = await _compareAndSend(
+          wakeNumber,
+          result,
+        );
       }
-      _diagnose('WAKE REFRESH #$wakeNumber complete');
+      final result = SportsRefreshResult(
+        leagues: Map.unmodifiable(outcomes),
+        cancelled: _cancelled || !isBleConnected(),
+      );
+      _diagnose(
+        'WAKE REFRESH #$wakeNumber complete; success=${result.succeeded}',
+      );
+      return result;
     } finally {
       _isRefreshing = false;
     }
@@ -96,6 +145,7 @@ class LiveRefreshCoordinator {
         final games = await repository.fetchGamesForDate(
           tracked.league,
           tracked.selectedDate,
+          isCurrent: () => !_cancelled && isBleConnected(),
         );
         final filtered = applyCollegeFootballFilter(
           tracked.league,
@@ -110,6 +160,7 @@ class LiveRefreshCoordinator {
       } else if (tracked is TrackedGolfLeaderboard) {
         fresh = await repository.fetchGolfLeaderboardByTournamentId(
           tracked.leaderboard.tournamentId,
+          isCurrent: () => !_cancelled && isBleConnected(),
         );
       } else {
         throw StateError('Unsupported tracked content for $label');
@@ -122,7 +173,7 @@ class LiveRefreshCoordinator {
     }
   }
 
-  Future<void> _compareAndSend(
+  Future<SportsRefreshOutcome> _compareAndSend(
     int wakeNumber,
     _LeagueFetchResult result,
   ) async {
@@ -131,25 +182,26 @@ class LiveRefreshCoordinator {
         'WAKE #$wakeNumber ${result.tracked.league.label} no update: '
         'fetch failed; baseline retained',
       );
-      return;
+      return SportsRefreshOutcome.failed;
     }
     final tracked = result.tracked;
     if (tracked is TrackedTeamSlate) {
-      await _compareAndSendTeam(
+      return _compareAndSendTeam(
         wakeNumber,
         tracked,
         result.fresh! as List<GameData>,
       );
     } else if (tracked is TrackedGolfLeaderboard) {
-      await _compareAndSendGolf(
+      return _compareAndSendGolf(
         wakeNumber,
         tracked,
         result.fresh! as GolfLeaderboard,
       );
     }
+    return SportsRefreshOutcome.skipped;
   }
 
-  Future<void> _compareAndSendTeam(
+  Future<SportsRefreshOutcome> _compareAndSendTeam(
     int wakeNumber,
     TrackedTeamSlate tracked,
     List<GameData> fresh,
@@ -158,24 +210,44 @@ class LiveRefreshCoordinator {
     try {
       if (fresh.isEmpty) {
         _diagnose('WAKE #$wakeNumber $label empty; baseline retained');
-        return;
+        repository.diagnosticHistory.deliveryState(
+          'sports:${tracked.league.name}',
+          'retained',
+        );
+        return SportsRefreshOutcome.retained;
       }
-      if (!canReplaceTeamSlate(tracked, fresh)) return;
+      if (!canReplaceTeamSlate(tracked, fresh)) {
+        repository.diagnosticHistory.deliveryState(
+          'sports:${tracked.league.name}',
+          'retained',
+        );
+        return SportsRefreshOutcome.retained;
+      }
       if (_bytesEqual(
         _gameSerializer.canonicalSlateContent(tracked.games),
         _gameSerializer.canonicalSlateContent(fresh),
       )) {
         _diagnose('WAKE #$wakeNumber $label unchanged');
-        return;
+        repository.diagnosticHistory.deliveryState(
+          'sports:${tracked.league.name}',
+          'unchanged',
+        );
+        return SportsRefreshOutcome.unchanged;
       }
       _diagnose('WAKE #$wakeNumber $label changed');
-      if (!_canContinue()) return;
+      if (!_canContinue()) return SportsRefreshOutcome.cancelled;
       _diagnose('WAKE #$wakeNumber $label transfer started');
       await _sendTeam(fresh, tracked);
       _pendingTeamShrinkage.remove(tracked.league);
-      _diagnose('WAKE #$wakeNumber $label transfer succeeded');
+      _diagnose(
+        'WAKE #$wakeNumber $label transfer succeeded; BLE writes completed; ESP unconfirmed',
+      );
+      return SportsRefreshOutcome.written;
     } on Object catch (error) {
       _diagnose('WAKE #$wakeNumber $label transfer failed: $error');
+      return _cancelled || !isBleConnected()
+          ? SportsRefreshOutcome.cancelled
+          : SportsRefreshOutcome.failed;
     }
   }
 
@@ -186,9 +258,14 @@ class LiveRefreshCoordinator {
         games,
         selectedDate: tracked.selectedDate,
         followsCurrentDate: tracked.followsCurrentDate,
+        isCurrent: () => !_cancelled && isBleConnected(),
       );
     } else {
-      await sender.sendGameSlate(games);
+      await repository.diagnosticHistory.trackDelivery(
+        'sports:${tracked.league.name}',
+        () => sender.sendGameSlate(games),
+        isCurrent: () => !_cancelled,
+      );
       session.recordTeamSlate(
         league: tracked.league,
         selectedDate: tracked.selectedDate,
@@ -198,7 +275,7 @@ class LiveRefreshCoordinator {
     }
   }
 
-  Future<void> _compareAndSendGolf(
+  Future<SportsRefreshOutcome> _compareAndSendGolf(
     int wakeNumber,
     TrackedGolfLeaderboard tracked,
     GolfLeaderboard fresh,
@@ -215,7 +292,8 @@ class LiveRefreshCoordinator {
     try {
       if (fresh.golfers.isEmpty) {
         _diagnose('WAKE #$wakeNumber PGA empty; baseline retained');
-        return;
+        repository.diagnosticHistory.deliveryState('sports:pga', 'retained');
+        return SportsRefreshOutcome.retained;
       }
       final trackedCanonical = _golfSerializer.canonicalContent(
         trackedLeaderboard,
@@ -230,14 +308,15 @@ class LiveRefreshCoordinator {
       if (equal) {
         _diagnose('WAKE #$wakeNumber PGA unchanged');
         _diagnose('PGA no update: no relevant change');
-        return;
+        repository.diagnosticHistory.deliveryState('sports:pga', 'unchanged');
+        return SportsRefreshOutcome.unchanged;
       }
       _diagnoseGolfDifferences(trackedLeaderboard, fresh);
       _diagnose('WAKE #$wakeNumber PGA changed');
       _diagnose('PGA change detected');
       if (!_canContinue()) {
         _diagnose('PGA update not sent: BLE disconnected or refresh cancelled');
-        return;
+        return SportsRefreshOutcome.cancelled;
       }
       _diagnose('WAKE #$wakeNumber PGA transfer started');
       _diagnose('PGA transfer started');
@@ -247,9 +326,14 @@ class LiveRefreshCoordinator {
           fresh,
           selectedDate: tracked.selectedDate,
           followsCurrentDate: tracked.followsCurrentDate,
+          isCurrent: () => !_cancelled && isBleConnected(),
         );
       } else {
-        await sender.sendGolfLeaderboard(fresh);
+        await repository.diagnosticHistory.trackDelivery(
+          'sports:pga',
+          () => sender.sendGolfLeaderboard(fresh),
+          isCurrent: () => !_cancelled,
+        );
         session.recordGolf(
           fresh,
           selectedDate: tracked.selectedDate,
@@ -259,8 +343,13 @@ class LiveRefreshCoordinator {
       _diagnose('WAKE #$wakeNumber PGA transfer succeeded');
       _diagnose('PGA transfer succeeded');
       _diagnose('PGA baseline replaced');
+      _diagnose('PGA BLE writes completed; ESP unconfirmed');
+      return SportsRefreshOutcome.written;
     } on Object catch (error) {
       _diagnose('PGA no update: refresh/transfer failed: $error');
+      return _cancelled || !isBleConnected()
+          ? SportsRefreshOutcome.cancelled
+          : SportsRefreshOutcome.failed;
     }
   }
 

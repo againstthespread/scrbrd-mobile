@@ -1,3 +1,4 @@
+import 'refresh_diagnostic_history.dart';
 import 'device_transport.dart';
 import 'fantasy_point_alert.dart';
 import 'fantasy_alert_transport.dart';
@@ -17,8 +18,12 @@ class SessionAwareDeviceSender
   const SessionAwareDeviceSender({
     required this.transport,
     required this.session,
+    this.diagnosticHistory,
   });
 
+  final RefreshDiagnosticHistory? diagnosticHistory;
+  RefreshDiagnosticHistory get history =>
+      diagnosticHistory ?? RefreshDiagnosticHistory.session;
   final DeviceTransport transport;
   final TrackedDeviceSession session;
 
@@ -28,7 +33,11 @@ class SessionAwareDeviceSender
 
   @override
   Future<void> sendGameData(GameData gameData) async {
-    await transport.sendGameData(gameData);
+    await history.trackDelivery(
+      'sports:${gameData.league.toLowerCase()}',
+      () => transport.sendGameData(gameData),
+      scope: 'manual packet',
+    );
     final league = _leagueFor(gameData.league);
     final start = gameData.scheduledStartTime;
     if (league == null ||
@@ -49,7 +58,11 @@ class SessionAwareDeviceSender
   Future<void> sendGameSlate(List<GameData> games) async {
     final start = games.isEmpty ? null : games.first.scheduledStartTime;
     if (start == null) {
-      await transport.sendGameSlate(games);
+      await history.trackDelivery(
+        'sports:${games.isEmpty ? 'unknown' : games.first.league.toLowerCase()}',
+        () => transport.sendGameSlate(games),
+        scope: 'manual slate',
+      );
       final league = games.isEmpty ? null : _leagueFor(games.first.league);
       if (league != null) session.remove(league);
       return;
@@ -61,8 +74,17 @@ class SessionAwareDeviceSender
     List<GameData> games, {
     required DateTime selectedDate,
     bool followsCurrentDate = false,
+    bool Function()? isCurrent,
   }) async {
-    await transport.sendGameSlate(games);
+    await history.trackDelivery(
+      'sports:${games.first.league.toLowerCase()}',
+      () => transport.sendGameSlate(games),
+      scope: selectedDate.toIso8601String().substring(0, 10),
+      isCurrent: isCurrent,
+    );
+    if (isCurrent?.call() == false) {
+      throw StateError('BLE slate cancelled; session changed.');
+    }
     final league = _leagueFor(games.first.league);
     if (league == null || league == SportsLeague.pga) return;
     session.recordTeamSlate(
@@ -122,8 +144,17 @@ class SessionAwareDeviceSender
     GolfLeaderboard leaderboard, {
     DateTime? selectedDate,
     bool followsCurrentDate = false,
+    bool Function()? isCurrent,
   }) async {
-    await transport.sendGolfLeaderboard(leaderboard);
+    await history.trackDelivery(
+      'sports:pga',
+      () => transport.sendGolfLeaderboard(leaderboard),
+      scope: 'tournament:${leaderboard.tournamentId}',
+      isCurrent: isCurrent,
+    );
+    if (isCurrent?.call() == false) {
+      throw StateError('BLE golf cancelled; session changed.');
+    }
     session.recordGolf(
       leaderboard,
       selectedDate: selectedDate,

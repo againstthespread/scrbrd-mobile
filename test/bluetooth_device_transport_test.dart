@@ -1204,6 +1204,32 @@ void main() {
   );
 
   test(
+    'F20 stale native write completion is cancelled, never completed',
+    () async {
+      final history = RefreshDiagnosticHistory();
+      final harness = await _WriteHarness.create(diagnosticHistory: history);
+      try {
+        final work = harness.transport.sendControlCommand('PING');
+        final failure = expectLater(work, throwsStateError);
+        await harness.transport.disconnect();
+        harness.completeWrite(0);
+        await failure;
+        expect(
+          history.entries.where((e) => e.message.startsWith('write.completed')),
+          isEmpty,
+        );
+        expect(
+          history.entries.any((e) => e.message.startsWith('write.cancelled')),
+          isTrue,
+        );
+      } finally {
+        await harness.dispose();
+        history.dispose();
+      }
+    },
+  );
+
+  test(
     'explicit disconnect wins over stale in-flight write completion',
     () async {
       final harness = await _WriteHarness.create();

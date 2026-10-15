@@ -27,8 +27,8 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   final completed =
       await BackgroundScoreRefreshDispatcher.dispatchScoreRefreshToMainIsolate();
   debugPrint(
-    'BACKGROUND SCORE REFRESH: score_refresh completed by connected '
-    'app isolate=$completed',
+    'BACKGROUND SCORE REFRESH: app-isolate dispatch acknowledged=$completed; '
+    'fetch/write outcomes are recorded separately in diagnostics',
   );
 }
 

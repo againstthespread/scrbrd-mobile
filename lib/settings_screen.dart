@@ -311,7 +311,15 @@ class _DeveloperToolsScreenState extends State<DeveloperToolsScreen> {
             children: [
               const Text(
                 'Latest 512 events; COPY exports oldest first in UTC. '
-                'Kept until app termination or CLEAR.',
+                'Timeline kept until app termination or CLEAR. '
+                'Freshness history lasts until app termination.',
+              ),
+              AnimatedBuilder(
+                animation: widget.backgroundRefreshDiagnostics,
+                builder: (context, _) => SelectableText(
+                  widget.backgroundRefreshDiagnostics.freshnessText,
+                  key: const ValueKey('data-freshness'),
+                ),
               ),
               AnimatedBuilder(
                 animation: widget.backgroundRefreshDiagnostics,

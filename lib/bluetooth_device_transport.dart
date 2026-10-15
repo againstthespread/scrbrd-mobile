@@ -458,17 +458,16 @@ class BluetoothDeviceTransport
 
     try {
       await _writeCharacteristicWithResponse(characteristic, value: packet);
+      if (!_writeCanRestoreConnected(generation, characteristic)) {
+        throw StateError('BLE write cancelled; connection changed.');
+      }
       _trace(
         'write.completed id=$writeId originG=$generation elapsedMs=${elapsed.elapsedMilliseconds}',
       );
-      if (_writeCanRestoreConnected(generation, characteristic)) {
-        _emit(_snapshot.copyWith(state: BleConnectionState.connected));
-      } else {
-        throw StateError('BLE write cancelled; connection changed.');
-      }
+      _emit(_snapshot.copyWith(state: BleConnectionState.connected));
     } on Object catch (error) {
       _trace(
-        'write.failed id=$writeId originG=$generation type=${error.runtimeType}',
+        'write.${_writeCanRestoreConnected(generation, characteristic) ? 'failed' : 'cancelled'} id=$writeId originG=$generation type=${error.runtimeType}',
       );
       if (_writeCanRestoreConnected(generation, characteristic)) {
         _emitError('Bluetooth write failed: $error');

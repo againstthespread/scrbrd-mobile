@@ -12,6 +12,7 @@ import 'package:sports_hub_mobile/fantasy_matchup_transport.dart';
 import 'package:sports_hub_mobile/fantasy_point_alert.dart';
 import 'package:sports_hub_mobile/fantasy_point_delta_tracker.dart';
 import 'package:sports_hub_mobile/pending_fantasy_alert_store.dart';
+import 'package:sports_hub_mobile/refresh_diagnostic_history.dart';
 import 'package:sports_hub_mobile/sleeper_api_client.dart';
 import 'package:sports_hub_mobile/sleeper_fantasy_config.dart';
 import 'package:sports_hub_mobile/sleeper_fantasy_repository.dart';
@@ -27,8 +28,15 @@ void main() {
     late int loads;
     late int metadataResolutions;
     late FantasyLiveObservationCoordinator coordinator;
+    late RefreshDiagnosticHistory history;
+    late DateTime now;
+    var failLoad = false;
 
     setUp(() {
+      now = DateTime.utc(2026, 10, 15, 12);
+      history = RefreshDiagnosticHistory(clock: () => now);
+      failLoad = false;
+      addTearDown(history.dispose);
       config = _ConfigStore(
         const SleeperFantasyConfig(leagueId: 'league-1', rosterId: 1),
       );
@@ -44,8 +52,10 @@ void main() {
         repository: SleeperFantasyRepository(api),
         playerRepository: SleeperPlayerRepository(apiClient: api),
         transport: transport,
+        diagnosticHistory: history,
         isBleConnected: () => transport.connected,
         matchupLoader: (_) async {
+          if (failLoad) throw StateError('provider unavailable');
           final index = loads < snapshots.length ? loads : snapshots.length - 1;
           loads++;
           return snapshots[index];
@@ -59,6 +69,212 @@ void main() {
         },
       );
     });
+
+    test(
+      'F20 failed matchup write cannot report observation success',
+      () async {
+        transport.failMatchup = true;
+        final result = await coordinator.observe();
+        expect(result.succeeded, isFalse);
+        expect(result.deliveryError, isNotNull);
+        expect(coordinator.status.lastResult, contains('BLE'));
+        transport.failMatchup = false;
+        final retry = await coordinator.observe();
+        expect(retry.succeeded, isTrue);
+        expect(transport.matchups, hasLength(1));
+      },
+    );
+
+    test(
+      'F20 failed alert reports failure and stays eligible for retry',
+      () async {
+        snapshots = [_snapshot(), _snapshot(userPoints: 10)];
+        await coordinator.observe();
+        transport.fail = true;
+        final failed = await coordinator.observe();
+        expect(failed.succeeded, isFalse);
+        expect(failed.deliveryError, isNotNull);
+        expect(failed.pendingAlerts, 1);
+        transport.fail = false;
+        final retry = await coordinator.observe();
+        expect(retry.succeeded, isTrue);
+        expect(retry.pendingAlerts, 0);
+        expect(transport.alerts, hasLength(1));
+      },
+    );
+
+    test('F20 cancelled observation cannot report success', () async {
+      final api = SleeperApiClient(
+        client: MockClient((_) async => throw 'unused'),
+      );
+      final loaded = Completer<SleeperLeagueSnapshot>();
+      coordinator = FantasyLiveObservationCoordinator(
+        configStore: config,
+        repository: SleeperFantasyRepository(api),
+        playerRepository: SleeperPlayerRepository(apiClient: api),
+        transport: transport,
+        isBleConnected: () => transport.connected,
+        matchupLoader: (_) => loaded.future,
+        metadataResolver: (_) async => {},
+      );
+      final operation = coordinator.observe();
+      await Future<void>.delayed(Duration.zero);
+      coordinator.endConnectionSession();
+      loaded.complete(_snapshot());
+      final result = await operation;
+      expect(result.succeeded, isFalse);
+      expect(transport.matchups, isEmpty);
+    });
+
+    test('F20 fantasy unchanged refresh advances fetch time only', () async {
+      final first = await coordinator.observe();
+      expect(first.deliveryState, 'written');
+      final writeAt = history.freshness['fantasy:matchup']!.lastBleWrite;
+      now = now.add(const Duration(seconds: 20));
+      final unchanged = await coordinator.observe();
+      expect(unchanged.providerSucceeded, isTrue);
+      expect(unchanged.deliveryState, 'unchanged');
+      expect(
+        history.freshness['fantasy:sleeper:league-1']!.lastProviderSuccess,
+        now,
+      );
+      expect(history.freshness['fantasy:matchup']!.lastBleWrite, writeAt);
+    });
+
+    test(
+      'F20 provider failure does not refresh retained fantasy cache',
+      () async {
+        final initial = await coordinator.observe();
+        final fetched =
+            history.freshness['fantasy:sleeper:league-1']!.lastProviderSuccess;
+        final written = history.freshness['fantasy:matchup']!.lastBleWrite;
+        now = now.add(const Duration(minutes: 5));
+        failLoad = true;
+        final failed = await coordinator.observe();
+        expect(failed.providerSucceeded, isFalse);
+        expect(failed.succeeded, isFalse);
+        expect(failed.matchup, same(initial.matchup));
+        expect(
+          history.freshness['fantasy:sleeper:league-1']!.providerState,
+          'failed',
+        );
+        expect(
+          history.freshness['fantasy:sleeper:league-1']!.lastProviderSuccess,
+          fetched,
+        );
+        expect(history.freshness['fantasy:matchup']!.lastBleWrite, written);
+      },
+    );
+
+    test('F20 failed fantasy write preserves prior delivery time', () async {
+      snapshots = [_snapshot(), _snapshot(userTotal: 100)];
+      await coordinator.observe();
+      final written = history.freshness['fantasy:matchup']!.lastBleWrite;
+      now = now.add(const Duration(seconds: 20));
+      transport.failMatchup = true;
+      final failed = await coordinator.observe();
+      expect(failed.providerSucceeded, isTrue);
+      expect(failed.succeeded, isFalse);
+      expect(failed.deliveryState, 'failed');
+      expect(
+        history.freshness['fantasy:sleeper:league-1']!.lastProviderSuccess,
+        now,
+      );
+      expect(history.freshness['fantasy:matchup']!.lastBleWrite, written);
+    });
+
+    test(
+      'F20 intentionally queued alerts are distinct from completed writes',
+      () async {
+        snapshots = [_snapshot(), _snapshot(userPoints: 10)];
+        await coordinator.observe();
+        final queued = await coordinator.observe(sendAlerts: false);
+        expect(queued.providerSucceeded, isTrue);
+        expect(queued.succeeded, isFalse);
+        expect(queued.deliveryState, 'queued');
+        expect(queued.leagues.values.single.succeeded, isFalse);
+        expect(queued.pendingAlerts, 1);
+        expect(history.freshness['fantasy:alerts']!.lastBleWrite, isNull);
+        final retried = await coordinator.observe();
+        expect(retried.succeeded, isTrue);
+        expect(history.freshness['fantasy:alerts']!.lastBleWrite, now);
+        expect(transport.alerts, hasLength(1));
+      },
+    );
+
+    test(
+      'F20 startup baseline reuse is not a new provider verification',
+      () async {
+        await coordinator.establishStartupBaseline();
+        final fetched =
+            history.freshness['fantasy:sleeper:league-1']!.lastProviderSuccess;
+        now = now.add(const Duration(minutes: 10));
+        await coordinator.establishStartupBaseline();
+        expect(loads, 1);
+        expect(
+          history.freshness['fantasy:sleeper:league-1']!.lastProviderSuccess,
+          fetched,
+        );
+      },
+    );
+
+    test(
+      'F20 late alert completion cannot consume or timestamp a new session',
+      () async {
+        snapshots = [_snapshot(), _snapshot(userPoints: 10)];
+        await coordinator.observe();
+        final gate = Completer<void>();
+        transport.gate = gate.future;
+        final work = coordinator.observe();
+        await transport.sendStarted.future;
+        coordinator.endConnectionSession();
+        coordinator.beginConnectionSession();
+        gate.complete();
+        final cancelled = await work;
+        expect(cancelled.cancelled, isTrue);
+        expect(cancelled.succeeded, isFalse);
+        expect(history.freshness['fantasy:alerts']!.lastBleWrite, isNull);
+        expect(history.freshness['fantasy:alerts']!.deliveryState, 'cancelled');
+      },
+    );
+
+    test(
+      'F20 cancelled persistent write stays eligible on next observation',
+      () async {
+        final gate = Completer<void>();
+        transport.matchupGate = gate.future;
+        final work = coordinator.observe();
+        await transport.matchupStarted.future;
+        coordinator.endConnectionSession();
+        coordinator.beginConnectionSession();
+        gate.complete();
+        final cancelled = await work;
+        expect(cancelled.succeeded, isFalse);
+        expect(coordinator.deviceSession.baseline, isNull);
+        expect(history.freshness['fantasy:matchup']!.lastBleWrite, isNull);
+        transport.matchupGate = null;
+        await coordinator.observe();
+        expect(coordinator.deviceSession.baseline, isNotNull);
+        expect(history.freshness['fantasy:matchup']!.lastBleWrite, now);
+      },
+    );
+
+    test(
+      'F20 failed fantasy clear is reported and remains retryable',
+      () async {
+        await coordinator.observe();
+        await config.clear();
+        transport.failClear = true;
+        final failed = await coordinator.observe();
+        expect(failed.succeeded, isFalse);
+        expect(failed.deliveryError, isNotNull);
+        expect(history.freshness['fantasy:clear']!.lastBleWrite, isNull);
+        transport.failClear = false;
+        final retry = await coordinator.observe();
+        expect(retry.succeeded, isTrue);
+        expect(history.freshness['fantasy:clear']!.lastBleWrite, now);
+      },
+    );
 
     test('first observation establishes baseline and emits no alert', () async {
       final result = await coordinator.observe();
@@ -572,11 +788,14 @@ class _Transport implements FantasyAlertTransport, FantasyMatchupTransport {
   bool connected = true;
   bool fail = false;
   bool failMatchup = false;
+  bool failClear = false;
   int clears = 0;
   int attempts = 0;
   int? failAt;
   int? disconnectAfter;
   Future<void>? gate;
+  Future<void>? matchupGate;
+  final matchupStarted = Completer<void>();
   final sendStarted = Completer<void>();
 
   @override
@@ -591,12 +810,15 @@ class _Transport implements FantasyAlertTransport, FantasyMatchupTransport {
 
   @override
   Future<void> sendFantasyMatchup(FantasyMatchupDisplayData matchup) async {
+    if (!matchupStarted.isCompleted) matchupStarted.complete();
+    if (matchupGate != null) await matchupGate;
     if (failMatchup) throw StateError('matchup BLE failed');
     matchups.add(matchup);
   }
 
   @override
   Future<void> clearFantasyMatchup() async {
+    if (failClear) throw StateError('clear write failed');
     clears++;
   }
 }

@@ -31,6 +31,7 @@ import 'package:sports_hub_mobile/sleeper_models.dart';
 import 'package:sports_hub_mobile/sleeper_player_repository.dart';
 import 'package:sports_hub_mobile/sleeper_projection.dart';
 import 'package:sports_hub_mobile/tracked_device_session.dart';
+import 'package:sports_hub_mobile/refresh_diagnostic_history.dart';
 
 void main() {
   late SharedPreferencesFantasyLeagueConfigStore store;
@@ -41,6 +42,8 @@ void main() {
   late Set<String> espnFailures;
   late Map<String, SleeperFantasyPlayer> metadata;
   late List<String> loads;
+  late RefreshDiagnosticHistory history;
+  late DateTime now;
   late _ProjectionEnricher projectionEnricher;
   Completer<void>? loadGate;
   Completer<void>? loadStarted;
@@ -60,6 +63,8 @@ void main() {
   );
 
   setUp(() async {
+    now = DateTime.utc(2026, 10, 15, 12);
+    history = RefreshDiagnosticHistory(clock: () => now);
     SharedPreferences.setMockInitialValues({});
     store = SharedPreferencesFantasyLeagueConfigStore();
     points = {'a': 10, 'b': 20, 'c': 30};
@@ -77,6 +82,7 @@ void main() {
       ),
     );
     coordinator = FantasyLiveObservationCoordinator(
+      diagnosticHistory: history,
       leagueConfigStore: store,
       repository: SleeperFantasyRepository(api),
       playerRepository: SleeperPlayerRepository(apiClient: api),
@@ -112,7 +118,56 @@ void main() {
     await save('b');
   });
 
-  tearDown(() => coordinator.dispose());
+  tearDown(() {
+    coordinator.dispose();
+    history.dispose();
+  });
+
+  test('F20 failed slate write is surfaced and retried', () async {
+    transport.failSlate = true;
+    final failed = await coordinator.observe();
+    expect(failed.succeeded, isFalse);
+    expect(failed.deliveryError, isNotNull);
+    transport.failSlate = false;
+    final retry = await coordinator.observe();
+    expect(retry.succeeded, isTrue);
+    expect(transport.slates, hasLength(1));
+  });
+
+  test(
+    'F20 ESPN failure retains fetch time while a cached slate can be written',
+    () async {
+      await save('c', provider: FantasyProvider.espn);
+      await coordinator.observe();
+      final fetched = history.freshness['fantasy:espn:c']!.lastProviderSuccess;
+      espnFailures.add('c');
+      points['a'] = 11;
+      now = now.add(const Duration(minutes: 2));
+      final result = await coordinator.observe();
+      expect(result.providerSucceeded, isFalse);
+      expect(result.succeeded, isFalse);
+      expect(history.freshness['fantasy:espn:c']!.lastProviderSuccess, fetched);
+      expect(history.freshness['fantasy:espn:c']!.providerState, 'failed');
+      expect(history.freshness['fantasy:slate']!.lastBleWrite, now);
+      expect(transport.slates.last.map((e) => e.identity), contains('espn:c'));
+    },
+  );
+
+  test(
+    'F20 disconnected slate is queued rather than successful delivery',
+    () async {
+      transport.connected = false;
+      final result = await coordinator.observe();
+      expect(result.providerSucceeded, isTrue);
+      expect(result.succeeded, isFalse);
+      expect(result.deliveryState, 'queued');
+      expect(history.freshness['fantasy:slate']!.lastBleWrite, isNull);
+      transport.connected = true;
+      final retry = await coordinator.observe();
+      expect(retry.succeeded, isTrue);
+      expect(history.freshness['fantasy:slate']!.lastBleWrite, now);
+    },
+  );
 
   group('F37 startup classification', () {
     late InitialDeviceSyncCoordinator initial;

@@ -256,8 +256,12 @@ class InitialDeviceSyncCoordinator {
           final fetched = pinned && tracked is TrackedGolfLeaderboard
               ? await repository.fetchGolfLeaderboardByTournamentId(
                   tracked.leaderboard.tournamentId,
+                  isCurrent: () => _isCurrent(generation),
                 )
-              : await repository.fetchGolfLeaderboardForDate(selectedDate);
+              : await repository.fetchGolfLeaderboardForDate(
+                  selectedDate,
+                  isCurrent: () => _isCurrent(generation),
+                );
           if (reconcile &&
               tracked is TrackedGolfLeaderboard &&
               tracked.selectedDate == selectedDate &&
@@ -288,6 +292,7 @@ class InitialDeviceSyncCoordinator {
           final fetched = await repository.fetchGamesForDate(
             league,
             selectedDate,
+            isCurrent: () => _isCurrent(generation),
           );
           final filtered = applyCollegeFootballFilter(
             league,
@@ -441,6 +446,7 @@ class InitialDeviceSyncCoordinator {
                 golf,
                 selectedDate: dates[category],
                 followsCurrentDate: followsToday,
+                isCurrent: () => _isCurrent(generation),
               );
               sentCount++;
               if (!_catalogOrder.contains(category)) {
@@ -466,6 +472,7 @@ class InitialDeviceSyncCoordinator {
                 games,
                 selectedDate: dates[category]!,
                 followsCurrentDate: followsToday,
+                isCurrent: () => _isCurrent(generation),
               );
               sentCount++;
               if (!_catalogOrder.contains(category)) {
