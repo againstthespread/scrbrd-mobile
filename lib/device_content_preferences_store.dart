@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'device_content_preferences.dart';
+import 'preference_save.dart';
 
 abstract interface class DeviceContentPreferencesStore implements Listenable {
   DeviceContentPreferences read();
@@ -17,6 +18,7 @@ class SharedPreferencesDeviceContentPreferencesStore extends ChangeNotifier
 
   static const preferencesKey = 'device_content_preferences_v1';
   final SharedPreferences _preferences;
+  final _saves = PreferenceSaveQueue();
   DeviceContentPreferences _value;
 
   static Future<SharedPreferencesDeviceContentPreferencesStore> create({
@@ -25,7 +27,7 @@ class SharedPreferencesDeviceContentPreferencesStore extends ChangeNotifier
     final prefs = preferences ?? await SharedPreferences.getInstance();
     return SharedPreferencesDeviceContentPreferencesStore._(
       prefs,
-      _decode(prefs.getStringList(preferencesKey)),
+      _decode(readPreferenceStringList(prefs, preferencesKey)),
     );
   }
 
@@ -33,14 +35,17 @@ class SharedPreferencesDeviceContentPreferencesStore extends ChangeNotifier
   DeviceContentPreferences read() => _value;
 
   @override
-  Future<void> save(DeviceContentPreferences preferences) async {
-    _value = preferences;
-    await _preferences.setStringList(preferencesKey, [
+  Future<void> save(DeviceContentPreferences preferences) => _saves.save(
+    _preferences,
+    () => _preferences.setStringList(preferencesKey, [
       for (final entry in preferences.entries)
         '${entry.category.name}:${entry.enabled ? '1' : '0'}',
-    ]);
-    notifyListeners();
-  }
+    ]),
+    () {
+      _value = preferences;
+      notifyListeners();
+    },
+  );
 
   static DeviceContentPreferences _decode(List<String>? persisted) {
     if (persisted == null) return DeviceContentPreferences.defaults();

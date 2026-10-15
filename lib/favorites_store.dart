@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'favorite_team.dart';
+import 'preference_save.dart';
 import 'sports_league.dart';
 import 'team_catalog.dart';
 
@@ -35,6 +36,7 @@ class SharedPreferencesFavoritesStore extends ChangeNotifier
 
   static const preferencesKey = 'favorite_team_keys_v1';
   final SharedPreferences _preferences;
+  final _saves = PreferenceSaveQueue();
   final Set<FavoriteTeam> _favorites;
 
   static Future<SharedPreferencesFavoritesStore> create({
@@ -42,7 +44,8 @@ class SharedPreferencesFavoritesStore extends ChangeNotifier
   }) async {
     final prefs = preferences ?? await SharedPreferences.getInstance();
     final loaded = <FavoriteTeam>{};
-    for (final value in prefs.getStringList(preferencesKey) ?? const []) {
+    final values = readPreferenceStringList(prefs, preferencesKey);
+    for (final value in values ?? const <String>[]) {
       final team = TeamCatalog.byStorageKey(value);
       if (team != null) loaded.add(team);
     }
@@ -61,13 +64,25 @@ class SharedPreferencesFavoritesStore extends ChangeNotifier
       Set.unmodifiable(_favorites.where((team) => team.league == league));
 
   @override
-  Future<void> setFavorite(FavoriteTeam team, bool enabled) async {
-    enabled ? _favorites.add(team) : _favorites.remove(team);
-    final ordered = TeamCatalog.teams
-        .where(_favorites.contains)
-        .map((team) => team.storageKey)
-        .toList();
-    await _preferences.setStringList(preferencesKey, ordered);
-    notifyListeners();
+  Future<void> setFavorite(FavoriteTeam team, bool enabled) {
+    late Set<FavoriteTeam> next;
+    return _saves.save(
+      _preferences,
+      () {
+        next = Set.of(_favorites);
+        enabled ? next.add(team) : next.remove(team);
+        final ordered = TeamCatalog.teams
+            .where(next.contains)
+            .map((team) => team.storageKey)
+            .toList();
+        return _preferences.setStringList(preferencesKey, ordered);
+      },
+      () {
+        _favorites
+          ..clear()
+          ..addAll(next);
+        notifyListeners();
+      },
+    );
   }
 }
