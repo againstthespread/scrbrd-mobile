@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:sports_hub_mobile/ble_device_state.dart';
+import 'package:sports_hub_mobile/refresh_diagnostic_history.dart';
 import 'package:sports_hub_mobile/bluetooth_device_transport.dart';
 import 'package:sports_hub_mobile/game_data.dart';
 import 'package:sports_hub_mobile/fantasy_matchup_display_data.dart';
@@ -53,6 +54,135 @@ void main() {
       );
     });
   }
+
+  test(
+    'H01 records WAKE, subscription and write boundaries without payloads',
+    () async {
+      final history = RefreshDiagnosticHistory();
+      final harness = await _WriteHarness.create(
+        diagnosticHistory: history,
+        wakeRetryDelays: [Duration.zero],
+      );
+      try {
+        harness.wake.add(utf8.encode('PRIVATE_WAKE_PAYLOAD'));
+        await Future<void>.delayed(Duration.zero);
+        expect(
+          history.entries.any(
+            (e) =>
+                e.message.startsWith('wake.raw') &&
+                e.message.contains('accepted=true'),
+          ),
+          isTrue,
+        );
+        expect(
+          history.entries.any(
+            (e) => e.message.contains('subscribing->listening'),
+          ),
+          isTrue,
+        );
+        final write = harness.transport.sendControlCommand(
+          'PRIVATE_WRITE_PAYLOAD',
+        );
+        expect(
+          history.entries.any((e) => e.message.startsWith('write.start')),
+          isTrue,
+        );
+        expect(
+          history.entries.any((e) => e.message.startsWith('write.completed')),
+          isFalse,
+        );
+        harness.completeWrite(0);
+        await write;
+        expect(
+          history.entries.any((e) => e.message.startsWith('write.completed')),
+          isTrue,
+        );
+        final failed = harness.transport.sendControlCommand(
+          'PRIVATE_WRITE_PAYLOAD',
+        );
+        final rejected = expectLater(failed, throwsA(isA<StateError>()));
+        harness.writes[1].completeError(
+          StateError('api_key=PRIVATE_ERROR_SECRET'),
+        );
+        await rejected;
+        expect(
+          history.entries.any((e) => e.message.startsWith('write.failed')),
+          isTrue,
+        );
+        final text = history.exportText();
+        expect(text, isNot(contains('PRIVATE_')));
+        expect(
+          history.entries.every(
+            (e) =>
+                e.generation != null &&
+                e.transportId == harness.transport.diagnosticId,
+          ),
+          isTrue,
+        );
+      } finally {
+        await harness.dispose();
+        history.dispose();
+      }
+    },
+  );
+
+  test(
+    'H01 observes reconnect generations and bounded subscription recovery',
+    () async {
+      final history = RefreshDiagnosticHistory();
+      final harness = await _WriteHarness.create(
+        diagnosticHistory: history,
+        wakeRetryDelays: [Duration.zero],
+      );
+      try {
+        final oldGeneration = harness.transport.connectionGeneration;
+        harness.wake.addError(StateError('token=PRIVATE_SUBSCRIPTION_SECRET'));
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        expect(
+          history.entries.any(
+            (e) => e.message.startsWith('subscription.error'),
+          ),
+          isTrue,
+        );
+        expect(
+          history.entries.any(
+            (e) => e.message.startsWith('subscription.retry'),
+          ),
+          isTrue,
+        );
+        expect(
+          harness.transport.wakeSubscriptionHealth,
+          WakeSubscriptionHealth.listening,
+        );
+        harness.physicalDisconnect();
+        await Future<void>.delayed(Duration.zero);
+        harness.physicalReconnect();
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        harness.wake.add(utf8.encode('WAKE'));
+        await Future<void>.delayed(Duration.zero);
+        expect(
+          harness.transport.connectionGeneration,
+          greaterThan(oldGeneration),
+        );
+        expect(
+          history.entries.any(
+            (e) => e.message.startsWith('connection.generation'),
+          ),
+          isTrue,
+        );
+        expect(
+          history.entries
+              .firstWhere((e) => e.message.startsWith('wake.raw'))
+              .generation,
+          harness.transport.connectionGeneration,
+        );
+        expect(history.exportText(), isNot(contains('PRIVATE_')));
+      } finally {
+        await harness.dispose();
+        history.dispose();
+      }
+    },
+  );
 
   Future<void> waitForWake(bool Function() ready) async {
     for (var tick = 0; tick < 100 && !ready(); tick++) {
@@ -885,8 +1015,10 @@ class _WriteHarness {
   _WriteHarness._({
     BleWakeStreamFactory? wakeStreamProvider,
     List<Duration>? wakeRetryDelays,
+    RefreshDiagnosticHistory? diagnosticHistory,
   }) {
     transport = BluetoothDeviceTransport(
+      diagnosticHistory: diagnosticHistory,
       scanTimeout: const Duration(milliseconds: 10),
       bleStatusProvider: () => BleStatus.ready,
       scanStreamProvider: () => scan.stream,
@@ -916,10 +1048,12 @@ class _WriteHarness {
   static Future<_WriteHarness> create({
     BleWakeStreamFactory? wakeStreamProvider,
     List<Duration>? wakeRetryDelays,
+    RefreshDiagnosticHistory? diagnosticHistory,
   }) async {
     final harness = _WriteHarness._(
       wakeStreamProvider: wakeStreamProvider,
       wakeRetryDelays: wakeRetryDelays,
+      diagnosticHistory: diagnosticHistory,
     );
     final scanAttempt = harness.transport.scanForDevice();
     await Future<void>.delayed(Duration.zero);

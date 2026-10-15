@@ -80,7 +80,8 @@ class _ConnectionScreenState extends State<ConnectionScreen>
 
   // Existing background-refresh diagnostics remain available in Developer Tools.
   var _lifecycleState = AppLifecycleState.resumed;
-  final _backgroundRefreshDiagnostics = RefreshDiagnosticHistory();
+  late final RefreshDiagnosticHistory _backgroundRefreshDiagnostics;
+  int _diagnosticRefreshId = 0;
   bool _isDisposing = false;
   InitialSyncSnapshot _initialSyncSnapshot = const InitialSyncSnapshot(
     status: InitialSyncStatus.idle,
@@ -106,6 +107,11 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         MemoryCollegeFootballPreferencesStore();
     _activeCollegeFootballPreferences = _collegeFootballPreferencesStore.read();
     _transport = widget.transport ?? BluetoothDeviceTransport();
+    _backgroundRefreshDiagnostics = _transport.diagnosticHistory;
+    _trace(
+      'lifecycle',
+      'screen.init id=${identityHashCode(this)} state=${_lifecycleState.name}',
+    );
     _trackedSession = TrackedDeviceSession()
       ..addListener(_handleTrackedSessionChanged);
     _deviceSender = SessionAwareDeviceSender(
@@ -113,7 +119,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       session: _trackedSession,
     );
     _sportsOperationGate = SportsOperationGate(
-      onDiagnostic: _recordBackgroundUpdaterDiagnostic,
+      onDiagnostic: (message) => _trace('gate', message),
     );
     _sleeperApiClient = SleeperApiClient();
     _fantasyRepository = SleeperFantasyRepository(_sleeperApiClient);
@@ -159,7 +165,10 @@ class _ConnectionScreenState extends State<ConnectionScreen>
           _transport.currentSnapshot.state.isPhysicallyConnected,
       operationGate: _sportsOperationGate,
       onStatusChanged: _recordInitialSyncStatus,
-      onDiagnostic: (message) => debugPrint('INITIAL DEVICE SYNC: $message'),
+      onDiagnostic: (message) {
+        debugPrint('INITIAL DEVICE SYNC: $message');
+        _trace('sync', message);
+      },
       readFavorites: _favoritesStore.readFavorites,
       readContentPreferences: () => _activeContentPreferences,
       readCollegeFootballPreferences: () => _activeCollegeFootballPreferences,
@@ -176,6 +185,10 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     _scoreRefreshSubscription = BackgroundScoreRefreshDispatcher.instance.events
         .listen((request) => unawaited(_handleBackgroundScoreRefresh(request)));
     _snapshotSubscription = _transport.snapshots.listen((snapshot) {
+      _trace(
+        'connection',
+        'snapshot ${snapshot.state.name}; hasError=${snapshot.errorMessage != null}',
+      );
       final wasConnected = _deviceSnapshot.state.isPhysicallyConnected;
       final isConnected = snapshot.state.isPhysicallyConnected;
       if (!wasConnected && isConnected) {
@@ -249,6 +262,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
 
   @override
   void dispose() {
+    _trace('lifecycle', 'screen.dispose id=${identityHashCode(this)}');
     _isDisposing = true;
     WidgetsBinding.instance.removeObserver(this);
     _liveRefreshCoordinator.cancelCurrentRefresh('connection screen disposed');
@@ -273,6 +287,10 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final previous = _lifecycleState;
     _lifecycleState = state;
+    _trace(
+      'lifecycle',
+      '${previous.name}->${state.name}; screen=${identityHashCode(this)} connected=${_transport.currentSnapshot.state.isPhysicallyConnected}',
+    );
     debugPrint('BACKGROUND SCORE REFRESH: lifecycle=${state.name}');
     if (state == AppLifecycleState.resumed &&
         previous != state &&
@@ -284,11 +302,12 @@ class _ConnectionScreenState extends State<ConnectionScreen>
   }
 
   void _handleBleWakeNotification(List<int> payload) {
+    _trace('refresh', 'wake.forwarded bytes=${payload.length}');
     final connected = _transport.currentSnapshot.state.isPhysicallyConnected;
     debugPrint(
       'BLE WAKE: WAKE received; lifecycle=${_lifecycleState.name}; '
       'BLE connected=$connected; refresh permitted=$connected; '
-      'payload=$payload',
+      'bytes=${payload.length}',
     );
     unawaited(_requestAutomaticRefresh('BLE WAKE'));
   }
@@ -297,42 +316,172 @@ class _ConnectionScreenState extends State<ConnectionScreen>
     String trigger, {
     Future<void> Function()? refresh,
   }) async {
-    if (_isDisposing ||
-        !_transport.currentSnapshot.state.isPhysicallyConnected) {
-      return;
-    }
-    if (_initialSyncCoordinator.needsRetry) {
-      await _initialSyncCoordinator.retryPendingSync();
-      return;
-    }
-    if (await _initialSyncCoordinator.refreshDesiredContentIfDue()) return;
-    await _sportsOperationGate.requestLiveRefresh(() async {
-      // A WAKE queued during the initial fetch must not overwrite retained
-      // Fantasy with a partial slate if that fetch subsequently fails.
+    final id = ++_diagnosticRefreshId;
+    final originG = _transport.connectionGeneration;
+    final elapsed = Stopwatch()..start();
+    var outcome = 'failed';
+    _trace(
+      'refresh',
+      'request.begin id=$id trigger=$trigger; ${_initialSyncCoordinator.diagnosticState}',
+      generation: originG,
+    );
+    try {
       if (_isDisposing ||
-          _initialSyncCoordinator.needsRetry ||
           !_transport.currentSnapshot.state.isPhysicallyConnected) {
+        outcome = 'skipped-disposed-or-disconnected';
         return;
       }
-      if (refresh != null) {
-        await refresh();
-      } else {
-        await runIsolatedWakeDomains(
-          refreshSports: _liveRefreshCoordinator.refreshTrackedSessionOnce,
-          observeFantasy: _fantasyCoordinator.observe,
-          onDiagnostic: _recordBackgroundUpdaterDiagnostic,
-          triggerLabel: trigger,
+      if (_initialSyncCoordinator.needsRetry) {
+        _trace(
+          'refresh',
+          'retry.enter id=$id; ${_initialSyncCoordinator.diagnosticState}',
+          generation: originG,
+        );
+        try {
+          await _initialSyncCoordinator.retryPendingSync();
+          outcome = 'retry-returned';
+        } finally {
+          _trace(
+            'refresh',
+            'retry.exit id=$id outcome=$outcome; ${_initialSyncCoordinator.diagnosticState}',
+            generation: originG,
+          );
+        }
+        return;
+      }
+      _trace(
+        'refresh',
+        'discovery.enter id=$id; ${_initialSyncCoordinator.diagnosticState}',
+        generation: originG,
+      );
+      var discovered = false;
+      var discoveryReturned = false;
+      try {
+        discovered = await _initialSyncCoordinator.refreshDesiredContentIfDue();
+        discoveryReturned = true;
+      } finally {
+        _trace(
+          'refresh',
+          'discovery.exit id=$id returned=$discoveryReturned handled=$discovered',
+          generation: originG,
         );
       }
-    });
+      if (discovered) {
+        outcome = 'discovery-returned';
+        return;
+      }
+      _trace(
+        'refresh',
+        'gate.request id=$id; ${_sportsOperationGate.diagnosticState}',
+        generation: originG,
+      );
+      await _sportsOperationGate.requestLiveRefresh(() async {
+        var execution = 'failed';
+        _trace('refresh', 'execution.begin id=$id', generation: originG);
+        try {
+          // A deferred WAKE must not overwrite retained Fantasy after startup failure.
+          if (_isDisposing ||
+              _initialSyncCoordinator.needsRetry ||
+              !_transport.currentSnapshot.state.isPhysicallyConnected) {
+            execution = 'skipped-disposed-retry-or-disconnected';
+            return;
+          }
+          if (refresh != null) {
+            await refresh();
+          } else {
+            await runIsolatedWakeDomains(
+              refreshSports: () async {
+                _trace('refresh', 'sports.enter id=$id', generation: originG);
+                try {
+                  await _liveRefreshCoordinator.refreshTrackedSessionOnce();
+                } finally {
+                  _trace('refresh', 'sports.exit id=$id', generation: originG);
+                }
+              },
+              observeFantasy: () async {
+                _trace('refresh', 'fantasy.enter id=$id', generation: originG);
+                try {
+                  await _fantasyCoordinator.observe();
+                } finally {
+                  _trace('refresh', 'fantasy.exit id=$id', generation: originG);
+                }
+              },
+              onDiagnostic: _recordBackgroundUpdaterDiagnostic,
+              triggerLabel: trigger,
+            );
+          }
+          execution = 'completed';
+        } finally {
+          _trace(
+            'refresh',
+            'execution.end id=$id outcome=$execution',
+            generation: originG,
+          );
+        }
+      });
+      // A gate request can return while deferred; execution.end records actual work.
+      outcome = 'gate-returned';
+    } on Object catch (error) {
+      _trace(
+        'refresh',
+        'request.failed id=$id type=${error.runtimeType}',
+        generation: originG,
+      );
+      rethrow;
+    } finally {
+      _trace(
+        'refresh',
+        'request.end id=$id outcome=$outcome elapsedMs=${elapsed.elapsedMilliseconds}',
+        generation: originG,
+      );
+    }
   }
 
+  void _trace(String source, String message, {int? generation}) {
+    _backgroundRefreshDiagnostics.add(
+      message,
+      source: source,
+      transportId: _transport.diagnosticId,
+      generation: generation ?? _transport.connectionGeneration,
+    );
+  }
+
+  static final _refreshPhasePattern = RegExp(
+    r'^WAKE REFRESH #\d+ (fetch phase started|fetch phase complete|send phase started|complete)',
+  );
+  static final _sportsPhasePattern = RegExp(
+    r'^WAKE #\d+ (NFL|NCAAF|NBA|MLB|PGA) (fetch started|fetch completed|fetch failed|no update: fetch failed; baseline retained|empty; baseline retained|unchanged|changed|transfer started|transfer succeeded|transfer failed)',
+  );
+
   void _recordBackgroundUpdaterDiagnostic(String message) {
-    debugPrint('REFRESH: $message');
-    _backgroundRefreshDiagnostics.add(message);
+    // Only allow fixed phase metadata into the timeline. Domain callbacks may
+    // contain provider URLs, account identifiers or player payloads; do not
+    // forward those free-form messages to either the export or the console.
+    final phase =
+        _refreshPhasePattern.firstMatch(message) ??
+        _sportsPhasePattern.firstMatch(message);
+    if (phase != null) _trace('sports', phase.group(0)!);
+    if (message.startsWith('refresh skipped because')) {
+      _trace('sports', 'skipped-already-active');
+    } else if (message.startsWith('refresh cancellation requested')) {
+      _trace('sports', 'cancellation.requested');
+    } else if (message.startsWith('refresh cancelled:')) {
+      _trace('sports', 'cancelled-disconnected-or-stopped');
+    } else if (message.startsWith('PGA no update: refresh/transfer failed:')) {
+      _trace('sports', 'PGA transfer.failed; baseline retained');
+    }
+    if (message.contains(': sports failed; fantasy continues:')) {
+      _trace('domain', 'sports.failed; fantasy continues');
+    } else if (message.contains(': fantasy failed; sports unaffected:')) {
+      _trace('domain', 'fantasy.failed; sports unaffected');
+    }
   }
 
   void _recordInitialSyncStatus(InitialSyncSnapshot snapshot) {
+    _trace(
+      'sync',
+      'status=${snapshot.status.name} categories=${snapshot.successfullySyncedLeagueCount} unverified=${snapshot.cachedContentMayBeStale}',
+    );
     if (mounted && !_isDisposing) {
       setState(() => _initialSyncSnapshot = snapshot);
     }

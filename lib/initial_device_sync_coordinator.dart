@@ -93,6 +93,7 @@ class InitialDeviceSyncCoordinator {
   bool _needsRetry = false;
   Future<void>? _runningSync;
   int? _runningGeneration;
+  Stopwatch? _diagnosticSyncClock;
   bool _retryIsReconciliation = false;
   DateTime? _lastDiscoveryAt;
   DateTime? _lastDiscoveryDate;
@@ -100,6 +101,11 @@ class InitialDeviceSyncCoordinator {
   final List<DeviceContentCategory> _catalogOrder = [];
 
   bool get needsRetry => _needsRetry;
+  String get diagnosticState =>
+      'syncG=$_connectionGeneration retry=$_needsRetry '
+      'runningG=${_runningGeneration ?? '-'} '
+      'runningAgeMs=${_diagnosticSyncClock?.elapsedMilliseconds ?? 0} '
+      'reconcile=$_retryIsReconciliation';
 
   InitialSyncSnapshot get snapshot => _snapshot;
 
@@ -112,6 +118,7 @@ class InitialDeviceSyncCoordinator {
       _connectionSessionActive = false;
       _needsRetry = false;
       _connectionGeneration++;
+      _diagnose('sync connection generation advanced; $diagnosticState');
       return;
     }
     if (state != BleConnectionState.connected || _connectionSessionActive) {
@@ -157,20 +164,30 @@ class InitialDeviceSyncCoordinator {
 
   Future<void> _run(int generation, {bool reconcile = false}) {
     if (_runningGeneration == generation && _runningSync != null) {
+      _diagnose('sync.run coalesced; $diagnosticState');
       return _runningSync!;
     }
     _retryIsReconciliation = reconcile;
+    final elapsed = Stopwatch()..start();
+    _diagnose(
+      'sync.run requested originSyncG=$generation reconcile=$reconcile',
+    );
     late final Future<void> run;
     run = operationGate
         .runInitialSync(() => _runOwned(generation, reconcile: reconcile))
         .whenComplete(() {
+          _diagnose(
+            'sync.run ended originSyncG=$generation elapsedMs=${elapsed.elapsedMilliseconds}',
+          );
           if (identical(_runningSync, run)) {
+            _diagnosticSyncClock = null;
             _runningSync = null;
             _runningGeneration = null;
           }
         });
     _runningGeneration = generation;
     _runningSync = run;
+    _diagnosticSyncClock = elapsed;
     return run;
   }
 
@@ -221,6 +238,10 @@ class InitialDeviceSyncCoordinator {
         _ => today,
       };
       dates[category] = selectedDate;
+      final failuresBefore = failures.length;
+      _diagnose(
+        'prepare.enter category=${category.name} originSyncG=$generation',
+      );
       try {
         if (category == DeviceContentCategory.fantasy) {
           fantasy =
@@ -297,7 +318,13 @@ class InitialDeviceSyncCoordinator {
         }
       } on Object catch (error) {
         failures.add('${category.displayName}: $error');
-        _diagnose('${category.displayName} preparation failed: $error');
+        _diagnose(
+          'prepare.failed category=${category.name} type=${error.runtimeType}',
+        );
+      } finally {
+        _diagnose(
+          'prepare.exit category=${category.name} originSyncG=$generation failuresAdded=${failures.length - failuresBefore}',
+        );
       }
     }
     if (!_isCurrent(generation)) return;
@@ -450,7 +477,9 @@ class InitialDeviceSyncCoordinator {
         }
       } on Object catch (error) {
         failures.add('${category.displayName}: $error');
-        _diagnose('${category.displayName} send failed: $error');
+        _diagnose(
+          'send.failed category=${category.name} type=${error.runtimeType}',
+        );
       }
     }
     if (!_isCurrent(generation)) return;
@@ -486,7 +515,7 @@ class InitialDeviceSyncCoordinator {
     try {
       await onInitialSyncComplete?.call();
     } on Object catch (error) {
-      _diagnose('Post-sync optional domain failed: $error');
+      _diagnose('Post-sync optional domain failed type=${error.runtimeType}');
     }
     _diagnose(
       'Initial sync complete; categories loaded=$loadedCount; failures=${failures.length}',

@@ -11,6 +11,7 @@ import 'package:sports_hub_mobile/connection_screen.dart';
 import 'package:sports_hub_mobile/device_content_preferences.dart';
 import 'package:sports_hub_mobile/device_content_preferences_store.dart';
 import 'package:sports_hub_mobile/push_notification_service.dart';
+import 'package:sports_hub_mobile/refresh_diagnostic_history.dart';
 import 'package:sports_hub_mobile/sports_data_source.dart';
 import 'package:sports_hub_mobile/sports_game.dart';
 import 'package:sports_hub_mobile/sports_league.dart';
@@ -25,11 +26,13 @@ void main() {
       final connection = StreamController<ConnectionStateUpdate>.broadcast();
       final wakes = <StreamController<List<int>>>[];
       final source = _Source();
+      final diagnostics = RefreshDiagnosticHistory();
       var now = DateTime(2026, 10, 14, 12);
       final packets = <String>[];
       final initial = Completer<void>();
       source.block = initial;
       final transport = BluetoothDeviceTransport(
+        diagnosticHistory: diagnostics,
         scanTimeout: const Duration(milliseconds: 10),
         bleStatusProvider: () => BleStatus.ready,
         scanStreamProvider: () => scan.stream,
@@ -143,6 +146,26 @@ void main() {
       initial.complete();
       await settle();
       expect(source.calls, 2); // Exactly one coalesced follow-up.
+      expect(
+        diagnostics.entries.any((e) => e.message.contains('wake.raw')),
+        isTrue,
+      );
+      expect(
+        diagnostics.entries.any(
+          (e) => e.message.contains('lifecycle') || e.source == 'lifecycle',
+        ),
+        isTrue,
+      );
+      expect(
+        diagnostics.entries.any(
+          (e) => e.message.contains('initial sync ownership released'),
+        ),
+        isTrue,
+      );
+      expect(
+        diagnostics.entries.any((e) => e.message.startsWith('execution.end')),
+        isTrue,
+      );
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await settle();
       expect(source.calls, 2);
@@ -203,6 +226,10 @@ void main() {
       }
       await settle();
       expect(source.calls, 6);
+      expect(
+        diagnostics.entries.any((e) => e.message.startsWith('retry.enter')),
+        isTrue,
+      );
       expect(packets.where((p) => p == 'SYNC_START'), hasLength(resets));
       source.fail = false;
       recovery.complete();
@@ -211,21 +238,59 @@ void main() {
       expect(packets.where((p) => p == 'SYNC_START'), hasLength(resets + 1));
       expect(packets.last, 'SYNC_COMPLETE');
       expect(
+        diagnostics.entries.any((e) => e.message.startsWith('retry.exit')),
+        isTrue,
+      );
+      expect(
+        diagnostics.exportText(),
+        isNot(contains('PRIVATE_PROVIDER_SECRET')),
+      );
+      expect(
         find.text('Updates incomplete; cached data unverified'),
         findsNothing,
       );
+      // H01: a live provider failure is visible without exporting its error text.
+      final console = <String>[];
+      final previousDebugPrint = debugPrint;
+      try {
+        debugPrint = (message, {wrapWidth}) {
+          if (message != null) console.add(message);
+        };
+        source.fail = true;
+        wakes.last.add(utf8.encode('WAKE'));
+        await settle();
+        expect(source.calls, 7);
+        expect(diagnostics.exportText(), contains('NFL fetch failed'));
+        expect(
+          diagnostics.exportText(),
+          isNot(contains('PRIVATE_PROVIDER_SECRET')),
+        );
+
+        expect(console.join('\n'), isNot(contains('PRIVATE_PROVIDER_SECRET')));
+      } finally {
+        debugPrint = previousDebugPrint;
+        source.fail = false;
+      }
       // F08: due discovery uses the same WAKE/foreground route and does not
       // run an additional tracked fetch or reset unchanged membership.
       now = DateTime(2026, 10, 15);
       wakes.last.add(utf8.encode('WAKE'));
       await settle();
-      expect(source.calls, 7);
+      expect(source.calls, 8);
+      expect(
+        diagnostics.entries.any(
+          (e) =>
+              e.message.startsWith('discovery.exit') &&
+              e.message.contains('handled=true'),
+        ),
+        isTrue,
+      );
       expect(source.dates.last, DateTime(2026, 10, 15));
       expect(packets.where((p) => p == 'SYNC_START'), hasLength(resets + 1));
       now = DateTime(2026, 10, 16);
       resume();
       await settle();
-      expect(source.calls, 8);
+      expect(source.calls, 9);
       expect(source.dates.last, DateTime(2026, 10, 16));
       expect(packets.where((p) => p == 'SYNC_START'), hasLength(resets + 1));
       await tester.pumpWidget(const SizedBox.shrink());
@@ -262,7 +327,9 @@ class _Source implements SportsDataSource {
     block = null;
     try {
       if (pending != null) await pending.future;
-      if (fail) throw StateError('Provider unavailable');
+      if (fail) {
+        throw StateError('Provider unavailable token=PRIVATE_PROVIDER_SECRET');
+      }
       return [
         const SportsGame(
           league: 'NFL',

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'device_transport.dart';
 import 'fantasy_screen.dart';
@@ -271,12 +272,47 @@ class _DeveloperToolsScreenState extends State<DeveloperToolsScreen> {
           ),
           _SectionCard(
             title: 'Refresh diagnostics',
-            trailing: TextButton(
-              key: const ValueKey('clear-refresh-diagnostics'),
-              onPressed: widget.backgroundRefreshDiagnostics.clear,
-              child: const Text('CLEAR'),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextButton(
+                  key: const ValueKey('copy-refresh-diagnostics'),
+                  onPressed: () async {
+                    final text = widget.backgroundRefreshDiagnostics
+                        .exportText();
+                    var copied = true;
+                    try {
+                      await Clipboard.setData(ClipboardData(text: text));
+                    } on PlatformException {
+                      copied = false;
+                    }
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context)
+                      ..hideCurrentSnackBar()
+                      ..showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            copied
+                                ? 'Diagnostic timeline copied.'
+                                : 'Could not copy. Select the diagnostic text instead.',
+                          ),
+                        ),
+                      );
+                  },
+                  child: const Text('COPY'),
+                ),
+                TextButton(
+                  key: const ValueKey('clear-refresh-diagnostics'),
+                  onPressed: widget.backgroundRefreshDiagnostics.clear,
+                  child: const Text('CLEAR'),
+                ),
+              ],
             ),
             children: [
+              const Text(
+                'Latest 512 events; COPY exports oldest first in UTC. '
+                'Kept until app termination or CLEAR.',
+              ),
               AnimatedBuilder(
                 animation: widget.backgroundRefreshDiagnostics,
                 builder: (context, _) {

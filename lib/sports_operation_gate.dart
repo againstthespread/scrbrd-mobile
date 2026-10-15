@@ -16,27 +16,37 @@ class SportsOperationGate {
   bool _refreshPending = false;
   Future<void> Function()? _pendingRefresh;
 
+  int _diagnosticOperationId = 0;
+  String get diagnosticState =>
+      'initial=$_initialSyncActive queued=$_queuedInitialSyncs '
+      'live=$_liveRefreshActive pending=$_refreshPending';
+
   bool get isInitialSyncActive => _initialSyncActive || _queuedInitialSyncs > 0;
   bool get isLiveRefreshActive => _liveRefreshActive;
 
   Future<void> runInitialSync(Future<void> Function() operation) async {
+    final op = ++_diagnosticOperationId;
     final previous = _initialSyncTail;
     final finished = Completer<void>();
     _initialSyncTail = finished.future;
     _queuedInitialSyncs++;
+    _diagnose('initial sync queued op=$op');
     await previous;
     // A reconnect's startup must not overlap an older refresh's final writes.
     final liveFinished = _liveRefreshFinished;
-    if (liveFinished != null) await liveFinished.future;
+    if (liveFinished != null) {
+      _diagnose('initial sync waiting for live owner op=$op');
+      await liveFinished.future;
+    }
     _initialSyncActive = true;
-    _diagnose('initial sync ownership acquired');
+    _diagnose('initial sync ownership acquired op=$op');
     try {
       await operation();
     } finally {
       _initialSyncActive = false;
       _queuedInitialSyncs--;
       finished.complete();
-      _diagnose('initial sync ownership released');
+      _diagnose('initial sync ownership released op=$op');
       if (_queuedInitialSyncs == 0 && _refreshPending) {
         final refresh = _takePendingRefresh();
         if (refresh != null) {
@@ -76,9 +86,11 @@ class SportsOperationGate {
   Future<void> _drainLiveRefreshes(
     Future<void> Function() initialRefresh,
   ) async {
+    final op = ++_diagnosticOperationId;
     _liveRefreshActive = true;
     final finished = Completer<void>();
     _liveRefreshFinished = finished;
+    _diagnose('live refresh ownership acquired op=$op');
     var refresh = initialRefresh;
     Object? firstError;
     StackTrace? firstStackTrace;
@@ -90,7 +102,7 @@ class SportsOperationGate {
         } on Object catch (error, stackTrace) {
           firstError ??= error;
           firstStackTrace ??= stackTrace;
-          _diagnose('live refresh failed: $error');
+          _diagnose('live refresh failed type=${error.runtimeType}');
         }
 
         if (_queuedInitialSyncs > 0) break;
@@ -106,6 +118,7 @@ class SportsOperationGate {
       _liveRefreshActive = false;
       _liveRefreshFinished = null;
       finished.complete();
+      _diagnose('live refresh ownership released op=$op');
     }
 
     if (firstError != null) {
@@ -141,5 +154,6 @@ class SportsOperationGate {
     return refresh;
   }
 
-  void _diagnose(String message) => onDiagnostic?.call(message);
+  void _diagnose(String message) =>
+      onDiagnostic?.call('$message; $diagnosticState');
 }
