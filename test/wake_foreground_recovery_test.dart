@@ -19,7 +19,7 @@ import 'package:sports_hub_mobile/sports_repository.dart';
 
 void main() {
   testWidgets(
-    'F18 foreground renews WAKE and coalesces with startup/active refresh',
+    'H01 foreground preserves WAKE and coalesces startup/active refresh',
     (tester) async {
       SharedPreferences.setMockInitialValues({});
       final scan = StreamController<DiscoveredDevice>.broadcast();
@@ -136,7 +136,7 @@ void main() {
       expect(wakes, hasLength(1));
       resume();
       await settle();
-      expect(wakes, hasLength(2));
+      expect(wakes, hasLength(1));
       for (var i = 0; i < 10; i++) {
         wakes.last.add(utf8.encode('WAKE'));
       }
@@ -169,7 +169,7 @@ void main() {
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await settle();
       expect(source.calls, 2);
-      expect(wakes, hasLength(2));
+      expect(wakes, hasLength(1));
 
       final active = Completer<void>();
       source.block = active;
@@ -178,7 +178,7 @@ void main() {
       expect(source.calls, 3);
       resume();
       await settle();
-      expect(wakes, hasLength(3));
+      expect(wakes, hasLength(1));
       for (var i = 0; i < 10; i++) {
         wakes.last.add(utf8.encode('WAKE'));
       }
@@ -200,7 +200,7 @@ void main() {
       resume();
       await settle();
       expect(source.calls, 4);
-      expect(wakes, hasLength(3));
+      expect(wakes, hasLength(1));
       // F07: the retained phone/device catalog must survive an offline
       // reconnect, then recover from one coalesced burst when the provider returns.
       source.fail = true;

@@ -17,6 +17,463 @@ import 'package:sports_hub_mobile/sports_hub_ble_protocol.dart';
 import 'package:sports_hub_mobile/tracked_device_session.dart';
 
 void main() {
+  test('H01 foreground preserves the active WAKE listener', () async {
+    final streams = <StreamController<List<int>>>[];
+    var cancellations = 0;
+    final harness = await _WriteHarness.create(
+      wakeStreamProvider: (_) {
+        final stream = StreamController<List<int>>.broadcast(
+          onCancel: () => cancellations++,
+        );
+        streams.add(stream);
+        return stream.stream;
+      },
+    );
+    final received = <List<int>>[];
+    final listener = harness.transport.wakeNotifications.listen(received.add);
+    try {
+      streams.single.add(utf8.encode('WAKE'));
+      await Future<void>.delayed(Duration.zero);
+      for (var i = 0; i < 4; i++) {
+        await harness.transport.resumeWakeNotifications();
+      }
+      expect(streams, hasLength(1));
+      expect(cancellations, 0);
+      streams.single.add(utf8.encode('WAKE'));
+      await Future<void>.delayed(Duration.zero);
+      expect(received, [utf8.encode('WAKE'), utf8.encode('WAKE')]);
+    } finally {
+      await listener.cancel();
+      await harness.dispose();
+      for (final stream in streams) {
+        await stream.close();
+      }
+    }
+  });
+
+  test('H01 broadcast cancellation is not a native cleanup barrier', () async {
+    final nativeOff = Completer<void>();
+    var offFinished = false;
+    final source = StreamController<List<int>>.broadcast();
+    final repeater = Repeater<List<int>>.broadcast(
+      onListenEmitFrom: () => source.stream,
+      onCancel: () async {
+        await nativeOff.future;
+        offFinished = true;
+      },
+    );
+    final listener = repeater.stream.listen((_) {});
+    await listener.cancel();
+    expect(offFinished, isFalse);
+    nativeOff.complete();
+    await Future<void>.delayed(Duration.zero);
+    expect(offFinished, isTrue);
+    await repeater.dispose();
+    await source.close();
+  });
+
+  Future<void> pumpTransport(
+    WidgetTester tester, [
+    Duration duration = Duration.zero,
+  ]) async {
+    await tester.pump(duration);
+    await tester.runAsync(() => Future<void>.delayed(Duration.zero));
+    await tester.pump();
+  }
+
+  Future<void> finishTransport(
+    WidgetTester tester,
+    Future<void> Function() operation,
+  ) async {
+    var complete = false;
+    final work = operation().whenComplete(() => complete = true);
+    for (var i = 0; i < 20 && !complete; i++) {
+      await pumpTransport(tester);
+    }
+    expect(complete, isTrue);
+    await work;
+  }
+
+  Future<_WriteHarness> timedHarness(
+    WidgetTester tester, {
+    BleWakeStreamFactory? wakeStreamProvider,
+    RefreshDiagnosticHistory? diagnosticHistory,
+  }) async {
+    final harness = _WriteHarness._(
+      wakeStreamProvider: wakeStreamProvider,
+      diagnosticHistory: diagnosticHistory,
+    );
+    unawaited(harness.transport.scanForDevice());
+    await pumpTransport(tester);
+    harness.scan.add(_device('write-device'));
+    await pumpTransport(tester, const Duration(milliseconds: 10));
+    unawaited(
+      harness.transport.connectToDevice(
+        harness.transport.currentSnapshot.candidates.single,
+      ),
+    );
+    await pumpTransport(tester);
+    harness.physicalReconnect();
+    await pumpTransport(tester);
+    return harness;
+  }
+
+  testWidgets(
+    'H01 silent listener retries finitely and confirms actual receipt',
+    (tester) async {
+      final streams = <StreamController<List<int>>>[];
+      final history = RefreshDiagnosticHistory();
+      final harness = await timedHarness(
+        tester,
+        diagnosticHistory: history,
+        wakeStreamProvider: (_) {
+          final stream = StreamController<List<int>>.broadcast();
+          streams.add(stream);
+          return stream.stream;
+        },
+      );
+      expect(
+        harness.transport.wakeSubscriptionHealth,
+        WakeSubscriptionHealth.listening,
+      );
+      for (final delay in [1, 2, 4]) {
+        await pumpTransport(tester, const Duration(seconds: 75));
+        expect(
+          harness.transport.wakeSubscriptionHealth,
+          WakeSubscriptionHealth.retrying,
+        );
+        await pumpTransport(tester, Duration(seconds: delay));
+      }
+      expect(streams, hasLength(4));
+      await pumpTransport(tester, const Duration(seconds: 75));
+      expect(
+        harness.transport.wakeSubscriptionHealth,
+        WakeSubscriptionHealth.failed,
+      );
+      expect(
+        harness.transport.currentSnapshot.errorMessage,
+        contains('Automatic refresh paused'),
+      );
+      await pumpTransport(tester, const Duration(minutes: 20));
+      expect(streams, hasLength(4));
+      unawaited(harness.transport.resumeWakeNotifications());
+      await pumpTransport(tester);
+      expect(streams, hasLength(5));
+      expect(harness.transport.currentSnapshot.errorMessage, isNotNull);
+      streams.last.add(utf8.encode('WAKE'));
+      await pumpTransport(tester);
+      expect(
+        harness.transport.wakeSubscriptionHealth,
+        WakeSubscriptionHealth.receiving,
+      );
+      expect(harness.transport.currentSnapshot.errorMessage, isNull);
+      expect(history.exportText(), contains('receipt=unconfirmed'));
+      expect(history.exportText(), contains('subscription.receipt-confirmed'));
+      expect(history.exportText(), contains('subscription.silent'));
+      await finishTransport(tester, harness.dispose);
+      for (final stream in streams) {
+        await finishTransport(tester, stream.close);
+      }
+      history.dispose();
+    },
+  );
+
+  testWidgets(
+    'H01 background pauses silence deadline and resume keeps listener',
+    (tester) async {
+      var starts = 0;
+      final stream = StreamController<List<int>>.broadcast();
+      final harness = await timedHarness(
+        tester,
+        wakeStreamProvider: (_) {
+          starts++;
+          return stream.stream;
+        },
+      );
+      stream.add(utf8.encode('WAKE'));
+      await pumpTransport(tester);
+      await pumpTransport(tester, const Duration(seconds: 70));
+      harness.transport.setWakeForeground(false);
+      await pumpTransport(tester, const Duration(hours: 2));
+      expect(starts, 1);
+      unawaited(harness.transport.resumeWakeNotifications());
+      await pumpTransport(tester);
+      await pumpTransport(tester, const Duration(seconds: 70));
+      expect(starts, 1);
+      stream.add(utf8.encode('WAKE'));
+      await pumpTransport(tester);
+      await pumpTransport(tester, const Duration(seconds: 70));
+      expect(starts, 1); // Receipt renewed the deadline.
+      await finishTransport(tester, harness.dispose);
+      await finishTransport(tester, stream.close);
+    },
+  );
+
+  testWidgets(
+    'H01 cancellation timeout never permits overlapping replacement',
+    (tester) async {
+      final off = Completer<void>();
+      final streams = <StreamController<List<int>>>[];
+      final harness = await timedHarness(
+        tester,
+        wakeStreamProvider: (_) {
+          final stream = StreamController<List<int>>(
+            onCancel: streams.isEmpty ? () => off.future : null,
+          );
+          streams.add(stream);
+          return stream.stream;
+        },
+      );
+      streams.single.addError(StateError('broken'));
+      await pumpTransport(tester);
+      await pumpTransport(tester, const Duration(seconds: 1));
+      await pumpTransport(
+        tester,
+        const Duration(seconds: 3),
+      ); // Bounded wait expires.
+      await pumpTransport(
+        tester,
+        const Duration(seconds: 2),
+      ); // Next retry still waits.
+      expect(streams, hasLength(1));
+      harness.physicalDisconnect();
+      harness.physicalReconnect();
+      await pumpTransport(tester);
+      expect(streams, hasLength(1));
+      off.complete();
+      await pumpTransport(tester);
+      expect(streams, hasLength(2));
+      expect(streams.where((s) => s.hasListener), hasLength(1));
+      expect(
+        harness.transport.wakeSubscriptionHealth,
+        WakeSubscriptionHealth.listening,
+      );
+      await pumpTransport(
+        tester,
+        const Duration(seconds: 10),
+      ); // Old retries must stay cancelled.
+      expect(streams, hasLength(2));
+      await finishTransport(tester, harness.dispose);
+      for (final stream in streams) {
+        await finishTransport(tester, stream.close);
+      }
+    },
+  );
+
+  testWidgets('H01 repeated reconnects cancel old silence deadlines', (
+    tester,
+  ) async {
+    final streams = <StreamController<List<int>>>[];
+    final harness = await timedHarness(
+      tester,
+      wakeStreamProvider: (_) {
+        final stream = StreamController<List<int>>.broadcast();
+        streams.add(stream);
+        return stream.stream;
+      },
+    );
+    final received = <List<int>>[];
+    final listener = harness.transport.wakeNotifications.listen(received.add);
+    for (var i = 0; i < 3; i++) {
+      await pumpTransport(tester, const Duration(seconds: 70));
+      harness.physicalDisconnect();
+      await pumpTransport(tester);
+      harness.physicalReconnect();
+      await pumpTransport(tester);
+      streams[streams.length - 2].add(utf8.encode('old'));
+      streams.last.add(utf8.encode('WAKE'));
+      await pumpTransport(tester);
+    }
+    expect(streams, hasLength(4));
+    expect(received, List.filled(3, utf8.encode('WAKE')));
+    await finishTransport(tester, listener.cancel);
+    await finishTransport(tester, harness.dispose);
+    await pumpTransport(tester, const Duration(minutes: 10));
+    expect(streams, hasLength(4));
+    for (final stream in streams) {
+      await finishTransport(tester, stream.close);
+    }
+  });
+
+  testWidgets(
+    'H01 late WAKE and terminal callbacks cannot affect a new generation',
+    (tester) async {
+      final streams = <_LateStream<List<int>>>[];
+      final history = RefreshDiagnosticHistory();
+      final harness = await timedHarness(
+        tester,
+        diagnosticHistory: history,
+        wakeStreamProvider: (_) {
+          final stream = _LateStream<List<int>>();
+          streams.add(stream);
+          return stream;
+        },
+      );
+      final received = <List<int>>[];
+      final listener = harness.transport.wakeNotifications.listen(received.add);
+      streams.single.data!(utf8.encode('WAKE'));
+      await pumpTransport(tester);
+      harness.physicalDisconnect();
+      harness.physicalReconnect();
+      await pumpTransport(tester);
+      streams.last.data!(utf8.encode('WAKE'));
+      await pumpTransport(tester);
+      streams.first.data!(utf8.encode('obsolete'));
+      Function.apply(streams.first.error!, [StateError('old failure')]);
+      streams.first.done!();
+      await pumpTransport(tester);
+      expect(streams, hasLength(2));
+      expect(received, [utf8.encode('WAKE'), utf8.encode('WAKE')]);
+      expect(
+        harness.transport.wakeSubscriptionHealth,
+        WakeSubscriptionHealth.receiving,
+      );
+      expect(history.exportText(), contains('accepted=false'));
+      expect(
+        history.exportText(),
+        contains('subscription.failure-ignored stale'),
+      );
+      await finishTransport(tester, listener.cancel);
+      await finishTransport(tester, harness.dispose);
+      for (final stream in streams) {
+        await finishTransport(tester, stream.controller.close);
+      }
+      history.dispose();
+    },
+  );
+
+  testWidgets(
+    'H01 failed native cleanup blocks replacement until connection changes',
+    (tester) async {
+      final streams = <StreamController<List<int>>>[];
+      final harness = await timedHarness(
+        tester,
+        wakeStreamProvider: (_) {
+          final stream = StreamController<List<int>>(
+            onCancel: streams.isEmpty
+                ? () => Future<void>.error(StateError('native off failed'))
+                : null,
+          );
+          streams.add(stream);
+          return stream.stream;
+        },
+      );
+      streams.single.addError(StateError('subscription failed'));
+      await pumpTransport(tester);
+      for (final delay in [1, 2, 4]) {
+        await pumpTransport(tester, Duration(seconds: delay));
+      }
+      expect(streams, hasLength(1));
+      expect(
+        harness.transport.wakeSubscriptionHealth,
+        WakeSubscriptionHealth.failed,
+      );
+      harness.physicalDisconnect();
+      harness.physicalReconnect();
+      await pumpTransport(tester);
+      expect(streams, hasLength(2));
+      streams.last.add(utf8.encode('WAKE'));
+      await pumpTransport(tester);
+      expect(
+        harness.transport.wakeSubscriptionHealth,
+        WakeSubscriptionHealth.receiving,
+      );
+      await finishTransport(tester, harness.dispose);
+      for (final stream in streams) {
+        await finishTransport(tester, stream.close);
+      }
+    },
+  );
+
+  test(
+    'H01 callbacks from a cancelled connection attempt cannot replace active WAKE',
+    () async {
+      final scan = StreamController<DiscoveredDevice>.broadcast();
+      final connections = <_LateStream<ConnectionStateUpdate>>[];
+      final wakes = <StreamController<List<int>>>[];
+      final transport = BluetoothDeviceTransport(
+        scanTimeout: const Duration(milliseconds: 10),
+        bleStatusProvider: () => BleStatus.ready,
+        scanStreamProvider: () => scan.stream,
+        connectionStreamProvider:
+            ({
+              required id,
+              required servicesWithCharacteristicsToDiscover,
+              required connectionTimeout,
+            }) {
+              final stream = _LateStream<ConnectionStateUpdate>();
+              connections.add(stream);
+              return stream;
+            },
+        wakeStreamProvider: (_) {
+          final stream = StreamController<List<int>>.broadcast();
+          wakes.add(stream);
+          return stream.stream;
+        },
+      );
+      Future<void> connect() async {
+        final scanning = transport.scanForDevice();
+        await Future<void>.delayed(Duration.zero);
+        scan.add(_device('esp2'));
+        await scanning;
+        final connecting = transport.connectToDevice(
+          transport.currentSnapshot.candidates.single,
+        );
+        await Future<void>.delayed(Duration.zero);
+        connections.last.data!(
+          const ConnectionStateUpdate(
+            deviceId: 'esp2',
+            connectionState: DeviceConnectionState.connected,
+            failure: null,
+          ),
+        );
+        await connecting;
+        await Future<void>.delayed(Duration.zero);
+      }
+
+      try {
+        await connect();
+        await connect();
+        final generation = transport.connectionGeneration;
+        connections.first.data!(
+          const ConnectionStateUpdate(
+            deviceId: 'esp2',
+            connectionState: DeviceConnectionState.disconnected,
+            failure: null,
+          ),
+        );
+        Function.apply(connections.first.error!, [
+          StateError('stale connection error'),
+        ]);
+        connections.first.data!(
+          const ConnectionStateUpdate(
+            deviceId: 'esp2',
+            connectionState: DeviceConnectionState.connected,
+            failure: null,
+          ),
+        );
+        wakes.last.add(utf8.encode('WAKE'));
+        await Future<void>.delayed(Duration.zero);
+        expect(transport.connectionGeneration, generation);
+        expect(transport.currentSnapshot.state, BleConnectionState.connected);
+        expect(
+          transport.wakeSubscriptionHealth,
+          WakeSubscriptionHealth.receiving,
+        );
+        expect(wakes, hasLength(2));
+      } finally {
+        await transport.dispose();
+        await scan.close();
+        for (final stream in connections) {
+          await stream.controller.close();
+        }
+        for (final stream in wakes) {
+          await stream.close();
+        }
+      }
+    },
+  );
+
   for (final terminal in ['error', 'done']) {
     test('F18 WAKE $terminal recovers without a physical reconnect', () async {
       final streams = <StreamController<List<int>>>[];
@@ -1016,9 +1473,14 @@ class _WriteHarness {
     BleWakeStreamFactory? wakeStreamProvider,
     List<Duration>? wakeRetryDelays,
     RefreshDiagnosticHistory? diagnosticHistory,
+    Duration? wakeSilenceTimeout,
+    Duration? wakeCancellationTimeout,
   }) {
     transport = BluetoothDeviceTransport(
       diagnosticHistory: diagnosticHistory,
+      wakeSilenceTimeout: wakeSilenceTimeout ?? const Duration(seconds: 75),
+      wakeCancellationTimeout:
+          wakeCancellationTimeout ?? const Duration(seconds: 3),
       scanTimeout: const Duration(milliseconds: 10),
       bleStatusProvider: () => BleStatus.ready,
       scanStreamProvider: () => scan.stream,
@@ -1049,11 +1511,15 @@ class _WriteHarness {
     BleWakeStreamFactory? wakeStreamProvider,
     List<Duration>? wakeRetryDelays,
     RefreshDiagnosticHistory? diagnosticHistory,
+    Duration? wakeSilenceTimeout,
+    Duration? wakeCancellationTimeout,
   }) async {
     final harness = _WriteHarness._(
       wakeStreamProvider: wakeStreamProvider,
       wakeRetryDelays: wakeRetryDelays,
       diagnosticHistory: diagnosticHistory,
+      wakeSilenceTimeout: wakeSilenceTimeout,
+      wakeCancellationTimeout: wakeCancellationTimeout,
     );
     final scanAttempt = harness.transport.scanForDevice();
     await Future<void>.delayed(Duration.zero);
@@ -1174,3 +1640,29 @@ FantasyMatchupSlateEntry _fantasyEntry(String id, {int week = 1}) =>
         status: FantasyMatchupDisplayStatus.live,
       ),
     );
+
+// Simulates callbacks already queued below Dart when cancellation invalidates
+// their originating subscription. Deliberately retains callbacks after cancel.
+class _LateStream<T> extends Stream<T> {
+  final controller = StreamController<T>.broadcast();
+  void Function(T)? data;
+  Function? error;
+  void Function()? done;
+  @override
+  StreamSubscription<T> listen(
+    void Function(T)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) {
+    data = onData;
+    error = onError;
+    done = onDone;
+    return controller.stream.listen(
+      onData,
+      onError: onError,
+      onDone: onDone,
+      cancelOnError: cancelOnError,
+    );
+  }
+}

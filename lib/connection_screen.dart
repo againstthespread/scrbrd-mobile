@@ -107,6 +107,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
         MemoryCollegeFootballPreferencesStore();
     _activeCollegeFootballPreferences = _collegeFootballPreferencesStore.read();
     _transport = widget.transport ?? BluetoothDeviceTransport();
+    _transport.setWakeForeground(_lifecycleState == AppLifecycleState.resumed);
     _backgroundRefreshDiagnostics = _transport.diagnosticHistory;
     _trace(
       'lifecycle',
@@ -291,6 +292,7 @@ class _ConnectionScreenState extends State<ConnectionScreen>
       'lifecycle',
       '${previous.name}->${state.name}; screen=${identityHashCode(this)} connected=${_transport.currentSnapshot.state.isPhysicallyConnected}',
     );
+    _transport.setWakeForeground(state == AppLifecycleState.resumed);
     debugPrint('BACKGROUND SCORE REFRESH: lifecycle=${state.name}');
     if (state == AppLifecycleState.resumed &&
         previous != state &&
