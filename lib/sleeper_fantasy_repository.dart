@@ -91,25 +91,62 @@ class SleeperFantasyRepository {
     this._apiClient, {
     DateTime Function()? clock,
     this.weekRefreshInterval = const Duration(hours: 6),
+    this.metadataRefreshInterval = const Duration(hours: 1),
+    this.metadataRetryInterval = const Duration(minutes: 1),
   }) : _clock = clock ?? DateTime.now;
 
   final SleeperApiClient _apiClient;
   final DateTime Function() _clock;
   final Duration weekRefreshInterval;
+  final Duration metadataRefreshInterval;
+  final Duration metadataRetryInterval;
   final Map<String, SleeperLeagueSnapshot> _snapshots = {};
   final Map<String, DateTime> _weekCheckedAt = {};
+  final Map<String, DateTime> _metadataFetchedAt = {};
+  final Map<String, DateTime> _metadataRetryAfter = {};
+  final Map<String, int> _metadataRevision = {};
+  final Map<String, Future<SleeperLeagueSnapshot>> _refreshes = {};
+
+  Future<(SleeperLeague, List<SleeperUser>, List<SleeperRoster>)>
+  _fetchMetadata(String id) async {
+    final result = await (
+      _apiClient.fetchLeague(id),
+      _apiClient.fetchLeagueUsers(id),
+      _apiClient.fetchLeagueRosters(id),
+    ).wait;
+    if (result.$1.leagueId != id) {
+      throw const SleeperFantasyException(
+        'Sleeper returned a different league.',
+      );
+    }
+    return result;
+  }
+
+  void _recordMetadataSuccess(String id, int revision) {
+    if ((_metadataRevision[id] ?? 0) != revision) return;
+    _metadataFetchedAt[id] = _clock();
+    _metadataRetryAfter.remove(id);
+  }
+
+  /// Keep usable metadata; require another observation after a config edit.
+  void expireMetadata(String leagueId) {
+    final id = leagueId.trim();
+    _metadataRevision[id] = (_metadataRevision[id] ?? 0) + 1;
+    _metadataFetchedAt.remove(id);
+    _metadataRetryAfter.remove(id);
+  }
 
   Future<SleeperLeagueSnapshot> loadLeague(String leagueId) async {
     final normalizedId = leagueId.trim();
     if (normalizedId.isEmpty) {
       throw const SleeperFantasyException('Enter a Sleeper league ID.');
     }
-    final (league, users, rosters, nflState) = await (
-      _apiClient.fetchLeague(normalizedId),
-      _apiClient.fetchLeagueUsers(normalizedId),
-      _apiClient.fetchLeagueRosters(normalizedId),
+    final revision = _metadataRevision[normalizedId] ?? 0;
+    final (metadata, nflState) = await (
+      _fetchMetadata(normalizedId),
       _apiClient.fetchNflState(),
     ).wait;
+    final (league, users, rosters) = metadata;
     final fantasyWeek = nflState.fantasyWeek;
     final matchups = await _apiClient.fetchMatchups(normalizedId, fantasyWeek);
     final snapshot = SleeperLeagueSnapshot(
@@ -122,16 +159,27 @@ class SleeperFantasyRepository {
     );
     _snapshots[normalizedId] = snapshot;
     _weekCheckedAt[normalizedId] = _clock();
+    _recordMetadataSuccess(normalizedId, revision);
     return snapshot;
   }
 
   /// High-frequency path: normally performs only GET /league/{id}/matchups/{week}.
-  Future<SleeperLeagueSnapshot> refreshMatchups(String leagueId) async {
+  Future<SleeperLeagueSnapshot> refreshMatchups(String leagueId) {
     final normalizedId = leagueId.trim();
+    return _refreshes.putIfAbsent(
+      normalizedId,
+      () => _refreshMatchups(normalizedId).whenComplete(() {
+        _refreshes.remove(normalizedId);
+      }),
+    );
+  }
+
+  Future<SleeperLeagueSnapshot> _refreshMatchups(String normalizedId) async {
     var cached = _snapshots[normalizedId];
     if (cached == null) return loadLeague(normalizedId);
 
     DateTime? checkedAt;
+    var periodChanged = false;
     final lastCheck = _weekCheckedAt[normalizedId];
     if (lastCheck == null ||
         _clock().difference(lastCheck) >= weekRefreshInterval) {
@@ -140,6 +188,7 @@ class SleeperFantasyRepository {
       final fantasyWeek = nflState.fantasyWeek;
       if (fantasyWeek != cached.week ||
           nflState.seasonType != cached.seasonType) {
+        periodChanged = true;
         cached = SleeperLeagueSnapshot(
           league: cached.league,
           week: fantasyWeek,
@@ -151,13 +200,43 @@ class SleeperFantasyRepository {
       }
     }
 
+    // Do not commit a week check or metadata freshness if matchup fetch fails
+    // (F09). The next refresh must still be able to retry the transition.
     final matchups = await _apiClient.fetchMatchups(normalizedId, cached.week);
+    var league = cached.league;
+    var users = cached.users;
+    var rosters = cached.rosters;
+    final now = _clock();
+    final metadataAt = _metadataFetchedAt[normalizedId];
+    final metadataDue =
+        periodChanged ||
+        metadataAt == null ||
+        now.isBefore(metadataAt) ||
+        now.difference(metadataAt) >= metadataRefreshInterval;
+    final retryAfter = _metadataRetryAfter[normalizedId];
+    if (metadataDue &&
+        (periodChanged || retryAfter == null || !now.isBefore(retryAfter))) {
+      final revision = _metadataRevision[normalizedId] ?? 0;
+      try {
+        (league, users, rosters) = await _fetchMetadata(normalizedId);
+        _recordMetadataSuccess(normalizedId, revision);
+      } on Object {
+        // Keep the previous coherent metadata bundle while scores can advance.
+        // A failed refresh is never recorded as a fresh metadata observation.
+        if ((_metadataRevision[normalizedId] ?? 0) == revision) {
+          _metadataFetchedAt.remove(normalizedId);
+          _metadataRetryAfter[normalizedId] = _clock().add(
+            metadataRetryInterval,
+          );
+        }
+      }
+    }
     final refreshed = SleeperLeagueSnapshot(
-      league: cached.league,
+      league: league,
       week: cached.week,
       seasonType: cached.seasonType,
-      users: cached.users,
-      rosters: cached.rosters,
+      users: users,
+      rosters: rosters,
       matchups: matchups,
     );
     _snapshots[normalizedId] = refreshed;
@@ -167,6 +246,7 @@ class SleeperFantasyRepository {
   }
 
   void invalidate(String leagueId) {
+    expireMetadata(leagueId);
     _snapshots.remove(leagueId.trim());
     _weekCheckedAt.remove(leagueId.trim());
   }

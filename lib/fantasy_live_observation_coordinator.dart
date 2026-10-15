@@ -331,7 +331,11 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
         .where((config) => config.provider == FantasyProvider.sleeper)
         .toList();
     final ids = configs.map((config) => config.id).toSet();
-    _sessions.removeWhere((id, _) => !ids.contains(id));
+    _sessions.removeWhere((id, session) {
+      if (ids.contains(id)) return false;
+      repository.expireMetadata(session.config.leagueId);
+      return true;
+    });
     for (final config in configs) {
       final session = _sessions.putIfAbsent(config.id, () {
         final useInitial = !_initialStateUsed;
@@ -342,6 +346,9 @@ class FantasyLiveObservationCoordinator extends ChangeNotifier {
           pendingStore: useInitial ? _initialPending : null,
         );
       });
+      if (!mapEquals(session.config.toJson(), config.toJson())) {
+        repository.expireMetadata(config.leagueId);
+      }
       session.updateConfiguration(config);
     }
     final espnConfigs = allConfigs

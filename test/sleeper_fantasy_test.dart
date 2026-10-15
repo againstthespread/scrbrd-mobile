@@ -262,7 +262,13 @@ void main() {
         failMatchups = false;
         paths.clear();
         final recovered = await repository.refreshMatchups('league-1');
-        expect(paths, ['/v1/state/nfl', '/v1/league/league-1/matchups/$week']);
+        expect(paths, [
+          '/v1/state/nfl',
+          '/v1/league/league-1/matchups/$week',
+          '/v1/league/league-1',
+          '/v1/league/league-1/users',
+          '/v1/league/league-1/rosters',
+        ]);
         expect(recovered.week, week);
         expect(recovered.seasonType, 'regular');
         expect(recovered.matchups.single.points, week.toDouble());
