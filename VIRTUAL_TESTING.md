@@ -1,18 +1,23 @@
 # Virtual integration testing
 
-Run from any directory, with the mobile and firmware testing branches checked out:
+From the mobile checkout, run the complete suite with one command:
 
 ```sh
-python3 /path/to/scrbrd-mobile/tools/run_virtual_tests.py \
-  --firmware /path/to/scrbrd
+python3 tools/run_virtual_tests.py
 ```
 
-For the worktrees created during implementation:
+Checkout discovery is based on the runner's own location, independently of your
+shell's working directory. Normal sibling repositories are `scrbrd-mobile/` and
+`scrbrd/`. The permanent paired worktrees are
+`~/Projects/_worktrees/scrbrd-virtual-mobile/` and
+`~/Projects/_worktrees/scrbrd-virtual-firmware/`; these are also detected automatically.
+Run the script by its full path from another directory if needed.
 
-```sh
-python3 /private/tmp/scrbrd-virtual-mobile/tools/run_virtual_tests.py \
-  --firmware /private/tmp/scrbrd-virtual-firmware
-```
+For other checkout layouts, use `--firmware /path/to/firmware` or set
+`SCRBRD_FIRMWARE`. The explicit argument takes precedence over the environment,
+then the documented sibling is used. Missing infrastructure fails with an actionable
+error; the runner never switches branches, searches unrelated worktrees, or falls
+back to another device/application source revision.
 
 Both repositories use branch `codex/virtual-integration`, created independently
 from local `main` (mobile `07ccb26`, firmware `fe254aa`). Neither branch includes
@@ -139,3 +144,44 @@ C++ tests. The final full-run report is preserved in
 Generated reports are intentionally excluded from Git. No firmware/iOS device build
 or installation is required for this host-only environment. These results apply to
 the baseline and test changes, not to unmerged F13 or physical Bluetooth behavior.
+
+## Development workflow and CI
+
+Root `AGENTS.md` in each repository tells future Codex sessions when to run the
+quick cross-repository checks and when a full run is required. For targeted changes:
+
+```sh
+python3 tools/run_virtual_tests.py --quick
+```
+
+Before proposing a merge of code/test changes affecting this boundary, run the full
+command. Runner/path changes also require
+`python3 -m unittest discover -s tools -p '*_test.py'`. Documentation-only changes
+may use inspection. Do not substitute plain `flutter test` for native-backed tests.
+Keep the companion checkout explicit when testing a pair of unmerged branches.
+
+Each repository has a small `.github/workflows/virtual-tests.yml` for pull requests,
+pushes to main, and manual dispatch. Both call the same mobile runner for the full
+18-step suite; no second copy of the suite commands is maintained in YAML. The
+changed repository is tested at its workflow revision and the companion at `main`.
+Manual dispatch accepts `companion_ref` to test a particular branch or SHA. Logs,
+reports and transcripts are uploaded even on failure; no binaries are installed.
+
+CI uses the currently validated Flutter 3.47.0 and ArduinoJson 7.4.3 headers, with
+checkout/action references pinned to exact commits. Its one online
+`flutter pub get --enforce-lockfile` prepares an empty cache; the runner itself
+continues to resolve offline with the existing lockfile. No dependency versions are
+changed. These public repositories need no additional cross-repository token;
+permissions are limited to reading repository contents. See the official
+[checkout documentation](https://github.com/actions/checkout) and
+[Flutter setup action](https://github.com/subosito/flutter-action).
+
+The workflows are prepared locally, not executed on GitHub in this task. Both
+repositories must publish the infrastructure before default companion-main runs
+can succeed. For initial rollout, merge/publish firmware first and mobile second,
+then rerun any firmware bootstrap job that encountered the older mobile main.
+Alternatively, after approved branch publication, dispatch with `companion_ref`
+set to the companion development branch. No remote publication is authorized here.
+
+The permanent-workflow verification and approval-gated merge sequence are recorded
+in [VIRTUAL_MERGE_PREPARATION.md](VIRTUAL_MERGE_PREPARATION.md).

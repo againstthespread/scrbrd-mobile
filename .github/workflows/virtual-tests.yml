@@ -1,0 +1,71 @@
+name: Virtual integration
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      companion_ref:
+        description: Companion repository branch or SHA
+        default: main
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: virtual-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  virtual:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      ARDUINOJSON_INCLUDE: ${{ github.workspace }}/arduinojson/src
+    steps:
+      - name: Check out changed repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: mobile
+          persist-credentials: false
+      - name: Check out companion repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: againstthespread/scrbrd
+          ref: ${{ inputs.companion_ref || 'main' }}
+          path: firmware
+          persist-credentials: false
+      - name: Check out validated ArduinoJson headers
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: bblanchon/ArduinoJson
+          ref: 869d440274019939d8f03f5324108d1694e5118a # v7.4.3
+          path: arduinojson
+          persist-credentials: false
+      - name: Set up validated Flutter SDK
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: '3.47.0'
+          channel: stable
+      - name: Prepare locked package cache
+        working-directory: mobile
+        run: flutter pub get --enforce-lockfile
+      - name: Test checkout discovery
+        run: python3 -m unittest discover -s mobile/tools -p '*_test.py'
+      - name: Run full virtual suite
+        working-directory: mobile
+        run: python3 tools/run_virtual_tests.py --firmware ../firmware
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: virtual-testing-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            mobile/build/virtual-testing/*.txt
+            mobile/build/virtual-testing/*.json
+            mobile/build/virtual-testing/*.log
+          if-no-files-found: warn
+          retention-days: 14

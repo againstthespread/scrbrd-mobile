@@ -12,15 +12,29 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def resolve_firmware(explicit=None):
+    """Use an explicit override or the documented sibling checkout; never search branches."""
+    selected = explicit or os.environ.get('SCRBRD_FIRMWARE')
+    if selected:
+        return Path(selected).expanduser().resolve()
+    sibling = 'scrbrd-virtual-firmware' if ROOT.name == 'scrbrd-virtual-mobile' else 'scrbrd'
+    return (ROOT.parent / sibling).resolve()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--firmware', type=Path, required=True,
-                        help='Firmware checkout containing test/virtual/build_bridge.py')
+    parser.add_argument('--firmware', type=Path,
+                        help='Override SCRBRD_FIRMWARE or the sibling scrbrd checkout')
     parser.add_argument('--quick', action='store_true',
                         help='Virtual scenarios + cross-repository compatibility only')
     parser.add_argument('--output', type=Path, default=ROOT / 'build/virtual-testing')
     args = parser.parse_args()
-    firmware, output = args.firmware.resolve(), args.output.resolve()
+    firmware, output = resolve_firmware(args.firmware), args.output.expanduser().resolve()
+    if not (firmware / 'test/virtual/build_bridge.py').is_file():
+        parser.error(f'Virtual firmware bridge not found in {firmware}. '
+                     'Use sibling scrbrd (or paired scrbrd-virtual-firmware), '
+                     '--firmware PATH, or SCRBRD_FIRMWARE. Check out the virtual '
+                     'infrastructure in both repositories; no branch will be changed automatically.')
     output.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, 'PYTHONDONTWRITEBYTECODE': '1',
            'SCRBRD_VIRTUAL_DEVICE': str(output / 'virtual-device'),

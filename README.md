@@ -98,3 +98,9 @@ flutter test
 
 See [VIRTUAL_TESTING.md](VIRTUAL_TESTING.md) for the one-command mobile/native
 integration suite, deterministic fixtures, fault injection and explicit hardware limits.
+
+From the mobile checkout (with its firmware sibling):
+
+```sh
+python3 tools/run_virtual_tests.py
+```
