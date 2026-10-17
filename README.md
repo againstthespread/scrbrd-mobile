@@ -93,3 +93,8 @@ flutter test
   slates, and projected totals.
 - `test/` contains serializer, provider, projection, refresh, session, protocol,
   and widget coverage.
+
+## Automated virtual integration
+
+See [VIRTUAL_TESTING.md](VIRTUAL_TESTING.md) for the one-command mobile/native
+integration suite, deterministic fixtures, fault injection and explicit hardware limits.

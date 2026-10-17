@@ -1,0 +1,12 @@
+{
+  "date": "2026-10-17T12:00:00Z",
+  "sports": [
+    {"league":"NBA","id":"nba-1","away":"BOS","home":"NYK","awayScore":10,"homeScore":8,"status":"LIVE","clock":"Q1"},
+    {"league":"NBA","id":"nba-2","away":"LAL","home":"GSW","awayScore":20,"homeScore":18,"status":"LIVE","clock":"Q2"},
+    {"league":"MLB","id":"mlb-1","away":"TB","home":"CLE","awayScore":0,"homeScore":0,"status":"UPCOMING","clock":"7:00 PM"}
+  ],
+  "fantasy": [
+    {"identity":"fixture-espn","leagueName":"Fixture ESPN","userName":"Team A","opponentName":"Team B","userScore":12.5,"opponentScore":9.25},
+    {"identity":"fixture-sleeper","leagueName":"Fixture Sleeper","userName":"Team C","opponentName":"Team D","userScore":5.2,"opponentScore":0.0}
+  ]
+}
