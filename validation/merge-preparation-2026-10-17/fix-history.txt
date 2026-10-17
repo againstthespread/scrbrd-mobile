@@ -1,0 +1,16 @@
+bcab9097ccc17459e6a8c5948aceb59a8b4437d4 Fix F29 logical Bluetooth transaction ownership and session cancellation
+dee8355226b5912dae95a48da6286408424e4a52 Fix F29 runtime dependency ownership and disposal lifetime
+0ef47e028f3eac54cd31e03a48636588500269dd Fix F20 delivery outcomes and track provider and BLE freshness
+8707047e0a3e67a8bd8a7ad971abe54e0fd59043 Fix silent WAKE recovery with acknowledged subscription cleanup (H01)
+229d4b2d31a24dbd44ee7bd31bf00b3262225d0e Expire Sleeper league metadata with bounded outage recovery (F22)
+5c4326e6ae2e55a3eda7165cf501cb73f524230c Derive fantasy status from lifecycle evidence instead of points (F21)
+3b5c6337cdb3c70d9eb99ee722d77cdb903c694d Reject incomplete active sports scores instead of inventing zeros (F23)
+89f3a6325c7c936436734d536130d86fbdf67be8 Persist preferences before publishing changes and expose retry (F30)
+88814d41d9262985e08d1b3110a5f04cbbf1d7dd Add bounded H01 refresh diagnostics and timeline export
+9fd25f7981e402bd314d14c2111b8e4c54bce10f Recover desired sports content across date and tournament rollover (F08)
+4df99ca4085a35cede2035ed9b18e90aa6baa62e Preserve cached device content across failed startup synchronization (F07)
+52e42f2ab623571b475f9dec66388972b4270cf4 Recover WAKE subscriptions and classify fantasy startup outcomes
+e07384f070e522e30e56452e507d23eaa7f8a045 Preserve fantasy alert events, league counts and retry ordering
+19039e1d6c5a8c477f621bc3492806d4ea8ef04c Keep startup sync and slate transfers isolated across reconnects
+f287d6617d96f2e856651ac3810d95c7ebda99b7 Prevalidate fantasy transfers and skip unchanged slates
+6228e3048a186daa79bfc0347f395b616fd5067a Fix Sleeper rollover retries and unavailable ESPN player stats

@@ -1,0 +1,73 @@
+{
+  "mobileRevision": "bcab9097ccc17459e6a8c5948aceb59a8b4437d4",
+  "mobileBranch": "codex/h01-wake-recovery",
+  "firmwareRevision": "ee5b0c6bba4915002f5f1a325c2b8bac4f449523",
+  "firmwareSourceVerification": "All 29 tracked files match HEAD at their relocated paths",
+  "labBundleId": "com.againstthespread.scrbrd.lab",
+  "labVersion": "1.0.0",
+  "labBuild": "1009",
+  "originalApp": {
+    "bundleId": "com.againstthespread.scrbrd",
+    "build": "6",
+    "action": "read-only inventory; no app/data modification"
+  },
+  "rollback": {
+    "revision": "8d9cbba06110b7bcd013dde241f7058e2c6681cd",
+    "labBuild": "1008",
+    "path": "/Users/peterdeluca/Projects/_worktrees/scrbrd-mobile-codex/build/hardware-validation/integrated-1009/rollback-1008",
+    "verifiedFiles": 90,
+    "signatureVerified": true
+  },
+  "buildOnlyChanges": [
+    "ios/Runner.xcodeproj/project.pbxproj: Lab bundle ID",
+    "ios/Runner/Info.plist: Lab display name",
+    "lib/firebase_options.dart: existing registered Lab iOS Firebase configuration",
+    "generated build number:1009"
+  ],
+  "protocolCompatibility": {
+    "scenarios": 18,
+    "packets": 112,
+    "result": "PASS"
+  },
+  "signedArtifact": "/Users/peterdeluca/Projects/_worktrees/scrbrd-mobile-codex/build/hardware-validation/integrated-1009/SCRBRD-Lab-integrated-1009.app",
+  "candidateSignatureVerified": true,
+  "candidateEntitlementsMatchLab1008": true,
+  "profileIncludesIPhone": true,
+  "profileExpiresUtc": "2027-10-15T01:49:04Z",
+  "dartLockfileUnchanged": true,
+  "swiftLockfileUnchanged": true,
+  "candidateSourceDifferences": [
+    "ios/Runner.xcodeproj/project.pbxproj",
+    "ios/Runner/Info.plist",
+    "lib/firebase_options.dart"
+  ],
+  "candidateFilesHashed": 90,
+  "readyUtc": "2026-10-15T20:25:41.136541+00:00",
+  "installationApproval": {
+    "recordedUtc": "2026-10-15T20:33:38.638712+00:00",
+    "userAnswer": "Approve Lab 1009 update and launch",
+    "scope": "In-place Lab 1008 to 1009 update and launch without debugger; no original SCRBRD modification; no firmware flash"
+  },
+  "installedUtc": "2026-10-15T20:34:43.635646+00:00",
+  "launchMode": "Release, no debugger",
+  "baselineDecision": "Suitable as provisional development baseline with known projection discrepancy and unexercised stress cases; not fully qualified production baseline",
+  "finalDiagnosticSession": {
+    "session": "2026-10-17T15:14:36.923468Z",
+    "events": 512,
+    "evicted": 22573,
+    "clears": 0,
+    "lastSequence": 23085,
+    "asOfUtc": "2026-10-17T16:42:10.575325Z",
+    "retainedSequenceRange": [
+      22574,
+      23085
+    ],
+    "firstRetainedEventUtc": "2026-10-17T16:41:03.978567Z",
+    "lastRetainedEventUtc": "2026-10-17T16:42:05.278510Z",
+    "retainedTimelineSeconds": 61.299943
+  },
+  "approval": "User approved Lab1009 as provisional development baseline and authorized merge preparation; main merges still require explicit approval.",
+  "firmwareRevisionReadback": "Prior flash record plus user no-subsequent-flash confirmation, not on-device Git readback.",
+  "artifactDirectory": "/Users/peterdeluca/Projects/_worktrees/scrbrd-mobile-codex/build/hardware-validation/integrated-1009",
+  "sourceArchiveSha256": "97bb2415cd2bc9d447a50d8418116b09ba91c80954c3ec3b99ac0bbd07b48ba7"
+}

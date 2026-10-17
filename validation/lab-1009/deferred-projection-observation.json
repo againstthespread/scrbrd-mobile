@@ -1,0 +1,38 @@
+{
+  "stage": "I03-Sleeper-projection-discrepancy",
+  "recordedUtc": "2026-10-17T16:03:57.472839+00:00",
+  "source": "User visual comparison",
+  "userResponse": "gay; week 6; pdeluc99 gsvanbeek; projected 144.3 and 144.9 scrbrd; projected 128.76 and 134.74 actual; 12:02 est; actual scores are 0 and 5.2",
+  "leagueLabelAsSupplied": "gay",
+  "week": 6,
+  "teamsInOrder": [
+    "pdeluc99",
+    "gsvanbeek"
+  ],
+  "scrbrdProjectedTotals": [
+    144.3,
+    144.9
+  ],
+  "sleeperReferenceProjectedTotals": [
+    128.76,
+    134.74
+  ],
+  "scrbrdMinusReference": [
+    15.54,
+    10.16
+  ],
+  "actualScoresSeparatelyReported": [
+    0,
+    5.2
+  ],
+  "comparisonTimeAsReported": "12:02 est",
+  "comparisonDateContext": "2026-10-17",
+  "timezoneNote": "User timezone label retained verbatim; America/Detroit observes EDT on this date. Exact UTC comparison time not independently established.",
+  "result": "FAIL observed parity of SCRBRD projections with Sleeper reference",
+  "rootCause": "Unknown; no attribution to BLE, provider math, caching, or new regression established",
+  "diagnosticsForThisObservation": "Not supplied",
+  "displayLocation": "SCRBRD per user; Lab versus ESP not separately specified",
+  "scope": "Evidence capture only; no fixes, configuration changes, or broad investigation",
+  "baselineDecision": "Not qualified as an all-fixes pass; projection discrepancy and remaining physical criteria unresolved",
+  "next": "Continue unchanged-configuration mixed-traffic stability with milestone exports; qualify live criterion only if actual live changes observed"
+}
