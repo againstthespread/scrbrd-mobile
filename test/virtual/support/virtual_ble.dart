@@ -80,6 +80,8 @@ class VirtualBle {
       scanTimeout: const Duration(milliseconds: 5),
       writeTimeout: const Duration(milliseconds: 100),
       bleStatusProvider: () => ready ? BleStatus.ready : BleStatus.poweredOff,
+      bleStatusStreamProvider: () =>
+          Stream.value(ready ? BleStatus.ready : BleStatus.poweredOff),
       scanStreamProvider: () =>
           Stream.fromIterable(available ? [advertisement] : []),
       connectionStreamProvider:
@@ -89,14 +91,24 @@ class VirtualBle {
             required connectionTimeout,
           }) {
             attempts.add(id);
-            final controller = StreamController<ConnectionStateUpdate>();
+            final attemptEpoch = ++epoch;
+            final controller = StreamController<ConnectionStateUpdate>(
+              onCancel: () async {
+                if (epoch != attemptEpoch) return;
+                epoch++;
+                linked = false;
+                await device.request({'op': 'link', 'connected': false});
+              },
+            );
             connections.add(controller);
             scheduleMicrotask(() async {
+              if (epoch != attemptEpoch) return;
               if (!ready || !available || id != deviceId) {
                 controller.addError(StateError('Scripted device unavailable'));
                 return;
               }
               await device.request({'op': 'link', 'connected': true});
+              if (epoch != attemptEpoch) return;
               linked = true;
               controller.add(
                 ConnectionStateUpdate(

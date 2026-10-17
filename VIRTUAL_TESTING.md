@@ -32,7 +32,7 @@ A fresh machine needs the normal Flutter package/toolchain setup first.
 
 The default command runs:
 
-1. Native bridge build and ten mobile ↔ firmware integration scenarios.
+1. Native bridge build and eleven mobile ↔ firmware integration scenarios.
 2. Existing Dart serializer fixture export and native protocol compatibility test.
 3. Complete Flutter suite (including the virtual scenarios) and static analysis.
 4. All existing firmware Python native runners and both standalone C++ tests.
@@ -46,7 +46,7 @@ failure makes the overall command exit nonzero; dependent steps are marked BLOCK
 Reports are local build artifacts; no reporting service is contacted.
 
 Running plain `flutter test` without `SCRBRD_VIRTUAL_DEVICE` still runs every
-preexisting test, but explicitly skips these ten native-backed scenarios. Use the
+preexisting test, but explicitly skips these eleven native-backed scenarios. Use the
 command above for a complete virtual run; a bridge build failure cannot silently
 turn it into a passing skipped integration run.
 
@@ -91,6 +91,7 @@ F28 is unchanged and deferred pending commercial licensing.
 - Disconnect while a chunk is held cancels staging and stale mobile work; a scripted
   reconnect performs normal sync and resumes WAKE-driven updates. Releasing the old
   write cannot restart its transaction or overwrite the new session.
+- Explicit connection cancellation also closes the native link and cancels staging.
 - Native write errors retain mobile delivery cache; a new session recovers.
 - Held writes time out; after link invalidation their late completion cannot deliver.
 - Device absence/adapter-off leaves the baseline disconnected; scripted restoration
@@ -130,8 +131,8 @@ validation. No physical hardware automation is implemented.
 
 ## Implementation verification
 
-The initial implementation passed all 18 runner steps on 2026-10-17: ten virtual
-scenarios, 962 total Flutter tests, clean static analysis, 18 existing protocol
+The initial implementation passed all 18 runner steps on 2026-10-17: eleven virtual
+scenarios, 963 total Flutter tests, clean static analysis, 18 existing protocol
 compatibility fixture steps, all seven Python native runners and both standalone
 C++ tests. The final full-run report is preserved in
 `build/virtual-testing/final/report.txt` with logs/transcripts alongside it.

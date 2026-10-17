@@ -210,6 +210,12 @@ void main() {
             h.ble.transport.currentSnapshot.state,
             BleConnectionState.disconnected,
           );
+          await expectLater(h.ble.connect(), throwsStateError);
+          expect(
+            h.ble.transport.currentSnapshot.errorMessage,
+            contains('Turn on Bluetooth'),
+          );
+          expect(h.ble.attempts, hasLength(attempts));
           h.ble.ready = true;
           await h.start();
           expect(h.ble.attempts.last, VirtualBle.deviceId);
@@ -259,6 +265,33 @@ void main() {
           await h.start();
           expect(h.initial.snapshot.status, InitialSyncStatus.complete);
           expect(h.ble.attempts, [VirtualBle.deviceId, VirtualBle.deviceId]);
+        },
+      );
+
+      test(
+        'explicit connection cancellation closes native link and staging',
+        () async {
+          await h.start();
+          await h.select('NBA');
+          final games = await h.repository.fetchGamesForDate(
+            SportsLeague.nba,
+            h.source.date,
+          );
+          h.ble.faults[h.ble.packets.length + 2] = Fault.hold;
+          final failed = expectLater(
+            h.sender.sendTeamSlate(games, selectedDate: h.source.date),
+            throwsStateError,
+          );
+          await until(() => h.ble.held != null);
+          expect((await h.state())['sportsStaging'], isTrue);
+          await h.ble.transport.disconnect();
+          await failed;
+          expect((await h.state())['connected'], isFalse);
+          expect((await h.state())['sportsStaging'], isFalse);
+          expect(h.ble.linked, isFalse);
+          h.ble.release();
+          await h.start();
+          expect(h.initial.snapshot.status, InitialSyncStatus.complete);
         },
       );
 
